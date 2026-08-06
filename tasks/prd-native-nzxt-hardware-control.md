@@ -5,6 +5,7 @@
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.3 | 2026-08-06 | Arthur Jean | Scoped US-014's lighting restoration to a daemon start and moved restoration after a physical unplug to US-019, which already owns hotplug detection for both devices; made US-019 name the lighting side of that recovery explicitly |
 | 1.2 | 2026-08-06 | Arthur Jean | Revised the memory and CPU budgets against measured GPUI behavior; split resident set into a driver-dependent ceiling and an application-controlled figure |
 | 1.1 | 2026-07-30 | Arthur Jean | Renamed repository to `nzxt-control-linux` and aligned project documentation |
 | 1.0 | 2026-07-30 | Arthur Jean | Initial hardware-only product definition |
@@ -397,7 +398,7 @@ Validate the exact topology and expose only commands proven safe on the owned `1
 - [ ] Given a valid six-digit hexadecimal color and 0-100% brightness, when Apply is activated, then the preview updates immediately and one rate-limited hardware command follows.
 - [ ] Given Off, when applied, then the channel emits zero light and its prior fixed color remains available for restoration.
 - [ ] Given invalid hex, unsupported channel or command cadence above the US-013 limit, when Apply is requested, then no hardware write occurs and the exact invalid field is identified.
-- [ ] Given a reconnect, when the active profile is compatible, then confirmed fixed/off state is restored within 5 seconds.
+- [ ] Given a daemon start or restart, when the active profile carries compatible lighting, then every channel it names is restored within 5 seconds of the controller answering. Restoration after a physical unplug is US-019's, which owns hotplug detection for both devices.
 
 #### US-015: Add only validated RGB effects
 
@@ -491,7 +492,7 @@ Prove lifecycle recovery across all supported features and package the applicati
 
 **Acceptance Criteria:**
 
-- [ ] Given either supported device is unplugged and reconnected, when it becomes available, then detection, capability validation and compatible profile restoration complete within 5 seconds.
+- [ ] Given either supported device is unplugged and reconnected, when it becomes available, then detection, capability validation and compatible profile restoration complete within 5 seconds. Restoration covers the cooling program and the lighting channels alike, including re-opening the controller's `hidraw` node and dropping the committed lighting record the departed device no longer holds.
 - [ ] Given 10 suspend/resume cycles, when the system returns, then the daemon reacquires each device exactly once and telemetry resumes within 5 seconds on every cycle.
 - [ ] Given an 8-hour mixed monitoring, cooling, RGB and LCD soak, when logs are inspected, then there are zero unhandled errors, duplicate writers, queues above 100 commands or stale telemetry periods above 10 seconds.
 - [ ] Given the daemon is terminated while an onboard curve is active, when the UI loses IPC, then it reports the daemon loss within 2 seconds and the hardware retains its last confirmed autonomous curve.

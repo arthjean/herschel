@@ -11,11 +11,18 @@ cooling, so the hardware rules below outrank convenience.
   from real hardware, not a datasheet.
 - Reach the thermal path through the bound `kraken2023` driver and its `hwmon`
   attributes. Never detach a kernel driver and never open a USB endpoint for the
-  thermal side. The RGB and LCD transports stay unimplemented until US-013 and
-  US-016 validate them.
+  thermal side. Reach the RGB controller through the `hidraw` node `usbhid`
+  already created, for the same reason. The LCD transport stays unimplemented
+  until US-016 validates it.
 - `crates/hardware-linux/src/control.rs` is the only module that writes to
   cooling hardware, and `crates/daemon/src/cooling.rs` is the only caller that
-  serializes those writes. Add a write there or nowhere.
+  serializes those writes. `crates/hardware-linux/src/rgb.rs` and
+  `crates/daemon/src/lighting.rs` are the same pair for lighting. Add a write
+  there or nowhere.
+- No RGB write leaves the process unless the controller answered its topology
+  *and* reports a firmware listed in `rgb::VALIDATED_FIRMWARE`. That list is
+  filled only from a `--rgb-write-probe` run on real hardware. An empty list
+  means every controller is read-only, which is the correct failure direction.
 - Never make either binary require root. `nzxt-controld` refuses to start as
   root (`crates/daemon/src/main.rs`). Missing permission degrades to read-only
   with a stated reason; it never escalates.
@@ -53,9 +60,15 @@ cargo test --workspace
   `NZXT_SYSFS_ROOT` / `NZXT_PROC_ROOT` overrides. `crates/daemon/tests/ipc.rs`
   is the reference: exercise the daemon over a real socket from the client entry
   point rather than reaching into internals.
-- `./target/release/nzxt-controld --capabilities` is read-only, opens no socket
-  and redacts serials. It is the safe way to re-record
-  `docs/capability-record.json`.
+- `./target/release/nzxt-controld --capabilities` reads sysfs only: no socket,
+  no device node, serials redacted. `--rgb-probe` adds the controller's own
+  answer, which costs two query reports that carry no color, no mode and no
+  parameter. `--rgb-probe` is what re-records `docs/capability-record.json`,
+  because the RGB topology belongs in it.
+- `--rgb-write-probe` is the only command that sends an unvalidated lighting
+  command. It takes the same per-device lock the daemon takes, refuses to start
+  without a typed confirmation, and records every byte it sent. Run it only with
+  the operator watching the hardware.
 
 ## Workspace shape
 
