@@ -1,0 +1,23 @@
+[package]
+name = "nzxt-hardware-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Read-only sysfs, hwmon and USB capability discovery for allowlisted NZXT devices"
+
+[features]
+# Exposes the fake sysfs fixture to other crates' tests.
+testing = []
+
+[dependencies]
+nzxt-core.workspace = true
+rustix.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
