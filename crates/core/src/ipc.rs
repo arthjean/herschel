@@ -14,11 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 use crate::capability::{CapabilityId, CapabilityRecord};
+use crate::lighting::{LightingCommand, LightingError, LightingProgram};
 use crate::profile::{Channel, CoolingProgram, Incompatibility, Profile, ValidationError};
 use crate::telemetry::{PwmMode, TelemetrySnapshot};
 
 /// Incremented on any breaking change to [`Request`] or [`Response`].
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Version 2 added the lighting command and the per-channel lighting state.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Largest frame either side will read.
 ///
@@ -121,6 +124,12 @@ pub enum Request {
     /// This is what the Cooling screen's Apply activates. The daemon
     /// revalidates every value before the first write.
     ApplyProgram { program: CoolingProgram },
+    /// Apply a lighting program to one channel of the RGB controller.
+    ///
+    /// The daemon revalidates the program, checks it against the topology the
+    /// controller reported, and enforces the command cadence before any byte
+    /// is sent.
+    ApplyLighting { command: LightingCommand },
     /// Redacted diagnostics for an issue report.
     Diagnostics,
 }
@@ -153,8 +162,38 @@ pub enum Response {
     },
     Telemetry(Box<TelemetrySnapshot>),
     Applied(Box<ApplyOutcome>),
+    Lit(LightingOutcome),
     Diagnostics(crate::diagnostics::DiagnosticsExport),
     Error(IpcError),
+}
+
+/// The result of one lighting command.
+///
+/// The controller acknowledges no state: there is no report that reads a
+/// channel's current color back. The daemon is the sole writer, so its record
+/// of what it committed is the only evidence of what the channel is showing,
+/// which is the same reasoning the write-only curve attributes already follow.
+/// `Confirmed` therefore means the controller accepted the report, and nothing
+/// stronger is claimed anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightingOutcome {
+    pub channel: u8,
+    pub program: LightingProgram,
+    pub hardware: HardwareState,
+    /// Reports actually sent. Zero means the request matched the committed
+    /// state and was deduplicated.
+    pub writes: u32,
+    pub deduplicated: bool,
+}
+
+/// What one lighting channel is currently showing, as far as the daemon knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelState {
+    pub channel: u8,
+    /// Accessory names the controller reported, in slot order.
+    pub accessories: Vec<String>,
+    /// The last program the daemon committed, when it has committed one.
+    pub committed: Option<LightingProgram>,
 }
 
 /// What actually happened to the hardware when a profile was activated.
@@ -331,6 +370,8 @@ pub struct DaemonStatus {
     pub devices: Vec<DeviceStatus>,
     pub active_profile: String,
     pub config: ConfigState,
+    /// Lighting channels the controller reported, empty when it reported none.
+    pub lighting: Vec<ChannelState>,
     /// Path of the Unix socket. The daemon opens no other listening endpoint.
     pub socket_path: String,
 }
@@ -351,6 +392,8 @@ pub enum IpcError {
     PeerRejected { reason: String },
     #[error("{0}")]
     Validation(#[from] ValidationError),
+    #[error("{0}")]
+    Lighting(#[from] LightingError),
     #[error("Controls are read-only: {reason}")]
     ReadOnly { reason: String },
     #[error("Profile is incompatible with the connected hardware.")]

@@ -107,6 +107,18 @@ pub enum EventKind {
         /// Kernel attributes actually written. Zero means deduplicated.
         writes: u32,
     },
+    /// A lighting program reached the controller, or was refused before it did.
+    ///
+    /// The program is recorded as its summary, never as packet bytes: a
+    /// diagnostics archive is something an operator attaches to an issue, and
+    /// a wire dump would put the reverse-engineered protocol in it.
+    LightingApplied {
+        channel: u8,
+        program: String,
+        hardware: HardwareState,
+        /// Reports actually sent. Zero means deduplicated or refused.
+        writes: u32,
+    },
     /// A telemetry collector panicked or stopped answering.
     CollectorFailed {
         collector: Collector,
@@ -126,11 +138,13 @@ impl EventKind {
             | Self::RequestRejected { .. }
             | Self::CollectorFailed { .. }
             | Self::ConfigRecovered { .. } => Severity::Warning,
-            Self::ProgramApplied { hardware, .. } => match hardware {
-                HardwareState::Uncertain { .. } => Severity::Error,
-                HardwareState::NotApplied { .. } => Severity::Warning,
-                HardwareState::Confirmed | HardwareState::Onboard => Severity::Info,
-            },
+            Self::ProgramApplied { hardware, .. } | Self::LightingApplied { hardware, .. } => {
+                match hardware {
+                    HardwareState::Uncertain { .. } => Severity::Error,
+                    HardwareState::NotApplied { .. } => Severity::Warning,
+                    HardwareState::Confirmed | HardwareState::Onboard => Severity::Info,
+                }
+            }
             Self::AccessModeChanged { read_only, .. } => {
                 if *read_only {
                     Severity::Warning
@@ -344,6 +358,7 @@ mod tests {
                 },
                 interfaces: vec![],
                 hwmon: None,
+                rgb: None,
                 capabilities: vec![],
             }],
             rejected: vec![],

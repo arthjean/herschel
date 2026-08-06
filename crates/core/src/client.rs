@@ -157,6 +157,21 @@ impl Client {
         }
     }
 
+    /// Apply a lighting program to one channel.
+    pub fn apply_lighting(
+        &mut self,
+        command: crate::lighting::LightingCommand,
+    ) -> Result<crate::ipc::LightingOutcome, ClientError> {
+        match self.request(Request::ApplyLighting { command })? {
+            Response::Lit(outcome) => Ok(outcome),
+            Response::Error(error) => Err(ClientError::Refused(error)),
+            _ => Err(ClientError::Unexpected {
+                expected: "lit",
+                actual: "other response",
+            }),
+        }
+    }
+
     /// Every stored profile plus the active one.
     pub fn profiles(&mut self) -> Result<(String, Vec<crate::profile::Profile>), ClientError> {
         match self.request(Request::Profiles)? {

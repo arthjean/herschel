@@ -14,7 +14,9 @@ use crate::DeviceId;
 use crate::capability::{CapabilityId, DeviceRecord};
 
 /// Bumped whenever the on-disk configuration shape changes.
-pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 added the per-channel lighting a profile carries.
+pub const CONFIG_SCHEMA_VERSION: u32 = 2;
 
 /// Name of the built-in profile that is always available and always safe.
 pub const SAFE_PROFILE_NAME: &str = "Onboard safe";
@@ -270,6 +272,15 @@ pub struct Profile {
     pub program: CoolingProgram,
     /// Device the profile was created for, when it is device-specific.
     pub device: Option<DeviceId>,
+    /// What each lighting channel should show, when the profile sets any.
+    ///
+    /// Stored as named colors, effects and speeds. No packet, report
+    /// identifier or byte sequence enters the configuration file, so a stored
+    /// profile never pins the product to one reverse-engineered encoding.
+    ///
+    /// Defaulted so a profile written before lighting existed still loads.
+    #[serde(default)]
+    pub lighting: Vec<crate::lighting::LightingCommand>,
 }
 
 impl Profile {
@@ -279,11 +290,14 @@ impl Profile {
             name: SAFE_PROFILE_NAME.to_string(),
             program: CoolingProgram::Onboard,
             device: None,
+            lighting: Vec::new(),
         }
     }
 
     pub fn is_safe_builtin(&self) -> bool {
-        self.name == SAFE_PROFILE_NAME && self.program == CoolingProgram::Onboard
+        self.name == SAFE_PROFILE_NAME
+            && self.program == CoolingProgram::Onboard
+            && self.lighting.is_empty()
     }
 }
 
@@ -317,6 +331,8 @@ pub enum ValidationError {
         min: u8,
         max: u8,
     },
+    #[error("Lighting on channel {channel} is invalid: {detail}")]
+    Lighting { channel: u8, detail: String },
     #[error(
         "{channel} curve duty must never decrease as temperature rises: {previous} at {previous_temperature_c} C then {value} at {temperature_c} C."
     )]
@@ -336,7 +352,10 @@ impl ValidationError {
             Self::DutyOutOfRange { channel, .. }
             | Self::CurveDutyOutOfRange { channel, .. }
             | Self::CurveNotMonotonic { channel, .. } => Some(*channel),
-            Self::NameLength { .. } | Self::NameBlank | Self::CurvePointCount { .. } => None,
+            Self::NameLength { .. }
+            | Self::NameBlank
+            | Self::CurvePointCount { .. }
+            | Self::Lighting { .. } => None,
         }
     }
 }
@@ -435,10 +454,23 @@ pub fn validate_program(program: &CoolingProgram) -> Result<(), ValidationError>
     }
 }
 
-/// Validate a whole profile: name, then every value its program carries.
+/// Validate a whole profile: name, then every value it carries.
+///
+/// Lighting is validated for shape only. Whether a channel exists is a fact
+/// about the connected controller, so it is checked at activation against what
+/// the controller reported, not against a number stored in a file.
 pub fn validate_profile(profile: &Profile) -> Result<(), ValidationError> {
     validate_name(&profile.name)?;
-    validate_program(&profile.program)
+    validate_program(&profile.program)?;
+    for command in &profile.lighting {
+        crate::lighting::validate_program(&command.program).map_err(|source| {
+            ValidationError::Lighting {
+                channel: command.channel,
+                detail: source.to_string(),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 /// A capability a profile needs that the device cannot provide.
@@ -522,6 +554,7 @@ mod tests {
             },
             interfaces: vec![],
             hwmon: None,
+            rgb: None,
             capabilities,
         }
     }
@@ -646,6 +679,7 @@ mod tests {
                 fan: 128,
             },
             device: None,
+            lighting: Vec::new(),
         };
 
         let found = incompatibilities(&profile, &device);
@@ -661,6 +695,7 @@ mod tests {
             name: "Other".into(),
             program: CoolingProgram::Onboard,
             device: Some(crate::RGB_CONTROLLER),
+            lighting: Vec::new(),
         };
         let found = incompatibilities(&profile, &device);
         assert_eq!(found.len(), 1);

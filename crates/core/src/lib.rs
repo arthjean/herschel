@@ -13,6 +13,7 @@ pub mod capability;
 pub mod client;
 pub mod diagnostics;
 pub mod ipc;
+pub mod lighting;
 pub mod profile;
 pub mod telemetry;
 

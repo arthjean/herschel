@@ -15,7 +15,10 @@ use crate::DeviceId;
 /// Bumped whenever the shape of [`CapabilityRecord`] changes.
 ///
 /// A record carrying an unknown version is rejected instead of guessed.
-pub const CAPABILITY_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 added the USB endpoint list on every interface and the RGB
+/// controller's [`RgbTopology`], both required by US-013.
+pub const CAPABILITY_SCHEMA_VERSION: u32 = 2;
 
 /// A value that is either observed with its evidence, or explicitly unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +54,14 @@ impl<T> Evidenced<T> {
 
     pub fn is_known(&self) -> bool {
         matches!(self, Self::Known { .. })
+    }
+
+    /// Why the value is missing, for a control that has to say so.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Known { .. } => None,
+            Self::Unknown { reason, .. } => Some(reason),
+        }
     }
 }
 
@@ -171,6 +182,26 @@ pub struct UsbInterface {
     pub protocol: u8,
     /// Kernel driver bound to the interface, when any.
     pub driver: Evidenced<String>,
+    /// Endpoints the interface publishes, in address order.
+    pub endpoints: Vec<UsbEndpoint>,
+}
+
+/// One endpoint of a USB interface, as sysfs describes it.
+///
+/// `direction` and `transfer` are taken from the kernel's own decoded strings
+/// rather than re-derived from `bmAttributes`, so the record cannot disagree
+/// with what the kernel believes about the same endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsbEndpoint {
+    /// `bEndpointAddress`.
+    pub address: u8,
+    /// `in` or `out`, verbatim from sysfs.
+    pub direction: String,
+    /// `Interrupt`, `Bulk`, `Control` or `Isoc`, verbatim from sysfs.
+    pub transfer: String,
+    pub max_packet_size: u16,
+    /// `bInterval`, in frames or microframes depending on the bus speed.
+    pub interval: u8,
 }
 
 /// Stable identity of a probed USB device.
@@ -225,6 +256,64 @@ pub struct CurveChannel {
     pub writable: bool,
 }
 
+/// What the RGB controller answered about itself.
+///
+/// Every field is separately evidenced because they fail separately: the node
+/// can exist while permission is missing, and permission can be granted while
+/// the controller answers nothing. A field that could not be established says
+/// so, and the capability state that reads it stays unvalidated rather than
+/// falling back to a plausible topology.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbTopology {
+    /// `hidraw` node the transport would use.
+    pub node: Evidenced<String>,
+    /// Firmware the controller reports, which is not the USB `bcdDevice`.
+    pub firmware: Evidenced<String>,
+    /// Channels the controller reports, in index order.
+    pub channels: Evidenced<Vec<RgbChannel>>,
+}
+
+impl RgbTopology {
+    /// A topology nothing could be read from, with the reason on every field.
+    pub fn unavailable(reason: impl Into<String>, source: impl Into<String>) -> Self {
+        let (reason, source) = (reason.into(), source.into());
+        Self {
+            node: Evidenced::unknown(reason.clone(), source.clone()),
+            firmware: Evidenced::unknown(reason.clone(), source.clone()),
+            channels: Evidenced::unknown(reason, source),
+        }
+    }
+
+    /// Number of channels the controller reported, or `None` when unknown.
+    pub fn channel_count(&self) -> Option<u8> {
+        self.channels.value().map(|channels| channels.len() as u8)
+    }
+}
+
+/// One addressable lighting channel and what is plugged into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbChannel {
+    /// One-based index, matching the label printed on the controller.
+    pub index: u8,
+    /// Accessories the controller detected on this channel.
+    pub accessories: Vec<RgbAccessory>,
+    /// LEDs on the channel.
+    ///
+    /// The controller reports accessory identifiers, not LED counts, so this is
+    /// `Unknown` on every accessory whose LED count has not been counted on
+    /// real hardware. A control that needs it must read it, not assume it.
+    pub led_count: Evidenced<u16>,
+}
+
+/// One accessory the controller detected on a channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbAccessory {
+    /// Identifier byte the controller returned.
+    pub id: u8,
+    /// Name for that identifier, or an explicit unknown marker.
+    pub name: String,
+}
+
 /// Whether the product is allowed to talk to a discovered device at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -243,6 +332,8 @@ pub struct DeviceRecord {
     pub usb: UsbIdentity,
     pub interfaces: Vec<UsbInterface>,
     pub hwmon: Option<HwmonCapabilities>,
+    /// Present only on the RGB controller, and only once its probe has run.
+    pub rgb: Option<RgbTopology>,
     pub capabilities: Vec<Capability>,
 }
 
@@ -336,6 +427,7 @@ mod tests {
                 },
                 interfaces: vec![],
                 hwmon: None,
+                rgb: None,
                 capabilities: vec![
                     Capability {
                         id: CapabilityId::PumpDuty,
@@ -386,6 +478,48 @@ mod tests {
         let serialized = serde_json::to_string(&record).unwrap();
         assert!(!serialized.contains("SECRET"), "{serialized}");
         assert!(!record.devices[0].usb.serial.is_known());
+    }
+
+    #[test]
+    fn an_unreadable_rgb_topology_states_the_reason_on_every_field() {
+        let topology = RgbTopology::unavailable("permission denied", "/dev/hidraw12");
+        assert_eq!(topology.channel_count(), None);
+        assert!(!topology.node.is_known());
+        assert!(!topology.firmware.is_known());
+        assert!(!topology.channels.is_known());
+
+        // The reason survives serialization, because the client renders it.
+        let json = serde_json::to_string(&topology).unwrap();
+        assert!(json.contains("permission denied"), "{json}");
+    }
+
+    #[test]
+    fn a_reported_topology_counts_only_the_channels_it_carries() {
+        let topology = RgbTopology {
+            node: Evidenced::known("/dev/hidraw12".into(), "sysfs"),
+            firmware: Evidenced::known("1.2.3".into(), "report 0x11"),
+            channels: Evidenced::known(
+                (1..=3)
+                    .map(|index| RgbChannel {
+                        index,
+                        accessories: Vec::new(),
+                        led_count: Evidenced::unknown(
+                            "the controller reports accessory ids, not LED counts",
+                            "report 0x21",
+                        ),
+                    })
+                    .collect(),
+                "report 0x21",
+            ),
+        };
+        assert_eq!(topology.channel_count(), Some(3));
+        assert!(
+            topology
+                .channels
+                .value()
+                .is_some_and(|channels| channels.iter().all(|c| !c.led_count.is_known())),
+            "an uncounted LED total must never become a number"
+        );
     }
 
     #[test]
