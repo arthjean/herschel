@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The application shell: a fixed navigation rail and one work surface.
 //!
 //! Four primary destinations, one secondary Settings entry, and nothing else.

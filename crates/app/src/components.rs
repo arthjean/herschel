@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The reusable interface primitives.
 //!
 //! Every control shares one interaction model: it is either enabled, disabled

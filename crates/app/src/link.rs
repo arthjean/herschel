@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The client's view of the daemon.
 //!
 //! The window never touches hardware. It asks the daemon what exists and what

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! `hwmon` discovery for devices the kernel already drives.
 //!
 //! The thermal path stays on the bound driver. Nothing here detaches a kernel

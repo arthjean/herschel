@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 //! The per-user daemon that owns every write to allowlisted NZXT hardware.

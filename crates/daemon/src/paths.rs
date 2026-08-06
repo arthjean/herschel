@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Where the daemon keeps its socket, locks and configuration.
 //!
 //! Every path is per-user and inside a directory the user already owns. The

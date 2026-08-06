@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Assemble the versioned capability record.
 //!
 //! The probe is read-only by construction: it reads sysfs attributes and tests

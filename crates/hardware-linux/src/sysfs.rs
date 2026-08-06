@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Read-only sysfs access.
 //!
 //! Every function here reads or tests permissions. None opens a file for

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The client side of the local socket.
 //!
 //! Lives next to the protocol so the GPUI process and the integration tests

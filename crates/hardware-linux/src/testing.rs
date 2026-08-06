@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This module only ever builds fixtures for tests. Failing to build one is a
 // broken test, not a runtime condition, so it panics loudly and immediately.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

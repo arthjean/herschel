@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Named cooling profiles and the validation every value passes before it can
 //! reach the daemon.
 //!

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! One writer per device, and honest reporting when that cannot be guaranteed.
 //!
 //! Ownership is an advisory `flock` on a per-device file plus an inspection of

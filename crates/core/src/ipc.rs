@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The typed protocol spoken over the daemon's Unix socket.
 //!
 //! Framing is newline-delimited JSON with a hard length ceiling applied on both

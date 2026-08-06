@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The circular LCD preview, painted rather than composed from boxes.
 //!
 //! The Kraken panel is round, so the preview is round. It is drawn from the

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The daemon's authoritative state and the handler for every typed request.
 //!
 //! One instance owns the capability record, the per-device locks and the

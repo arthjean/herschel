@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! A network client that refuses every request.
 //!
 //! GPUI depends on an HTTP client crate unconditionally and hands one to the

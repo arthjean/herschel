@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Bounded, redacted diagnostics.
 //!
 //! The log is an in-memory ring buffer: it never grows without bound and never

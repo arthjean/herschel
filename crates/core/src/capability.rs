@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Evidence-backed description of what an allowlisted device actually exposes.
 //!
 //! Every field is either observed on the running machine or explicitly

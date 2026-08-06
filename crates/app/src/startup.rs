@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Launch preflight and startup instrumentation.
 //!
 //! GPUI initialises a display backend before any of this crate's code runs, so

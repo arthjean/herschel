@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Centralised design tokens.
 //!
 //! Every colour, size and font used by a component comes from here, so the

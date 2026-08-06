@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Schema-versioned local configuration with atomic writes and recovery.
 //!
 //! A save is a write to a temporary file, an `fsync`, then a `rename`. The

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The local Unix socket server.
 //!
 //! One listener, owner-only permissions, no TCP or UDP endpoint anywhere. Each

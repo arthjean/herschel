@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! USB enumeration through sysfs.
 //!
 //! sysfs already exposes every identity field the capability record needs, so

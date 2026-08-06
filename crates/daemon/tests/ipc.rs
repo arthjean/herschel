@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Arthur Jean
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! End-to-end tests over a real Unix socket.
