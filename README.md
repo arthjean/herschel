@@ -1,101 +1,101 @@
 # NZXT Control Linux
 
-Application Linux native et open source pour monitorer et contrôler du matériel NZXT.
+Native open source Linux application to monitor and control NZXT hardware.
 
-> État : fondation implémentée (EP-001), en revue. Le daemon détecte les deux appareils, expose un socket Unix typé et l'interface GPUI affiche l'état réel. Aucune écriture matérielle n'est encore implémentée. Nom technique provisoire. Ce projet n'est ni affilié à NZXT, ni approuvé par NZXT.
+> Status: foundation implemented (EP-001), in review. The daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. No hardware write is implemented yet. Working technical name. This project is neither affiliated with nor endorsed by NZXT.
 
-## Empreinte mesurée
+## Measured footprint
 
-| Mesure | Constaté | Budget PRD v1.2 |
+| Measurement | Observed | PRD v1.2 budget |
 |---|---|---|
-| Démarrage à froid, médiane sur 5 lancements | 327 ms | ≤ 700 ms |
-| `RssAnon` au repos, mémoire allouée par le processus | 81,3 MiB | ≤ 110 MiB |
-| `VmRSS` total au repos | 253,2 MiB | ≤ 320 MiB |
-| CPU au repos, moyenne sur 5 min | 1,10 % | ≤ 1,5 % |
+| Cold start, median over 5 launches | 327 ms | ≤ 700 ms |
+| `RssAnon` at idle, memory allocated by the process | 81.3 MiB | ≤ 110 MiB |
+| Total `VmRSS` at idle | 253.2 MiB | ≤ 320 MiB |
+| CPU at idle, 5 min average | 1.10% | ≤ 1.5% |
 
-Le `VmRSS` total est dominé par les mappings du pilote graphique et du compilateur de shaders liés par GPUI, partagés avec les autres clients GPU de la machine : une fenêtre GPUI vide en occupe 288,1 MiB. C'est un plafond de non-régression, pas une cible d'optimisation. La métrique que le projet pilote est `RssAnon`. Décomposition complète dans [`docs/ep-001-evidence.md`](./docs/ep-001-evidence.md).
+Total `VmRSS` is dominated by the graphics driver and shader compiler mappings linked in by GPUI, shared with the other GPU clients on the machine: an empty GPUI window accounts for 288.1 MiB of it. This is a non-regression ceiling, not an optimisation target. The metric the project steers by is `RssAnon`. Full breakdown in [`docs/ep-001-evidence.md`](./docs/ep-001-evidence.md).
 
-## Intention
+## Intent
 
-Construire une application desktop légère avec Rust et GPUI, centrée uniquement sur les tâches matérielles utiles :
+Build a lightweight desktop application with Rust and GPUI, focused solely on the hardware tasks that matter:
 
-- monitoring CPU, GPU, RAM et Kraken ;
-- contrôle de la pompe, du ventilateur et des courbes thermiques ;
-- contrôle du RGB par canal ;
-- configuration et rendu du LCD Kraken.
+- CPU, GPU, RAM and Kraken monitoring;
+- pump, fan and thermal curve control;
+- per-channel RGB control;
+- Kraken LCD configuration and rendering.
 
-Le produit reprend la densité opérationnelle et la sobriété visuelle de NZXT CAM, avec une identité, des composants et des assets originaux.
+The product takes the operational density and visual restraint of NZXT CAM, with an original identity, original components and original assets.
 
-## Principes
+## Principles
 
-- Interface GPUI native, sans HTML, JavaScript, WebView ou moteur de navigateur.
-- Fonctionnement local, sans compte, cloud, télémétrie ou service réseau.
-- Linux `hwmon` prioritaire pour le chemin thermique.
-- Accès HID/USB direct limité aux capacités RGB et LCD validées.
-- Un daemon utilisateur unique possède les écritures matérielles.
-- Aucun accès spéculatif à un modèle ou firmware non validé.
-- Le GUI et le daemon ne tournent pas en root.
+- Native GPUI interface, with no HTML, JavaScript, WebView or browser engine.
+- Local operation, with no account, cloud, telemetry or network service.
+- Linux `hwmon` first for the thermal path.
+- Direct HID/USB access limited to validated RGB and LCD capabilities.
+- A single user daemon owns hardware writes.
+- No speculative access to an unvalidated model or firmware.
+- Neither the GUI nor the daemon runs as root.
 
-## Cible initiale
+## Initial target
 
-Environnement de développement vérifié :
+Verified development environment:
 
-| Élément | Valeur |
+| Item | Value |
 |---|---|
 | Distribution | Fedora 44 |
 | Kernel | `7.1.6-201.fc44.x86_64` |
-| Toolchain de build | Rust 1.97.1, édition 2024 (`rust-toolchain.toml`) |
-| Rust minimum supporté | 1.90, vérifié par compilation |
+| Build toolchain | Rust 1.97.1, 2024 edition (`rust-toolchain.toml`) |
+| Minimum supported Rust | 1.90, verified by compilation |
 | Kraken | `1e71:300e` NZXT Kraken Base, `bcdDevice` 0200 |
 | RGB | `1e71:2021` NZXT RGB Controller, `bcdDevice` 0105 |
-| Driver thermique | `kraken2023` sur l'interface HID 1 |
+| Thermal driver | `kraken2023` on HID interface 1 |
 
-Le driver expose la température liquide, deux canaux RPM/PWM et 40 points de courbe par canal. Le Kraken expose en plus une interface 0 de classe `0xff` sans driver noyau : c'est le candidat pour le transport LCD, à valider par US-016. Les capacités RGB et LCD restent bloquées jusqu'à validation de leur protocole sur le matériel réel.
+The driver exposes liquid temperature, two RPM/PWM channels and 40 curve points per channel. The Kraken also exposes a class `0xff` interface 0 with no kernel driver: that is the candidate for the LCD transport, to be validated by US-016. The RGB and LCD capabilities stay blocked until their protocol is validated on the real hardware.
 
-Les capacités observées sont enregistrées dans [`docs/capability-record.json`](./docs/capability-record.json), numéros de série expurgés.
+Observed capabilities are recorded in [`docs/capability-record.json`](./docs/capability-record.json), with serial numbers redacted.
 
 ## Architecture
 
 ```text
 crates/
-├── app             GPUI, écrans, contrôles natifs et fil de données du client
-├── daemon          propriété des appareils, échantillonnage, écritures et IPC Unix
-├── core            capacités, télémétrie, profils, protocole IPC et diagnostics
-└── hardware-linux  sysfs, hwmon, capteurs système et l'unique chemin d'écriture
+├── app             GPUI, screens, native controls and the client data feed
+├── daemon          device ownership, sampling, writes and Unix IPC
+├── core            capabilities, telemetry, profiles, IPC protocol and diagnostics
+└── hardware-linux  sysfs, hwmon, system sensors and the single write path
 ```
 
-Le crate `lcd-renderer` (`DisplayPreset` et framebuffer exact) arrivera avec EP-004, quand le transport LCD sera prouvé sur `1e71:300e`. Il n'est pas créé à vide : un module que rien n'appelle n'est pas une fondation.
+The `lcd-renderer` crate (`DisplayPreset` and the exact framebuffer) will arrive with EP-004, once the LCD transport is proven on `1e71:300e`. It is not created empty: a module nothing calls is not a foundation.
 
-Le chemin thermique passe intégralement par le driver `kraken2023` : aucun driver noyau n'est détaché et aucun endpoint USB n'est ouvert pour la partie thermique. La télémétrie ne fait que lire, et trois collecteurs indépendants (Kraken, CPU/mémoire, GPU) échantillonnent en parallèle pour qu'un capteur en panne n'arrête pas les autres. Les métriques GPU passent par NVML, chargé dynamiquement : sans pilote NVIDIA, le GPU est simplement indisponible.
+The thermal path goes entirely through the `kraken2023` driver: no kernel driver is detached and no USB endpoint is opened for the thermal side. Telemetry only reads, and three independent collectors (Kraken, CPU/memory, GPU) sample in parallel so that one failing sensor does not stop the others. GPU metrics go through NVML, loaded dynamically: without an NVIDIA driver, the GPU is simply unavailable.
 
-Le daemon reste indépendant de la fenêtre afin de sérialiser les commandes, détecter les writers concurrents et restaurer un profil compatible après reconnexion ou reprise de veille.
+The daemon stays independent from the window in order to serialise commands, detect concurrent writers and restore a compatible profile after reconnection or resume from sleep.
 
-## Utilisation
+## Usage
 
 ```bash
 cargo build --release
 
-# Enregistrer les capacités réelles de la machine (lecture seule, sans socket).
+# Record the real capabilities of the machine (read only, no socket).
 ./target/release/nzxt-controld --capabilities > docs/capability-record.json
 
-# Démarrer le service, puis l'interface.
+# Start the service, then the interface.
 ./target/release/nzxt-controld &
 ./target/release/nzxt-control
 ```
 
-Le daemon refuse de démarrer en root. Sans règle udev, les attributs `hwmon` restent en lecture seule et l'application le signale explicitement au lieu d'échouer silencieusement.
+The daemon refuses to start as root. Without a udev rule, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
 
-Variables d'environnement lues :
+Environment variables read:
 
-| Variable | Rôle |
+| Variable | Role |
 |---|---|
-| `NZXT_CONTROL_SOCKET` | Chemin du socket Unix |
-| `NZXT_CONTROL_CONFIG_DIR` | Répertoire de configuration |
-| `NZXT_CONTROL_RUNTIME_DIR` | Répertoire des verrous et du socket |
-| `NZXT_SYSFS_ROOT` | Racine sysfs, pour les tests sur arborescence factice |
-| `NZXT_PROC_ROOT` | Racine `/proc`, pour les mêmes tests |
-| `NZXT_STARTUP_TRACE` | Affiche le délai jusqu'à la première frame |
-| `NZXT_EXIT_AFTER_FIRST_FRAME` | Quitte après la première frame, pour mesurer le démarrage |
+| `NZXT_CONTROL_SOCKET` | Unix socket path |
+| `NZXT_CONTROL_CONFIG_DIR` | Configuration directory |
+| `NZXT_CONTROL_RUNTIME_DIR` | Lock and socket directory |
+| `NZXT_SYSFS_ROOT` | sysfs root, for tests against a fake tree |
+| `NZXT_PROC_ROOT` | `/proc` root, for the same tests |
+| `NZXT_STARTUP_TRACE` | Prints the delay to the first frame |
+| `NZXT_EXIT_AFTER_FIRST_FRAME` | Exits after the first frame, to measure startup |
 
 ## Validation
 
@@ -106,30 +106,30 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## Périmètre v1
+## v1 scope
 
-L'application contient quatre destinations principales :
+The application holds four primary destinations:
 
 1. Monitoring
 2. Cooling
 3. Lighting
 4. LCD
 
-Sont explicitement hors périmètre : Web Integrations, cloud, comptes, mises à jour firmware, API distante, périphériques NZXT non validés et contrôle de matériel non-NZXT.
+Explicitly out of scope: Web Integrations, cloud, accounts, firmware updates, remote API, unvalidated NZXT devices and non-NZXT hardware control.
 
-## Plan produit
+## Product plan
 
-- [PRD complet](./tasks/prd-native-nzxt-hardware-control.md)
-- [Suivi des epics et stories](./tasks/prd-native-nzxt-hardware-control-status.json)
+- [Full PRD](./tasks/prd-native-nzxt-hardware-control.md)
+- [Epic and story tracking](./tasks/prd-native-nzxt-hardware-control-status.json)
 
-La première story valide GPUI sous Wayland et X11 avec un écran LCD représentatif, puis mesure le démarrage, la mémoire, le CPU, le focus clavier et le scaling avant d'étendre l'interface.
+The first story validates GPUI under Wayland and X11 with a representative LCD screen, then measures startup, memory, CPU, keyboard focus and scaling before extending the interface.
 
-## Recherche
+## Research
 
-L'[exploration initiale de GitHub NZXT et de l'écosystème Linux](./nzxt-linux-github-research.md) est conservée comme historique de décision. Sa recommandation initiale de runtime Web Integrations a été remplacée par le PRD hardware-only.
+The [initial exploration of the NZXT GitHub organisation and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
 
 ## Licence
 
-[GPL-3.0-or-later](./LICENSE). Aucun code externe n'est importé avant vérification de sa licence et de sa compatibilité.
+[GPL-3.0-or-later](./LICENSE). No external code is imported before its licence and its compatibility have been verified.
 
-L'inventaire des dépendances et l'audit de compatibilité restent dus avant toute distribution de paquet (US-020).
+The dependency inventory and the compatibility audit are still due before any package distribution (US-020).
