@@ -1,0 +1,415 @@
+//! Bounded, redacted diagnostics.
+//!
+//! The log is an in-memory ring buffer: it never grows without bound and never
+//! reaches disk on its own. An export carries only what this module builds, so
+//! it cannot pick up credentials, environment variables, unrelated files or
+//! network data by accident.
+
+use std::collections::VecDeque;
+
+use serde::{Deserialize, Serialize};
+
+use crate::DeviceId;
+use crate::capability::{CapabilityId, CapabilityRecord};
+use crate::ipc::{HardwareState, IpcError};
+
+/// Bumped whenever [`DiagnosticsExport`] changes shape.
+pub const DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
+
+/// Events retained in memory. Older events are dropped first.
+pub const DEFAULT_CAPACITY: usize = 512;
+
+/// Text substituted for anything the redactor recognises as sensitive.
+pub const REDACTION_PLACEHOLDER: &str = "[redacted]";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+/// A state transition or typed failure worth keeping.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum EventKind {
+    DaemonStarted {
+        version: String,
+        socket_path: String,
+    },
+    DaemonStopping {
+        reason: String,
+    },
+    DeviceDiscovered {
+        device: DeviceId,
+        sysfs_path: String,
+    },
+    DeviceRejected {
+        device: DeviceId,
+        reason: String,
+    },
+    CapabilityResolved {
+        device: DeviceId,
+        capability: CapabilityId,
+        state: String,
+    },
+    OwnershipAcquired {
+        device: DeviceId,
+        lock_path: String,
+    },
+    OwnershipConflict {
+        device: Option<DeviceId>,
+        resource: String,
+        detail: String,
+    },
+    AccessModeChanged {
+        read_only: bool,
+        reason: String,
+    },
+    ClientAccepted {
+        uid: u32,
+        pid: i32,
+    },
+    ClientRejected {
+        reason: String,
+    },
+    ClientDisconnected {
+        detail: String,
+    },
+    RequestRejected {
+        error: IpcError,
+    },
+    ProfileActivated {
+        name: String,
+        hardware: HardwareState,
+    },
+    ProfileSaved {
+        name: String,
+    },
+    ProfileDeleted {
+        name: String,
+    },
+    ConfigLoaded {
+        path: String,
+    },
+    ConfigRecovered {
+        detail: String,
+        preserved_path: String,
+    },
+}
+
+impl EventKind {
+    pub fn severity(&self) -> Severity {
+        match self {
+            Self::DeviceRejected { .. }
+            | Self::OwnershipConflict { .. }
+            | Self::ClientRejected { .. }
+            | Self::RequestRejected { .. }
+            | Self::ConfigRecovered { .. } => Severity::Warning,
+            Self::AccessModeChanged { read_only, .. } => {
+                if *read_only {
+                    Severity::Warning
+                } else {
+                    Severity::Info
+                }
+            }
+            _ => Severity::Info,
+        }
+    }
+}
+
+/// One timestamped entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticEvent {
+    pub at_unix_ms: u64,
+    pub severity: Severity,
+    #[serde(flatten)]
+    pub kind: EventKind,
+}
+
+/// Replaces known secrets wherever they appear in free text.
+///
+/// USB serial numbers are the only secrets this product handles, and they are
+/// redacted by default rather than on request.
+#[derive(Debug, Clone, Default)]
+pub struct Redactor {
+    secrets: Vec<String>,
+}
+
+impl Redactor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a value that must never appear in an export.
+    ///
+    /// Very short values are ignored: redacting them would corrupt unrelated
+    /// text without protecting anything.
+    pub fn add_secret(&mut self, secret: impl Into<String>) {
+        let secret = secret.into();
+        if secret.len() >= 4 && !self.secrets.contains(&secret) {
+            self.secrets.push(secret);
+        }
+    }
+
+    pub fn redact(&self, text: &str) -> String {
+        let mut output = text.to_string();
+        for secret in &self.secrets {
+            if output.contains(secret.as_str()) {
+                output = output.replace(secret.as_str(), REDACTION_PLACEHOLDER);
+            }
+        }
+        output
+    }
+
+    fn redact_json(&self, value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(text) => {
+                let redacted = self.redact(text);
+                if &redacted != text {
+                    *text = redacted;
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.redact_json(item);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (_, item) in map.iter_mut() {
+                    self.redact_json(item);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bounded in-memory event log.
+#[derive(Debug, Clone)]
+pub struct DiagnosticsLog {
+    events: VecDeque<DiagnosticEvent>,
+    capacity: usize,
+    redactor: Redactor,
+}
+
+impl Default for DiagnosticsLog {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_CAPACITY)
+    }
+}
+
+impl DiagnosticsLog {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.min(DEFAULT_CAPACITY)),
+            capacity: capacity.max(1),
+            redactor: Redactor::new(),
+        }
+    }
+
+    /// Register a secret to strip from every future export.
+    pub fn add_secret(&mut self, secret: impl Into<String>) {
+        self.redactor.add_secret(secret);
+    }
+
+    pub fn record(&mut self, at_unix_ms: u64, kind: EventKind) {
+        let event = DiagnosticEvent {
+            at_unix_ms,
+            severity: kind.severity(),
+            kind,
+        };
+        if self.events.len() == self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub fn events(&self) -> impl Iterator<Item = &DiagnosticEvent> {
+        self.events.iter()
+    }
+
+    /// Build an export with serials redacted from both the capability record
+    /// and every free-text field.
+    pub fn export(
+        &self,
+        generated_at_unix_ms: u64,
+        daemon_version: impl Into<String>,
+        capabilities: Option<CapabilityRecord>,
+    ) -> DiagnosticsExport {
+        let capabilities = capabilities.map(|mut record| {
+            record.redact_serials();
+            record
+        });
+
+        let mut events = Vec::with_capacity(self.events.len());
+        for event in &self.events {
+            match serde_json::to_value(event) {
+                Ok(mut value) => {
+                    self.redactor.redact_json(&mut value);
+                    match serde_json::from_value(value) {
+                        Ok(redacted) => events.push(redacted),
+                        Err(_) => events.push(event.clone()),
+                    }
+                }
+                Err(_) => events.push(event.clone()),
+            }
+        }
+
+        DiagnosticsExport {
+            schema_version: DIAGNOSTICS_SCHEMA_VERSION,
+            generated_at_unix_ms,
+            daemon_version: daemon_version.into(),
+            capabilities,
+            events,
+        }
+    }
+}
+
+/// The complete payload of an export action.
+///
+/// Every field is built from values this crate owns. Nothing walks the home
+/// directory, reads the environment or touches the network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticsExport {
+    pub schema_version: u32,
+    pub generated_at_unix_ms: u64,
+    pub daemon_version: String,
+    pub capabilities: Option<CapabilityRecord>,
+    pub events: Vec<DiagnosticEvent>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::KRAKEN_BASE;
+    use crate::capability::{
+        CAPABILITY_SCHEMA_VERSION, CapabilityRecord, DeviceRecord, Evidenced, ProbeContext,
+        SupportState, UsbIdentity,
+    };
+
+    /// Synthetic: a serial identifies one physical unit, so a real one has no
+    /// place in a test that exists to prove serials never escape.
+    const SERIAL: &str = "F1XTURE0000000000000000000KRAKEN";
+
+    fn record_with_serial() -> CapabilityRecord {
+        CapabilityRecord {
+            schema_version: CAPABILITY_SCHEMA_VERSION,
+            context: ProbeContext {
+                kernel_release: Evidenced::known("7.1.6".into(), "uname"),
+                probed_at_unix_ms: 10,
+            },
+            devices: vec![DeviceRecord {
+                support: SupportState::Supported,
+                usb: UsbIdentity {
+                    id: KRAKEN_BASE,
+                    manufacturer: Evidenced::known("NZXT Inc.".into(), "sysfs"),
+                    product: Evidenced::known("NZXT Kraken Base".into(), "sysfs"),
+                    serial: Evidenced::known(SERIAL.into(), "sysfs"),
+                    firmware: Evidenced::known("0200".into(), "sysfs"),
+                    sysfs_path: "/sys/bus/usb/devices/1-9".into(),
+                },
+                interfaces: vec![],
+                hwmon: None,
+                capabilities: vec![],
+            }],
+            rejected: vec![],
+        }
+    }
+
+    #[test]
+    fn log_is_bounded_and_drops_oldest_first() {
+        let mut log = DiagnosticsLog::with_capacity(3);
+        for i in 0..10 {
+            log.record(
+                i,
+                EventKind::ProfileSaved {
+                    name: format!("p{i}"),
+                },
+            );
+        }
+        assert_eq!(log.len(), 3);
+        assert_eq!(log.events().next().unwrap().at_unix_ms, 7);
+    }
+
+    #[test]
+    fn export_redacts_serials_from_the_capability_record() {
+        let log = DiagnosticsLog::default();
+        let export = log.export(1, "0.1.0", Some(record_with_serial()));
+        let json = serde_json::to_string(&export).unwrap();
+        assert!(!json.contains(SERIAL), "{json}");
+    }
+
+    #[test]
+    fn export_redacts_secrets_from_free_text_events() {
+        let mut log = DiagnosticsLog::default();
+        log.add_secret(SERIAL);
+        log.record(
+            1,
+            EventKind::OwnershipConflict {
+                device: Some(KRAKEN_BASE),
+                resource: format!("/dev/serial/by-id/usb-NZXT_{SERIAL}"),
+                detail: format!("held by another process for {SERIAL}"),
+            },
+        );
+
+        let export = log.export(2, "0.1.0", None);
+        let json = serde_json::to_string(&export).unwrap();
+        assert!(!json.contains(SERIAL), "{json}");
+        assert!(json.contains(REDACTION_PLACEHOLDER), "{json}");
+    }
+
+    #[test]
+    fn export_contains_only_declared_fields() {
+        let mut log = DiagnosticsLog::default();
+        log.record(
+            1,
+            EventKind::DaemonStarted {
+                version: "0.1.0".into(),
+                socket_path: "/run/user/1000/nzxt-control.sock".into(),
+            },
+        );
+        let export = log.export(2, "0.1.0", None);
+        let value = serde_json::to_value(&export).unwrap();
+        let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "capabilities",
+                "daemon_version",
+                "events",
+                "generated_at_unix_ms",
+                "schema_version"
+            ]
+        );
+    }
+
+    #[test]
+    fn short_values_are_not_registered_as_secrets() {
+        let mut redactor = Redactor::new();
+        redactor.add_secret("ab");
+        assert_eq!(redactor.redact("a table"), "a table");
+    }
+
+    #[test]
+    fn rejected_requests_are_recorded_as_warnings() {
+        let mut log = DiagnosticsLog::default();
+        log.record(
+            1,
+            EventKind::RequestRejected {
+                error: IpcError::NoDevice,
+            },
+        );
+        assert_eq!(log.events().next().unwrap().severity, Severity::Warning);
+    }
+}
