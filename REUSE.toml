@@ -7,7 +7,7 @@ version = 1
 #
 # "closest" rather than "aggregate": a file that already declares its own
 # licensing keeps it, and this table only fills the gaps. Aggregating would
-# staple a second, identical copyright line onto all twenty-nine sources.
+# staple a second, identical copyright line onto every Rust source.
 #
 # The licence text is not annotated here. It is the Free Software Foundation's
 # work rather than this project's, and REUSE already excludes both LICENSES/

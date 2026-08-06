@@ -58,13 +58,15 @@ Les capacités observées sont enregistrées dans [`docs/capability-record.json`
 
 ```text
 crates/
-├── app             GPUI, écrans et contrôles natifs
-├── daemon          propriété des appareils, commandes et IPC Unix
-├── core            capacités, profils, protocole IPC et diagnostics
-└── hardware-linux  découverte sysfs, hwmon et permissions (lecture seule)
+├── app             GPUI, écrans, contrôles natifs et fil de données du client
+├── daemon          propriété des appareils, échantillonnage, écritures et IPC Unix
+├── core            capacités, télémétrie, profils, protocole IPC et diagnostics
+└── hardware-linux  sysfs, hwmon, capteurs système et l'unique chemin d'écriture
 ```
 
-Le crate `lcd-renderer` (`DisplayPreset` et framebuffer exact) arrivera avec EP-004, quand le transport LCD sera prouvé sur `1e71:300e`. Le module de télémétrie de `core` arrivera avec EP-002. Aucun des deux n'est créé à vide : un module que rien n'appelle n'est pas une fondation.
+Le crate `lcd-renderer` (`DisplayPreset` et framebuffer exact) arrivera avec EP-004, quand le transport LCD sera prouvé sur `1e71:300e`. Il n'est pas créé à vide : un module que rien n'appelle n'est pas une fondation.
+
+Le chemin thermique passe intégralement par le driver `kraken2023` : aucun driver noyau n'est détaché et aucun endpoint USB n'est ouvert pour la partie thermique. La télémétrie ne fait que lire, et trois collecteurs indépendants (Kraken, CPU/mémoire, GPU) échantillonnent en parallèle pour qu'un capteur en panne n'arrête pas les autres. Les métriques GPU passent par NVML, chargé dynamiquement : sans pilote NVIDIA, le GPU est simplement indisponible.
 
 Le daemon reste indépendant de la fenêtre afin de sérialiser les commandes, détecter les writers concurrents et restaurer un profil compatible après reconnexion ou reprise de veille.
 
@@ -91,6 +93,7 @@ Variables d'environnement lues :
 | `NZXT_CONTROL_CONFIG_DIR` | Répertoire de configuration |
 | `NZXT_CONTROL_RUNTIME_DIR` | Répertoire des verrous et du socket |
 | `NZXT_SYSFS_ROOT` | Racine sysfs, pour les tests sur arborescence factice |
+| `NZXT_PROC_ROOT` | Racine `/proc`, pour les mêmes tests |
 | `NZXT_STARTUP_TRACE` | Affiche le délai jusqu'à la première frame |
 | `NZXT_EXIT_AFTER_FIRST_FRAME` | Quitte après la première frame, pour mesurer le démarrage |
 
