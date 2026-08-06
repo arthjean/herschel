@@ -234,7 +234,13 @@ fn read_document(path: &Path) -> Result<Option<ConfigDocument>, ConfigError> {
     let document: ConfigDocument =
         toml::from_str(&raw).map_err(|error| ConfigError::Parse(error.to_string()))?;
 
-    if document.schema_version != CONFIG_SCHEMA_VERSION {
+    // An older schema is read, not refused. Every version so far has only
+    // added optional fields, so a file written by an earlier build parses
+    // exactly as it stands and the next save rewrites it at the current
+    // version. A version this build has never seen is a different question: it
+    // may carry fields whose meaning is unknown, so it goes to recovery rather
+    // than being interpreted. Both directions preserve the operator's file.
+    if document.schema_version > CONFIG_SCHEMA_VERSION || document.schema_version == 0 {
         return Err(ConfigError::UnsupportedSchema {
             found: document.schema_version,
             supported: CONFIG_SCHEMA_VERSION,
@@ -347,6 +353,7 @@ mod tests {
             name: name.to_string(),
             program: CoolingProgram::Fixed { pump: 128, fan: 90 },
             device: None,
+            lighting: Vec::new(),
         }
     }
 
@@ -403,6 +410,7 @@ mod tests {
                 fan: curve.clone(),
             },
             device: Some(nzxt_core::KRAKEN_BASE),
+            lighting: Vec::new(),
         };
 
         for _ in 0..100 {
@@ -453,6 +461,67 @@ mod tests {
     }
 
     #[test]
+    fn a_file_from_an_earlier_schema_is_migrated_rather_than_orphaned() {
+        let temp = TempConfig::new("earlier-schema");
+        // Exactly what the schema-1 build wrote: no lighting section at all.
+        std::fs::write(
+            temp.file(),
+            "schema_version = 1\n\
+             active_profile = \"Silent\"\n\n\
+             [[profiles]]\n\
+             name = \"Silent\"\n\n\
+             [profiles.program]\n\
+             mode = \"fixed\"\n\
+             pump = 120\n\
+             fan = 80\n",
+        )
+        .unwrap();
+
+        let mut config = Configuration::load(temp.file());
+        assert_eq!(
+            config.state(),
+            &ConfigState::Loaded,
+            "an added optional field must not orphan an operator's profiles"
+        );
+        let active = config.active_profile();
+        assert_eq!(active.name, "Silent");
+        assert!(active.lighting.is_empty());
+
+        // The next save rewrites it at the current version.
+        config
+            .save_profile(Profile {
+                name: "Loud".into(),
+                program: CoolingProgram::Fixed {
+                    pump: 200,
+                    fan: 200,
+                },
+                device: None,
+                lighting: Vec::new(),
+            })
+            .unwrap();
+        let rewritten = std::fs::read_to_string(temp.file()).unwrap();
+        assert!(
+            rewritten.contains(&format!("schema_version = {CONFIG_SCHEMA_VERSION}")),
+            "{rewritten}"
+        );
+        assert!(Configuration::load(temp.file()).profile("Silent").is_some());
+    }
+
+    #[test]
+    fn a_file_declaring_no_schema_at_all_is_a_recovery_case() {
+        let temp = TempConfig::new("zero-schema");
+        std::fs::write(
+            temp.file(),
+            "schema_version = 0\nactive_profile = \"Onboard safe\"\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            Configuration::load(temp.file()).state(),
+            ConfigState::Recovered { .. }
+        ));
+    }
+
+    #[test]
     fn a_profile_with_invalid_values_is_rejected_on_load() {
         let temp = TempConfig::new("invalid-values");
         std::fs::write(
@@ -499,6 +568,7 @@ fan = 90
                 name: "  ".into(),
                 program: CoolingProgram::Onboard,
                 device: None,
+                lighting: Vec::new(),
             })
             .unwrap_err();
 
