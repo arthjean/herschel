@@ -5,16 +5,21 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Read-only sysfs, hwmon and USB capability discovery for allowlisted NZXT devices"
+description = "sysfs, hwmon and USB access for allowlisted NZXT devices, and the local system sensors"
 
 [features]
 # Exposes the fake sysfs fixture to other crates' tests.
 testing = []
 
 [dependencies]
+# Loads `libnvidia-ml.so.1` at runtime instead of linking it, so a machine
+# without the NVIDIA driver still builds and reports the GPU as unavailable.
+# MIT OR Apache-2.0, compatible with the project's GPL-3.0-or-later.
+nvml-wrapper = "0.12"
 nzxt-core.workspace = true
 rustix.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

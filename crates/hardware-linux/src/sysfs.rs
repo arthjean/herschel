@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use nzxt_core::telemetry::{Reading, Unavailable};
 use rustix::fs::{Access, access};
 
 /// Environment variable that relocates the sysfs root.
@@ -73,6 +74,52 @@ pub fn read_attribute(path: &Path) -> Option<String> {
         None
     } else {
         Some(trimmed)
+    }
+}
+
+/// Read an attribute, distinguishing an absent file from an unreadable one.
+///
+/// [`read_attribute`] collapses both into `None`, which is enough for a probe
+/// that only records what exists. A telemetry sample has to say *why* a value
+/// is missing, because "the driver does not expose this" and "permission was
+/// revoked" call for different operator actions.
+pub fn read_attribute_detailed(path: &Path) -> Result<String, Unavailable> {
+    let raw = std::fs::read(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            Unavailable::absent(format!("{} does not exist.", path.display()))
+        }
+        _ => Unavailable::unreadable(format!("{} could not be read: {error}", path.display())),
+    })?;
+
+    let text = String::from_utf8(raw)
+        .map_err(|_| Unavailable::unparsable(format!("{} is not valid UTF-8.", path.display())))?;
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(Unavailable::unparsable(format!(
+            "{} is empty.",
+            path.display()
+        )));
+    }
+    Ok(trimmed)
+}
+
+/// Read an attribute and parse it, keeping the failure typed.
+pub fn read_parsed<T: std::str::FromStr>(path: &Path) -> Result<T, Unavailable> {
+    let text = read_attribute_detailed(path)?;
+    text.parse().map_err(|_| {
+        Unavailable::unparsable(format!(
+            "{} holds {text:?}, which is not a {}.",
+            path.display(),
+            std::any::type_name::<T>()
+        ))
+    })
+}
+
+/// The same read, as a [`Reading`] rather than a `Result`.
+pub fn reading<T: std::str::FromStr>(path: &Path) -> Reading<T> {
+    match read_parsed(path) {
+        Ok(value) => Reading::valid(value),
+        Err(cause) => Reading::unavailable(cause),
     }
 }
 

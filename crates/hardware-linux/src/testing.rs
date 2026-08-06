@@ -164,9 +164,12 @@ impl FakeSysfs {
             Self::write_mode(&hwmon.join(format!("pwm{channel}")), "255", 0o444);
             Self::write_mode(&hwmon.join(format!("pwm{channel}_enable")), "0", 0o444);
             for point in 1..=40 {
+                // Write-only on the real driver (`--w-------`), so an
+                // unprivileged user has neither read nor write until a udev
+                // rule grants one.
                 Self::write_mode(
                     &hwmon.join(format!("temp{channel}_auto_point{point}_pwm")),
-                    "",
+                    "0",
                     0o000,
                 );
             }
@@ -179,10 +182,14 @@ impl FakeSysfs {
 
     /// A hwmon instance from another driver, which must not be attributed to
     /// an NZXT device.
+    ///
+    /// Deliberately not a CPU driver: the CPU temperature collector recognises
+    /// a fixed set of driver names, and a fixture that accidentally matched
+    /// one would make an "no CPU sensor here" test pass for the wrong reason.
     pub fn add_unrelated_hwmon(&self) -> PathBuf {
-        let hwmon = self.base.join("sys/devices/platform/k10temp/hwmon/hwmon5");
+        let hwmon = self.base.join("sys/devices/platform/nvme0/hwmon/hwmon5");
         fs::create_dir_all(&hwmon).unwrap();
-        Self::write_mode(&hwmon.join("name"), "k10temp", 0o444);
+        Self::write_mode(&hwmon.join("name"), "nvme", 0o444);
         Self::write_mode(&hwmon.join("temp1_input"), "42000", 0o444);
         symlink(
             hwmon.parent().unwrap().parent().unwrap(),
@@ -191,6 +198,51 @@ impl FakeSysfs {
         .unwrap();
         symlink(&hwmon, self.base.join("sys/class/hwmon/hwmon5")).unwrap();
         hwmon
+    }
+
+    /// The `k10temp` instance the CPU temperature collector reads.
+    pub fn add_cpu_hwmon(&self) -> PathBuf {
+        let hwmon = self.base.join("sys/devices/platform/k10temp/hwmon/hwmon6");
+        fs::create_dir_all(&hwmon).unwrap();
+        Self::write_mode(&hwmon.join("name"), "k10temp", 0o444);
+        Self::write_mode(&hwmon.join("temp1_label"), "Tctl", 0o444);
+        Self::write_mode(&hwmon.join("temp1_input"), "46750", 0o444);
+        symlink(
+            hwmon.parent().unwrap().parent().unwrap(),
+            hwmon.join("device"),
+        )
+        .unwrap();
+        let link = self.base.join("sys/class/hwmon/hwmon6");
+        let _ = fs::remove_file(&link);
+        symlink(&hwmon, link).unwrap();
+        hwmon
+    }
+
+    /// A `/proc` tree with the two files the system collectors read.
+    ///
+    /// Counters start at zero so a test controls every delta explicitly.
+    pub fn add_proc(&self) -> PathBuf {
+        let proc_root = self.base.join("proc");
+        fs::create_dir_all(&proc_root).unwrap();
+        self.set_proc_stat(&proc_root, 0, 0);
+        self.set_proc_meminfo(
+            &proc_root,
+            "MemTotal:       31979068 kB\nMemFree:         1110612 kB\nMemAvailable:   21489412 kB\n",
+        );
+        proc_root
+    }
+
+    /// Rewrite `/proc/stat` with cumulative busy and idle tick counters.
+    pub fn set_proc_stat(&self, proc_root: &Path, busy: u64, idle: u64) {
+        fs::write(
+            proc_root.join("stat"),
+            format!("cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\ncpu0 {busy} 0 0 {idle} 0 0 0 0 0 0\n"),
+        )
+        .unwrap();
+    }
+
+    pub fn set_proc_meminfo(&self, proc_root: &Path, contents: &str) {
+        fs::write(proc_root.join("meminfo"), contents).unwrap();
     }
 
     /// Grant write permission on a hwmon attribute, simulating a udev rule.
@@ -207,6 +259,45 @@ impl FakeSysfs {
     /// Remove an attribute to simulate a device that does not expose it.
     pub fn remove_attribute(&self, device: &Path, attribute: &str) {
         let _ = fs::remove_file(device.join(attribute));
+    }
+
+    /// Rewrite a reading the driver publishes read-only.
+    ///
+    /// The fixture mirrors the kernel's permissions, so a test that needs a
+    /// stalled tachometer or a hot coolant lifts the mode for the write and
+    /// puts it back. Production code still cannot write these files.
+    pub fn set_reading(&self, hwmon: &Path, attribute: &str, value: &str) {
+        let path = hwmon.join(attribute);
+        let previous = fs::metadata(&path)
+            .map(|metadata| metadata.permissions().mode() & 0o777)
+            .unwrap_or(0o444);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&path, format!("{value}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(previous)).unwrap();
+    }
+
+    /// Read an attribute the fixture deliberately keeps unreadable.
+    ///
+    /// The curve points mirror the kernel's `--w-------` mode, so production
+    /// code genuinely cannot read them back. A test still has to check what
+    /// was written, so it lifts the mode for the read and puts it back.
+    pub fn written_value(&self, hwmon: &Path, attribute: &str) -> Option<String> {
+        let path = hwmon.join(attribute);
+        let previous = fs::metadata(&path).ok()?.permissions().mode() & 0o777;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).ok()?;
+        let contents = fs::read_to_string(&path).ok();
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(previous));
+        contents.map(|text| text.trim().to_string())
+    }
+
+    /// The forty curve points currently stored for one kernel channel.
+    pub fn written_curve(&self, hwmon: &Path, channel_index: u8) -> Vec<u8> {
+        (1..=40)
+            .filter_map(|point| {
+                self.written_value(hwmon, &format!("temp{channel_index}_auto_point{point}_pwm"))
+            })
+            .filter_map(|value| value.parse().ok())
+            .collect()
     }
 }
 

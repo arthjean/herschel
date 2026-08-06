@@ -10,13 +10,18 @@
 //! permissions without opening a writable descriptor. Writing is the daemon's
 //! job, and it may only write what a capability record marks writable.
 
+pub mod control;
+pub mod gpu;
 pub mod hwmon;
 pub mod probe;
+pub mod sensors;
 pub mod sysfs;
 pub mod usb;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+pub use control::CoolingControl;
+pub use hwmon::KrakenHwmon;
 pub use probe::probe;
 pub use sysfs::SysfsRoot;

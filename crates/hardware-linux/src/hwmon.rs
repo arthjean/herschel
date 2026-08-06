@@ -8,11 +8,14 @@
 
 use std::path::{Path, PathBuf};
 
-use nzxt_core::DeviceId;
 use nzxt_core::capability::{CurveChannel, Evidenced, HwmonAttribute, HwmonCapabilities};
-use nzxt_core::profile::CURVE_POINT_COUNT;
+use nzxt_core::profile::{CURVE_POINT_COUNT, Channel, TemperatureCurve};
+use nzxt_core::telemetry::{ChannelTelemetry, KrakenTelemetry, PwmMode, Reading, Unavailable};
+use nzxt_core::{DeviceId, KRAKEN_BASE};
 
-use crate::sysfs::{SysfsRoot, is_readable, is_writable, read_attribute, sorted_entries};
+use crate::sysfs::{
+    SysfsRoot, is_readable, is_writable, read_attribute, read_parsed, reading, sorted_entries,
+};
 use crate::usb;
 
 /// Driver name the Kraken Base binds to on Linux 6.9 and later.
@@ -138,6 +141,143 @@ pub fn curve_is_complete(channel: &CurveChannel) -> bool {
 /// Path of a `hwmon` attribute, for a capability source.
 pub fn attribute_path(capabilities: &HwmonCapabilities, name: &str) -> PathBuf {
     Path::new(&capabilities.path).join(name)
+}
+
+/// Kernel index of a cooling channel.
+///
+/// `nzxt-kraken3` puts the pump on channel 1 and the fan on channel 2, for
+/// `fanN_input`, `pwmN`, `pwmN_enable` and `tempN_auto_point*_pwm` alike.
+pub fn channel_index(channel: Channel) -> u8 {
+    match channel {
+        Channel::Pump => 1,
+        Channel::Fan => 2,
+    }
+}
+
+/// Attribute names of one channel, in one place.
+pub fn rpm_attribute(channel: Channel) -> String {
+    format!("fan{}_input", channel_index(channel))
+}
+
+pub fn duty_attribute(channel: Channel) -> String {
+    format!("pwm{}", channel_index(channel))
+}
+
+pub fn mode_attribute(channel: Channel) -> String {
+    format!("pwm{}_enable", channel_index(channel))
+}
+
+/// The `tempN_auto_pointM_pwm` file for one curve point.
+///
+/// Points are one-based in the ABI while `index` is zero-based, matching
+/// [`nzxt_core::profile::TemperatureCurve::points`].
+pub fn curve_point_attribute(channel: Channel, index: usize) -> String {
+    format!("temp{}_auto_point{}_pwm", channel_index(channel), index + 1)
+}
+
+/// Attribute holding the coolant temperature, in millidegrees Celsius.
+pub const LIQUID_TEMPERATURE_ATTRIBUTE: &str = "temp1_input";
+
+/// A bound `kraken2023` instance, opened for reading.
+///
+/// Holding the path rather than a descriptor is deliberate: sysfs attributes
+/// are read per sample, and an open descriptor would keep a stale value alive
+/// across a device reconnect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KrakenHwmon {
+    path: PathBuf,
+}
+
+impl KrakenHwmon {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Find the `kraken2023` instance belonging to the allowlisted Kraken.
+    ///
+    /// An instance from another driver, or one that resolves to a device
+    /// outside the allowlist, is never returned.
+    pub fn locate(root: &SysfsRoot) -> Option<Self> {
+        discover(root)
+            .into_iter()
+            .find(|instance| {
+                instance.device == KRAKEN_BASE && instance.capabilities.driver == KRAKEN_DRIVER
+            })
+            .map(|instance| Self::new(instance.capabilities.path))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn attribute(&self, name: &str) -> PathBuf {
+        self.path.join(name)
+    }
+
+    /// Coolant temperature in degrees Celsius.
+    pub fn liquid_temperature_c(&self) -> Reading<f32> {
+        match read_parsed::<i32>(&self.attribute(LIQUID_TEMPERATURE_ATTRIBUTE)) {
+            Ok(millidegrees) => Reading::valid(millidegrees as f32 / 1000.0),
+            Err(cause) => Reading::unavailable(cause),
+        }
+    }
+
+    pub fn rpm(&self, channel: Channel) -> Reading<u32> {
+        reading(&self.attribute(&rpm_attribute(channel)))
+    }
+
+    pub fn duty(&self, channel: Channel) -> Reading<u8> {
+        reading(&self.attribute(&duty_attribute(channel)))
+    }
+
+    pub fn mode(&self, channel: Channel) -> Reading<PwmMode> {
+        let path = self.attribute(&mode_attribute(channel));
+        match read_parsed::<u8>(&path) {
+            Ok(value) => match PwmMode::from_kernel(value) {
+                Some(mode) => Reading::valid(mode),
+                None => Reading::unavailable(Unavailable::unparsable(format!(
+                    "{} reports control mode {value}, which this build does not recognise.",
+                    path.display()
+                ))),
+            },
+            Err(cause) => Reading::unavailable(cause),
+        }
+    }
+
+    /// Read the complete onboard curve of one channel.
+    ///
+    /// All forty points or none: a partially readable curve cannot be used as
+    /// a last known-good snapshot, so it is reported as unavailable instead.
+    pub fn curve(&self, channel: Channel) -> Result<TemperatureCurve, Unavailable> {
+        let mut points = Vec::with_capacity(CURVE_POINT_COUNT);
+        for index in 0..CURVE_POINT_COUNT {
+            points.push(read_parsed::<u8>(
+                &self.attribute(&curve_point_attribute(channel, index)),
+            )?);
+        }
+        Ok(TemperatureCurve { points })
+    }
+
+    /// Everything one channel reports in a single pass.
+    pub fn channel_telemetry(&self, channel: Channel) -> ChannelTelemetry {
+        ChannelTelemetry {
+            channel,
+            rpm: self.rpm(channel),
+            duty: self.duty(channel),
+            mode: self.mode(channel),
+        }
+    }
+
+    /// One complete Kraken sample.
+    pub fn telemetry(&self, at_unix_ms: u64) -> KrakenTelemetry {
+        KrakenTelemetry {
+            at_unix_ms,
+            present: true,
+            liquid_temperature_c: self.liquid_temperature_c(),
+            pump: self.channel_telemetry(Channel::Pump),
+            fan: self.channel_telemetry(Channel::Fan),
+        }
+    }
 }
 
 #[cfg(test)]
