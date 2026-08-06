@@ -7,20 +7,27 @@
 //! configuration. The server wraps it in a mutex, so requests are serialised:
 //! two clients can never interleave a command.
 
+use std::time::Duration;
+
 use nzxt_core::capability::{CapabilityRecord, DeviceRecord};
 use nzxt_core::diagnostics::{DiagnosticsLog, EventKind};
 use nzxt_core::ipc::{
-    AccessMode, ActivationOutcome, BlockedCapability, ConfigState, DaemonStatus, DeviceStatus,
-    HardwareState, IpcError, OwnershipConflict, PROTOCOL_VERSION, Request, Response,
+    AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, ConfigState, DaemonStatus,
+    DeviceStatus, HardwareState, IpcError, OwnershipConflict, PROTOCOL_VERSION, Request, Response,
 };
-use nzxt_core::profile::{CoolingProgram, Profile, incompatibilities};
-use nzxt_core::{DeviceId, capability::Evidenced};
+use nzxt_core::profile::{
+    CoolingProgram, Profile, incompatibilities, program_incompatibilities, validate_program,
+};
+use nzxt_core::telemetry::{CollectorFailure, TelemetrySnapshot};
+use nzxt_core::{DeviceId, KRAKEN_BASE, capability::Evidenced};
 use nzxt_hardware_linux::SysfsRoot;
 use nzxt_hardware_linux::probe::probe;
 
 use crate::config::{ConfigError, Configuration};
+use crate::cooling::CoolingExecutor;
 use crate::ownership::{self, DeviceLock};
 use crate::paths::Paths;
+use crate::telemetry::{Sampler, default_interval};
 
 /// Version reported to clients and diagnostics.
 pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,6 +41,12 @@ pub struct Daemon {
     conflicts: Vec<OwnershipConflict>,
     config: Configuration,
     diagnostics: DiagnosticsLog,
+    /// The 1 Hz collectors. Dropping the daemon stops them.
+    sampler: Sampler,
+    /// The sole writer of the thermal path.
+    cooling: CoolingExecutor,
+    /// Collector failures already recorded, so one fault is logged once.
+    reported_failures: Vec<CollectorFailure>,
 }
 
 impl Daemon {
@@ -42,6 +55,25 @@ impl Daemon {
     /// Ownership failure is not startup failure: the daemon stays up in
     /// read-only mode and reports the conflict.
     pub fn start(paths: Paths, sysfs: &SysfsRoot) -> std::io::Result<Self> {
+        Self::start_with(
+            paths,
+            sysfs,
+            &nzxt_hardware_linux::sensors::proc_root_from_env(),
+            default_interval(),
+        )
+    }
+
+    /// Start against explicit sources and an explicit sampling interval.
+    ///
+    /// Only the sources and the cadence change; every other behaviour is
+    /// identical, so a test exercises the same paths without waiting on real
+    /// seconds or mutating a process-global variable.
+    pub fn start_with(
+        paths: Paths,
+        sysfs: &SysfsRoot,
+        proc_root: &std::path::Path,
+        interval: Duration,
+    ) -> std::io::Result<Self> {
         paths.ensure()?;
 
         let mut diagnostics = DiagnosticsLog::default();
@@ -159,17 +191,19 @@ impl Daemon {
             ),
         }
 
-        let daemon = Self {
+        let mut daemon = Self {
             paths,
             capabilities,
             locks,
             conflicts,
             config,
             diagnostics,
+            sampler: Sampler::start(sysfs, proc_root, interval),
+            cooling: CoolingExecutor::open(sysfs),
+            reported_failures: Vec::new(),
         };
 
         let read_only = daemon.access_mode().is_read_only();
-        let mut daemon = daemon;
         let reason = daemon
             .read_only_reason()
             .unwrap_or_else(|| "every supported capability is writable".to_string());
@@ -178,7 +212,36 @@ impl Daemon {
             EventKind::AccessModeChanged { read_only, reason },
         );
 
+        // The active profile is put back on the hardware immediately, so a
+        // restart resumes the program the operator chose instead of leaving
+        // the cooler on whatever the firmware defaulted to.
+        daemon.restore_active_profile();
+
         Ok(daemon)
+    }
+
+    /// Re-apply the configured profile after a start.
+    ///
+    /// A refusal is recorded and the daemon carries on: an incompatible or
+    /// unwritable profile must never keep the service from coming up.
+    fn restore_active_profile(&mut self) {
+        let profile = self.config.active_profile();
+        if profile.program == CoolingProgram::Onboard {
+            return;
+        }
+        let hardware = match self.execute(&profile.program) {
+            Ok(outcome) => outcome.hardware,
+            Err(error) => HardwareState::NotApplied {
+                reason: error.to_string(),
+            },
+        };
+        self.diagnostics.record(
+            crate::now_unix_ms(),
+            EventKind::ProfileActivated {
+                name: profile.name,
+                hardware,
+            },
+        );
     }
 
     pub fn capabilities(&self) -> &CapabilityRecord {
@@ -313,12 +376,107 @@ impl Daemon {
             Request::SaveProfile { profile } => self.save_profile(profile),
             Request::ActivateProfile { name } => self.activate_profile(&name),
             Request::DeleteProfile { name } => self.delete_profile(&name),
+            Request::Telemetry => Response::Telemetry(Box::new(self.telemetry())),
+            Request::ApplyProgram { program } => match self.execute(&program) {
+                Ok(outcome) => Response::Applied(Box::new(outcome)),
+                Err(error) => Response::Error(error),
+            },
             Request::Diagnostics => Response::Diagnostics(self.diagnostics.export(
                 crate::now_unix_ms(),
                 DAEMON_VERSION,
                 Some(self.capabilities.clone()),
             )),
         }
+    }
+
+    /// The latest sampling pass, with any change in collector health logged.
+    pub fn telemetry(&mut self) -> TelemetrySnapshot {
+        let snapshot = self.sampler.snapshot();
+
+        // A device that has gone away invalidates the executor's record of
+        // what it committed. Without this, an Apply after a reconnect could
+        // deduplicate against a program the hardware no longer holds and
+        // silently write nothing.
+        if !snapshot.kraken.present {
+            self.cooling.forget();
+        }
+
+        for failure in &snapshot.failed {
+            if !self.reported_failures.contains(failure) {
+                self.diagnostics.record(
+                    crate::now_unix_ms(),
+                    EventKind::CollectorFailed {
+                        collector: failure.collector,
+                        detail: failure.detail.clone(),
+                    },
+                );
+            }
+        }
+        for previous in &self.reported_failures {
+            if !snapshot
+                .failed
+                .iter()
+                .any(|failure| failure.collector == previous.collector)
+            {
+                self.diagnostics.record(
+                    crate::now_unix_ms(),
+                    EventKind::CollectorRecovered {
+                        collector: previous.collector,
+                    },
+                );
+            }
+        }
+        self.reported_failures = snapshot.failed.clone();
+
+        snapshot
+    }
+
+    /// Gate a cooling program, then write it.
+    ///
+    /// Every refusal happens before the executor is reached, so a rejected
+    /// request cannot produce a partial write. The order matters: values are
+    /// validated first because an out-of-range duty is wrong whatever the
+    /// device reports, then the capability record, then ownership.
+    fn execute(&mut self, program: &CoolingProgram) -> Result<ApplyOutcome, IpcError> {
+        validate_program(program)?;
+
+        if *program == CoolingProgram::Onboard {
+            // Nothing is written, so no capability is required. This is the
+            // program the daemon falls back to, and it must never be refusable.
+            return Ok(self.cooling.apply(program));
+        }
+
+        {
+            let device = self
+                .capabilities
+                .device(KRAKEN_BASE)
+                .filter(|device| device.is_supported())
+                .ok_or(IpcError::NoDevice)?;
+            let details = program_incompatibilities(program, device);
+            if !details.is_empty() {
+                return Err(IpcError::Incompatible { details });
+            }
+        }
+
+        if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
+            return Err(IpcError::ReadOnly {
+                reason: conflicts
+                    .iter()
+                    .map(|conflict| conflict.detail.clone())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            });
+        }
+
+        let outcome = self.cooling.apply(program);
+        self.diagnostics.record(
+            crate::now_unix_ms(),
+            EventKind::ProgramApplied {
+                hardware: outcome.hardware.clone(),
+                writes: outcome.writes,
+            },
+        );
+        Ok(outcome)
     }
 
     fn save_profile(&mut self, profile: Profile) -> Response {
@@ -391,28 +549,27 @@ impl Daemon {
 
         match self.config.activate(name) {
             Ok(profile) => {
-                let hardware = if onboard {
-                    HardwareState::Onboard
-                } else {
-                    // Writing a duty or a curve belongs to the cooling stories.
-                    // Until they land, the selection is persisted and the
-                    // hardware is reported as untouched rather than applied.
-                    HardwareState::NotApplied {
-                        reason: "This build applies onboard programs only. \
-                                 Fixed and curve execution arrives with the cooling stories."
-                            .to_string(),
-                    }
+                // The selection is persisted first, then written. A write that
+                // fails leaves the profile selected and its hardware state
+                // reported honestly, rather than silently reverting a choice
+                // the operator made.
+                let applied = match self.execute(&profile.program) {
+                    Ok(outcome) => outcome,
+                    Err(error) => ApplyOutcome::untouched(HardwareState::NotApplied {
+                        reason: error.to_string(),
+                    }),
                 };
                 self.diagnostics.record(
                     crate::now_unix_ms(),
                     EventKind::ProfileActivated {
                         name: profile.name.clone(),
-                        hardware: hardware.clone(),
+                        hardware: applied.hardware.clone(),
                     },
                 );
                 Response::Activated(ActivationOutcome {
                     name: profile.name,
-                    hardware,
+                    hardware: applied.hardware.clone(),
+                    applied: Some(applied),
                 })
             }
             Err(error) => Response::Error(config_error(error)),

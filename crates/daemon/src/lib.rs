@@ -11,10 +11,12 @@
 //! access.
 
 pub mod config;
+pub mod cooling;
 pub mod ownership;
 pub mod paths;
 pub mod server;
 pub mod state;
+pub mod telemetry;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
