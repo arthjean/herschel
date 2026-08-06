@@ -1,0 +1,22 @@
+version = 1
+
+# Every Rust source carries its own SPDX header, which is what grants the
+# "or later" option per file. This table covers what cannot hold a comment or
+# where a header would be noise: manifests, documentation, the status tracker
+# and the captured screens.
+#
+# "closest" rather than "aggregate": a file that already declares its own
+# licensing keeps it, and this table only fills the gaps. Aggregating would
+# staple a second, identical copyright line onto all twenty-nine sources.
+#
+# The licence text is not annotated here. It is the Free Software Foundation's
+# work rather than this project's, and REUSE already excludes both LICENSES/
+# and a root LICENSE file from the lint, so an annotation for it would be
+# configuration that decides nothing. The root copy exists because GitHub's
+# detector only looks there while REUSE only reads LICENSES/; the two are
+# byte-identical.
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Arthur Jean"
+SPDX-License-Identifier = "GPL-3.0-or-later"
