@@ -7,30 +7,49 @@
 //! configuration. The server wraps it in a mutex, so requests are serialized:
 //! two clients can never interleave a command.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nzxt_core::capability::{CapabilityRecord, DeviceRecord};
 use nzxt_core::diagnostics::{DiagnosticsLog, EventKind};
 use nzxt_core::ipc::{
     AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, ConfigState, DaemonStatus,
-    DeviceStatus, HardwareState, IpcError, OwnershipConflict, PROTOCOL_VERSION, Request, Response,
+    DeviceStatus, HardwareState, IpcError, LightingOutcome, OwnershipConflict, PROTOCOL_VERSION,
+    Request, Response,
 };
+use nzxt_core::lighting::{LightingCommand, validate_command};
 use nzxt_core::profile::{
-    CoolingProgram, Profile, incompatibilities, program_incompatibilities, validate_program,
+    CoolingProgram, Incompatibility, Profile, incompatibilities, program_incompatibilities,
+    validate_program,
 };
 use nzxt_core::telemetry::{CollectorFailure, TelemetrySnapshot};
-use nzxt_core::{DeviceId, KRAKEN_BASE, capability::Evidenced};
+use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, capability::Evidenced};
 use nzxt_hardware_linux::SysfsRoot;
 use nzxt_hardware_linux::probe::probe;
 
 use crate::config::{ConfigError, Configuration};
 use crate::cooling::CoolingExecutor;
+use crate::lighting::LightingExecutor;
 use crate::ownership::{self, DeviceLock};
 use crate::paths::Paths;
 use crate::telemetry::{Sampler, default_interval};
 
 /// Version reported to clients and diagnostics.
 pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Where the daemon's lighting commands go.
+///
+/// The controller is the one device this workspace reaches through a character
+/// device rather than through sysfs, so it is the one that has to be injectable:
+/// an integration test drives the real command, ownership and cadence code
+/// against a controller that answers the same reports, and never opens `/dev`.
+pub enum RgbBackend {
+    /// Open the `hidraw` node the sysfs probe resolved.
+    Hidraw,
+    /// Talk to a supplied transport instead.
+    Transport(Box<dyn nzxt_hardware_linux::rgb::HidTransport>),
+    /// Do not talk to the controller at all.
+    None,
+}
 
 /// Everything one daemon instance owns.
 pub struct Daemon {
@@ -45,6 +64,8 @@ pub struct Daemon {
     sampler: Sampler,
     /// The sole writer of the thermal path.
     cooling: CoolingExecutor,
+    /// The sole writer of the lighting path.
+    lighting: LightingExecutor,
     /// Collector failures already recorded, so one fault is logged once.
     reported_failures: Vec<CollectorFailure>,
 }
@@ -60,6 +81,7 @@ impl Daemon {
             sysfs,
             &nzxt_hardware_linux::sensors::proc_root_from_env(),
             default_interval(),
+            RgbBackend::Hidraw,
         )
     }
 
@@ -73,6 +95,7 @@ impl Daemon {
         sysfs: &SysfsRoot,
         proc_root: &std::path::Path,
         interval: Duration,
+        rgb: RgbBackend,
     ) -> std::io::Result<Self> {
         paths.ensure()?;
 
@@ -85,7 +108,13 @@ impl Daemon {
             },
         );
 
-        let capabilities = probe(sysfs);
+        let mut capabilities = probe(sysfs);
+        // The controller is asked what it is before ownership and before the
+        // capability states are logged, so the record the rest of this function
+        // reads is the final one. The two requests carry no color and no mode,
+        // so asking changes nothing the operator can see.
+        let lighting = connect_lighting(&mut capabilities, rgb);
+
         let mut locks = Vec::new();
         let mut conflicts = Vec::new();
 
@@ -200,6 +229,7 @@ impl Daemon {
             diagnostics,
             sampler: Sampler::start(sysfs, proc_root, interval),
             cooling: CoolingExecutor::open(sysfs),
+            lighting,
             reported_failures: Vec::new(),
         };
 
@@ -226,6 +256,8 @@ impl Daemon {
     /// unwritable profile must never keep the service from coming up.
     fn restore_active_profile(&mut self) {
         let profile = self.config.active_profile();
+        self.apply_profile_lighting(&profile);
+
         if profile.program == CoolingProgram::Onboard {
             return;
         }
@@ -242,6 +274,29 @@ impl Daemon {
                 hardware,
             },
         );
+    }
+
+    /// Put every lighting channel a profile names where the profile wants it.
+    ///
+    /// A refusal is recorded and the next channel is still attempted: a
+    /// controller that is read-only must not keep a cooling profile from being
+    /// restored, and a channel that is gone must not hide the ones that remain.
+    fn apply_profile_lighting(&mut self, profile: &Profile) {
+        for command in profile.lighting.clone() {
+            if let Err(error) = self.illuminate(&command) {
+                self.diagnostics.record(
+                    crate::now_unix_ms(),
+                    EventKind::LightingApplied {
+                        channel: command.channel,
+                        program: command.program.summary(),
+                        hardware: HardwareState::NotApplied {
+                            reason: error.to_string(),
+                        },
+                        writes: 0,
+                    },
+                );
+            }
+        }
     }
 
     pub fn capabilities(&self) -> &CapabilityRecord {
@@ -332,6 +387,7 @@ impl Daemon {
                 .collect(),
             active_profile: self.config.active_profile_name().to_string(),
             config: self.config.state().clone(),
+            lighting: self.lighting.state(),
             socket_path: self.paths.socket.display().to_string(),
         }
     }
@@ -379,6 +435,10 @@ impl Daemon {
             Request::Telemetry => Response::Telemetry(Box::new(self.telemetry())),
             Request::ApplyProgram { program } => match self.execute(&program) {
                 Ok(outcome) => Response::Applied(Box::new(outcome)),
+                Err(error) => Response::Error(error),
+            },
+            Request::ApplyLighting { command } => match self.illuminate(&command) {
+                Ok(outcome) => Response::Lit(outcome),
                 Err(error) => Response::Error(error),
             },
             Request::Diagnostics => Response::Diagnostics(self.diagnostics.export(
@@ -479,6 +539,66 @@ impl Daemon {
         Ok(outcome)
     }
 
+    /// Gate a lighting command, then send it.
+    ///
+    /// The order mirrors [`Daemon::execute`] and matters for the same reason.
+    /// Values are checked first because a malformed color is wrong whatever the
+    /// controller reports. The topology is checked next, because a channel that
+    /// does not exist must be refused before any capability question. Then the
+    /// capability record, which is what carries the "this firmware was never
+    /// validated" refusal. Then ownership. The executor is reached last, so a
+    /// rejected request cannot produce a partial write.
+    fn illuminate(&mut self, command: &LightingCommand) -> Result<LightingOutcome, IpcError> {
+        validate_command(command, self.lighting.channel_count())?;
+
+        {
+            let device = self
+                .capabilities
+                .device(RGB_CONTROLLER)
+                .filter(|device| device.is_supported())
+                .ok_or(IpcError::NoDevice)?;
+            let capability = command.program.required_capability();
+            if !device.can_write(capability) {
+                return Err(IpcError::Incompatible {
+                    details: vec![Incompatibility {
+                        capability,
+                        reason: device
+                            .capability(capability)
+                            .and_then(|entry| entry.state.blocked_reason())
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "{} is absent from the capability record.",
+                                    capability.label()
+                                )
+                            }),
+                    }],
+                });
+            }
+        }
+
+        if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
+            return Err(IpcError::ReadOnly {
+                reason: conflicts
+                    .iter()
+                    .map(|conflict| conflict.detail.clone())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            });
+        }
+
+        let outcome = self.lighting.apply(Instant::now(), command)?;
+        self.diagnostics.record(
+            crate::now_unix_ms(),
+            EventKind::LightingApplied {
+                channel: outcome.channel,
+                program: outcome.program.summary(),
+                hardware: outcome.hardware.clone(),
+                writes: outcome.writes,
+            },
+        );
+        Ok(outcome)
+    }
+
     fn save_profile(&mut self, profile: Profile) -> Response {
         let name = profile.name.clone();
         match self.config.save_profile(profile) {
@@ -549,6 +669,7 @@ impl Daemon {
 
         match self.config.activate(name) {
             Ok(profile) => {
+                self.apply_profile_lighting(&profile);
                 // The selection is persisted first, then written. A write that
                 // fails leaves the profile selected and its hardware state
                 // reported honestly, rather than silently reverting a choice
@@ -610,6 +731,53 @@ impl Daemon {
             crate::now_unix_ms(),
             EventKind::ClientDisconnected { detail },
         );
+    }
+}
+
+/// Ask the controller what it is, fold the answer into the record, and keep the
+/// handle only when it answered.
+///
+/// A controller that could not be opened, or that stayed silent, produces an
+/// evidenced unknown in the record and an executor with nothing behind it. That
+/// is what keeps "the topology is unknown" and "the write is refused" the same
+/// fact rather than two that could drift apart.
+fn connect_lighting(capabilities: &mut CapabilityRecord, backend: RgbBackend) -> LightingExecutor {
+    use nzxt_hardware_linux::rgb::{self, HidTransport};
+
+    let (topology, transport): (_, Option<Box<dyn HidTransport>>) = match backend {
+        RgbBackend::None => return LightingExecutor::absent(),
+        RgbBackend::Hidraw => {
+            let node = capabilities
+                .device(nzxt_core::RGB_CONTROLLER)
+                .filter(|device| device.is_supported())
+                .and_then(|device| {
+                    nzxt_hardware_linux::usb::hidraw_node(std::path::Path::new(
+                        &device.usb.sysfs_path,
+                    ))
+                });
+            let (topology, link) = rgb::connect(node);
+            (
+                topology,
+                link.map(|link| Box::new(link) as Box<dyn HidTransport>),
+            )
+        }
+        RgbBackend::Transport(mut transport) => {
+            let topology = rgb::inspect(transport.as_mut());
+            let answered = topology.channels.is_known();
+            (topology, answered.then_some(transport))
+        }
+    };
+
+    let channels = topology.channels.value().cloned().unwrap_or_default();
+    nzxt_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
+
+    // A controller reporting zero channels is not a controller this daemon can
+    // address, so it holds no handle to it.
+    match transport {
+        Some(transport) if !channels.is_empty() => {
+            LightingExecutor::connected(transport, &channels)
+        }
+        _ => LightingExecutor::absent(),
     }
 }
 

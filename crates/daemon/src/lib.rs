@@ -12,17 +12,20 @@
 
 pub mod config;
 pub mod cooling;
+pub mod lighting;
 pub mod ownership;
 pub mod paths;
+pub mod rgb_probe;
 pub mod server;
 pub mod state;
 pub mod telemetry;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use lighting::LightingExecutor;
 pub use paths::Paths;
 pub use server::Server;
-pub use state::{DAEMON_VERSION, Daemon};
+pub use state::{DAEMON_VERSION, Daemon, RgbBackend};
 
 /// Milliseconds since the Unix epoch.
 pub fn now_unix_ms() -> u64 {

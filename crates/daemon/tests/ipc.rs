@@ -21,6 +21,7 @@ use nzxt_core::ipc::{
     AccessMode, ConfigState, HardwareState, IpcError, MAX_FRAME_BYTES, PROTOCOL_VERSION, Request,
     Response, read_frame, write_frame,
 };
+use nzxt_core::lighting::{Brightness, LightingCommand, LightingProgram, Rgb};
 use nzxt_core::profile::{
     CURVE_POINT_COUNT, Channel, CoolingProgram, CurveNodes, MIN_PUMP_DUTY, Profile,
     SAFE_PROFILE_NAME, TemperatureCurve,
@@ -28,10 +29,10 @@ use nzxt_core::profile::{
 use nzxt_core::telemetry::{Collector, PwmMode, SafetyAlert, TelemetrySnapshot};
 use nzxt_core::{KRAKEN_BASE, RGB_CONTROLLER};
 use nzxt_daemon::server::ShutdownHandle;
-use nzxt_daemon::state::Daemon;
+use nzxt_daemon::state::{Daemon, RgbBackend};
 use nzxt_daemon::{Paths, Server};
 use nzxt_hardware_linux::SysfsRoot;
-use nzxt_hardware_linux::testing::FakeSysfs;
+use nzxt_hardware_linux::testing::{FakeController, FakeSysfs};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -58,6 +59,22 @@ impl Harness {
         Self::start_paced(name, grant_write, FAST_INTERVAL, |_, _| {})
     }
 
+    /// A daemon serving a controller that answers the reports the real one
+    /// answers.
+    ///
+    /// Every other case runs with `RgbBackend::None`: the fixture's sysfs tree
+    /// resolves to the machine's real `/dev/hidraw*` node, and a test must
+    /// never open it.
+    fn start_lit(name: &str, firmware: &str, channels: usize) -> Self {
+        Self::start_full(
+            name,
+            true,
+            FAST_INTERVAL,
+            |_, _| {},
+            RgbBackend::Transport(Box::new(FakeController::new(firmware, channels))),
+        )
+    }
+
     /// Build the fixture, let `prepare` adjust it, then serve it.
     ///
     /// `prepare` runs before the daemon starts, so a test can present a
@@ -67,6 +84,16 @@ impl Harness {
         grant_write: bool,
         interval: Duration,
         prepare: impl FnOnce(&FakeSysfs, &Path),
+    ) -> Self {
+        Self::start_full(name, grant_write, interval, prepare, RgbBackend::None)
+    }
+
+    fn start_full(
+        name: &str,
+        grant_write: bool,
+        interval: Duration,
+        prepare: impl FnOnce(&FakeSysfs, &Path),
+        rgb: RgbBackend,
     ) -> Self {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let base =
@@ -99,6 +126,7 @@ impl Harness {
             &SysfsRoot::new(fake.root_path()),
             &proc_root,
             interval,
+            rgb,
         )
         .unwrap();
         let server = Server::bind(&paths.socket, daemon).unwrap();
@@ -195,6 +223,7 @@ fn fixed(name: &str, pump: u8, fan: u8) -> Profile {
         name: name.to_string(),
         program: CoolingProgram::Fixed { pump, fan },
         device: None,
+        lighting: Vec::new(),
     }
 }
 
@@ -257,6 +286,7 @@ fn one_lock_is_held_per_supported_device() {
         &SysfsRoot::new(harness.fake.root_path()),
         &harness.proc_root,
         FAST_INTERVAL,
+        RgbBackend::None,
     )
     .unwrap();
     assert!(second.locked_devices().is_empty());
@@ -403,6 +433,7 @@ fn out_of_range_values_are_rejected_with_their_accepted_range() {
                     fan: curve,
                 },
                 device: None,
+                lighting: Vec::new(),
             },
         })
         .unwrap();
@@ -517,6 +548,7 @@ fn the_active_profile_survives_a_daemon_restart() {
         &SysfsRoot::new(harness.fake.root_path()),
         &harness.proc_root,
         FAST_INTERVAL,
+        RgbBackend::None,
     )
     .unwrap();
     assert_eq!(restarted.status().active_profile, "Silent");
@@ -548,6 +580,7 @@ fn a_corrupt_configuration_recovers_to_the_safe_profile() {
         &SysfsRoot::new(harness.fake.root_path()),
         &harness.proc_root,
         FAST_INTERVAL,
+        RgbBackend::None,
     )
     .unwrap();
 
@@ -612,6 +645,7 @@ fn a_profile_bound_to_an_absent_device_is_refused() {
         name: "Other machine".into(),
         program: CoolingProgram::Fixed { pump: 120, fan: 80 },
         device: Some(nzxt_core::DeviceId::new(0x1e71, 0x2007)),
+        lighting: Vec::new(),
     };
     client
         .request(Request::SaveProfile {
@@ -1235,6 +1269,299 @@ fn a_diagnostics_export_records_what_reached_the_hardware() {
     assert!(json.contains("program_applied"), "{json}");
     assert!(json.contains("\"writes\":4"), "{json}");
     assert!(!json.contains(nzxt_hardware_linux::testing::KRAKEN_FIXTURE_SERIAL));
+}
+
+// ---------------------------------------------------------------------------
+// Lighting, EP-003
+// ---------------------------------------------------------------------------
+
+fn lighting(channel: u8, hex: &str) -> LightingCommand {
+    LightingCommand {
+        channel,
+        program: LightingProgram::Fixed {
+            color: Rgb::parse_hex(hex).unwrap(),
+            brightness: Brightness::new(60).unwrap(),
+        },
+    }
+}
+
+#[test]
+fn a_controller_that_answered_is_reported_with_its_channels_and_accessories() {
+    let harness = Harness::start_lit("lighting-topology", "9.9.9", 3);
+    let mut client = harness.client();
+
+    let status = client.status().unwrap();
+    assert_eq!(status.lighting.len(), 3);
+    assert_eq!(status.lighting[0].channel, 1);
+    assert_eq!(
+        status.lighting[0].accessories,
+        vec!["HUE 2 LED Strip 300 mm"]
+    );
+    // Nothing has been commanded, so nothing is claimed to be showing.
+    assert!(status.lighting.iter().all(|c| c.committed.is_none()));
+
+    // The topology reached the capability record with its evidence attached.
+    let record = client.capabilities().unwrap();
+    let rgb = record.device(RGB_CONTROLLER).unwrap();
+    let topology = rgb.rgb.as_ref().expect("the controller answered");
+    assert_eq!(topology.channel_count(), Some(3));
+    assert_eq!(topology.firmware.value().map(String::as_str), Some("9.9.9"));
+    // The controller reports accessory identifiers, never LED counts.
+    assert!(
+        topology
+            .channels
+            .value()
+            .unwrap()
+            .iter()
+            .all(|channel| !channel.led_count.is_known())
+    );
+}
+
+#[test]
+fn an_unvalidated_firmware_refuses_every_write_and_names_the_missing_evidence() {
+    let harness = Harness::start_lit("lighting-unvalidated", "9.9.9", 3);
+    let mut client = harness.client();
+
+    let error = client.apply_lighting(lighting(1, "7C5CFF")).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        matches!(
+            &error,
+            nzxt_core::client::ClientError::Refused(IpcError::Incompatible { .. })
+        ),
+        "{error:?}"
+    );
+
+    // The refusal points at the story that would produce the evidence.
+    let record = client.capabilities().unwrap();
+    let reason = record
+        .device(RGB_CONTROLLER)
+        .unwrap()
+        .capability(CapabilityId::RgbFixedColor)
+        .unwrap()
+        .state
+        .blocked_reason()
+        .unwrap();
+    assert!(reason.contains("9.9.9"), "{reason}");
+    assert!(reason.contains("US-013"), "{reason}");
+    let _ = message;
+
+    // And the daemon still knows nothing is showing, because nothing was sent.
+    assert!(
+        client
+            .status()
+            .unwrap()
+            .lighting
+            .iter()
+            .all(|channel| channel.committed.is_none())
+    );
+}
+
+#[test]
+fn a_channel_outside_the_reported_topology_is_refused_before_any_write() {
+    let harness = Harness::start_lit("lighting-channel", "9.9.9", 3);
+    let mut client = harness.client();
+
+    match client.apply_lighting(lighting(4, "FFFFFF")) {
+        Err(nzxt_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
+            let message = error.to_string();
+            assert!(message.contains("exposes 3"), "{message}");
+        }
+        other => panic!("expected a typed channel rejection, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_out_of_range_brightness_cannot_even_be_decoded() {
+    let harness = Harness::start_lit("lighting-brightness", "9.9.9", 3);
+
+    // Brightness is a validated newtype, so a frame carrying 200 is refused by
+    // the decoder: the value never becomes a program the daemon has to reject.
+    // The same holds for a color channel outside a byte and an unknown effect.
+    for payload in [
+        r#"{"request":"apply_lighting","command":{"channel":1,"program":{"mode":"fixed","color":{"r":255,"g":0,"b":0},"brightness":200}}}"#,
+        r#"{"request":"apply_lighting","command":{"channel":1,"program":{"mode":"fixed","color":{"r":300,"g":0,"b":0},"brightness":50}}}"#,
+        r#"{"request":"apply_lighting","command":{"channel":1,"program":{"mode":"effect","effect":"rainbow_flow","colors":[],"brightness":50,"speed":"normal","direction":"forward"}}}"#,
+    ] {
+        let stream = harness.raw();
+        let mut writer = BufWriter::new(stream.try_clone().unwrap());
+        let mut reader = BufReader::new(stream);
+        write_frame(
+            &mut writer,
+            &Request::Hello {
+                protocol_version: PROTOCOL_VERSION,
+            },
+        )
+        .unwrap();
+        let _: Response = read_frame(&mut reader).unwrap();
+
+        writer.write_all(payload.as_bytes()).unwrap();
+        writer.write_all(b"\n").unwrap();
+        writer.flush().unwrap();
+        let response: Response = read_frame(&mut reader).unwrap();
+        assert!(
+            matches!(response, Response::Error(IpcError::Malformed { .. })),
+            "{payload} produced {response:?}"
+        );
+    }
+}
+
+#[test]
+fn an_absent_controller_reports_no_channels_and_accepts_no_command() {
+    let harness = Harness::start("lighting-absent");
+    let mut client = harness.client();
+
+    let status = client.status().unwrap();
+    assert!(status.lighting.is_empty());
+
+    let error = client.apply_lighting(lighting(1, "FFFFFF")).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("does not exist"), "{message}");
+}
+
+#[test]
+fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
+    match nzxt_hardware_linux::rgb::VALIDATED_FIRMWARE.first() {
+        Some(firmware) => {
+            let harness = Harness::start_lit("lighting-validated", firmware, 3);
+            let mut client = harness.client();
+
+            let outcome = client.apply_lighting(lighting(2, "7C5CFF")).unwrap();
+            assert_eq!(outcome.channel, 2);
+            assert_eq!(outcome.writes, 1);
+            assert!(!outcome.deduplicated);
+            assert_eq!(outcome.hardware, HardwareState::Confirmed);
+
+            // The committed state is what the daemon reports, because the
+            // controller exposes no way to read a channel back.
+            let status = client.status().unwrap();
+            let channel = status
+                .lighting
+                .iter()
+                .find(|channel| channel.channel == 2)
+                .unwrap();
+            assert_eq!(channel.committed, Some(lighting(2, "7C5CFF").program));
+
+            // The same request again sends nothing.
+            let repeat = client.apply_lighting(lighting(2, "7C5CFF")).unwrap();
+            assert!(repeat.deduplicated);
+            assert_eq!(repeat.writes, 0);
+
+            // A different color inside the cadence floor is refused outright.
+            match client.apply_lighting(lighting(2, "00FF00")) {
+                Err(nzxt_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
+                    assert!(error.to_string().contains("one every"), "{error}");
+                }
+                other => panic!("expected a cadence rejection, got {other:?}"),
+            }
+
+            // Off is a different program, so it is a real write once the floor
+            // has passed.
+            std::thread::sleep(Duration::from_millis(
+                nzxt_core::lighting::MIN_COMMAND_INTERVAL_MS + 10,
+            ));
+            let off = client
+                .apply_lighting(LightingCommand {
+                    channel: 2,
+                    program: LightingProgram::Off,
+                })
+                .unwrap();
+            assert_eq!(off.writes, 1);
+
+            // The whole exchange is in the diagnostics, as a summary rather
+            // than as packet bytes.
+            let Response::Diagnostics(export) = client.request(Request::Diagnostics).unwrap()
+            else {
+                panic!("expected diagnostics");
+            };
+            let json = serde_json::to_string(&export).unwrap();
+            assert!(json.contains("lighting_applied"), "{json}");
+            assert!(json.contains("fixed #7C5CFF at 60%"), "{json}");
+            assert!(!json.contains("0x2a"), "{json}");
+        }
+        None => {
+            // No firmware has been validated on real hardware yet, so the gate
+            // must refuse every controller, whatever it reports about itself.
+            let harness = Harness::start_lit("lighting-closed", "1.0.0", 3);
+            let mut client = harness.client();
+            assert!(
+                client.apply_lighting(lighting(1, "FFFFFF")).is_err(),
+                "the write path must stay closed until US-013 records a firmware"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_saved_effect_round_trips_without_protocol_bytes_reaching_the_file() {
+    let harness = Harness::start_lit("lighting-profile", "9.9.9", 3);
+    let effect = LightingProgram::Effect {
+        effect: nzxt_core::lighting::LightingEffect::SpectrumWave,
+        colors: Vec::new(),
+        brightness: Brightness::new(80).unwrap(),
+        speed: nzxt_core::lighting::EffectSpeed::Faster,
+        direction: nzxt_core::lighting::EffectDirection::Backward,
+    };
+    let profile = Profile {
+        name: "Wave".into(),
+        program: CoolingProgram::Onboard,
+        device: None,
+        lighting: vec![
+            LightingCommand {
+                channel: 1,
+                program: effect.clone(),
+            },
+            LightingCommand {
+                channel: 2,
+                program: LightingProgram::Off,
+            },
+        ],
+    };
+
+    {
+        let mut client = harness.client();
+        client
+            .request(Request::SaveProfile {
+                profile: profile.clone(),
+            })
+            .unwrap();
+    }
+
+    // The stored file carries names, not a wire encoding.
+    let stored = std::fs::read_to_string(harness.paths.config_file()).unwrap();
+    assert!(stored.contains("spectrum_wave"), "{stored}");
+    assert!(stored.contains("backward"), "{stored}");
+    for protocol in ["2a", "0x2a", "report", "packet", "hidraw"] {
+        assert!(
+            !stored.contains(protocol),
+            "{protocol:?} leaked into the configuration file:\n{stored}"
+        );
+    }
+
+    // A fresh daemon over the same directory reads the same parameters back.
+    let restarted = Daemon::start_with(
+        Paths::new(
+            harness.paths.runtime_dir.join("second"),
+            harness.paths.config_dir.clone(),
+        ),
+        &SysfsRoot::new(harness.fake.root_path()),
+        &harness.proc_root,
+        FAST_INTERVAL,
+        RgbBackend::Transport(Box::new(FakeController::new("9.9.9", 3))),
+    )
+    .unwrap();
+
+    let reloaded = restarted.status().active_profile.clone();
+    assert_eq!(reloaded, SAFE_PROFILE_NAME, "saving does not activate");
+
+    let mut client = harness.client();
+    let (_, profiles) = client.profiles().unwrap();
+    let stored_profile = profiles
+        .iter()
+        .find(|candidate| candidate.name == "Wave")
+        .expect("the saved profile came back");
+    assert_eq!(stored_profile, &profile);
+    assert_eq!(stored_profile.lighting[0].program, effect);
 }
 
 /// Milliseconds since the Unix epoch, for age assertions.

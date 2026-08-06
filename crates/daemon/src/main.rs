@@ -11,6 +11,9 @@
 
 use std::process::ExitCode;
 
+use nzxt_core::RGB_CONTROLLER;
+use nzxt_core::lighting::{Brightness, LightingProgram, Rgb};
+use nzxt_daemon::rgb_probe::ProbeScope;
 use nzxt_daemon::state::Daemon;
 use nzxt_daemon::{DAEMON_VERSION, Paths, Server};
 use nzxt_hardware_linux::SysfsRoot;
@@ -29,10 +32,22 @@ const USAGE: &str = "\
 Usage: nzxt-controld [OPTIONS]
 
 Options:
-  --capabilities   Print the versioned capability record as JSON and exit.
-                   Read-only: no socket is opened and no device is written.
-  --version        Print the version and exit.
-  --help           Print this message.
+  --capabilities     Print the versioned capability record as JSON and exit.
+                     Read-only: no socket is opened and no device is written.
+  --rgb-probe        The same record, with the RGB controller's topology read
+                     from the device. Asks the controller what it is; sends no
+                     color, no mode and no parameter, so it changes nothing.
+  --rgb-write-probe  US-013's write probe. Sends lighting commands this product
+                     has not validated on this firmware, one channel at a time,
+                     and refuses to start without a typed confirmation. Prints
+                     the evidence record as JSON on stdout.
+      --with-effects   Also test the two animated candidates (US-015).
+      --sweep-effects  Instead, sweep every effect speed and direction the
+                       Lighting screen can select, on the first channel only.
+                       This is what evidences the selectable values (US-015).
+      --restore HEX    Leave every channel on this color instead of off.
+  --version          Print the version and exit.
+  --help             Print this message.
 ";
 
 fn run() -> Result<(), String> {
@@ -40,6 +55,8 @@ fn run() -> Result<(), String> {
     match arguments.first().map(String::as_str) {
         None => serve(),
         Some("--capabilities") => print_capabilities(),
+        Some("--rgb-probe") => print_rgb_capabilities(),
+        Some("--rgb-write-probe") => write_probe(&arguments[1..]),
         Some("--version") => {
             println!("nzxt-controld {DAEMON_VERSION}");
             Ok(())
@@ -50,6 +67,108 @@ fn run() -> Result<(), String> {
         }
         Some(unknown) => Err(format!("unknown argument {unknown}\n\n{USAGE}")),
     }
+}
+
+/// The capability record with the controller's own answer folded in.
+///
+/// Separate from `--capabilities` because this one opens a device node. The
+/// two requests it sends are queries, so the controller's state is untouched,
+/// but the distinction between "read sysfs" and "talk to the device" is worth
+/// keeping in the command line rather than hiding behind one flag.
+fn print_rgb_capabilities() -> Result<(), String> {
+    let sysfs = SysfsRoot::from_env();
+    let mut record = nzxt_hardware_linux::probe(&sysfs);
+
+    let node = record
+        .device(RGB_CONTROLLER)
+        .filter(|device| device.is_supported())
+        .and_then(|device| {
+            nzxt_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path))
+        });
+    let (topology, _link) = nzxt_hardware_linux::rgb::connect(node);
+    nzxt_hardware_linux::probe::attach_rgb_topology(&mut record, topology);
+
+    record.redact_serials();
+    let json = serde_json::to_string_pretty(&record)
+        .map_err(|error| format!("could not encode the capability record: {error}"))?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Run US-013's write probe against the connected controller.
+///
+/// The per-device lock is taken first and held for the whole run, so the probe
+/// and the daemon can never write to the controller at the same time. Refusing
+/// when the daemon holds it is the point: two writers is the failure this
+/// product exists to prevent.
+fn write_probe(arguments: &[String]) -> Result<(), String> {
+    if rustix::process::geteuid().is_root() {
+        return Err("refusing to run as root. Install the udev rule instead.".to_string());
+    }
+
+    let mut scope = ProbeScope::FixedAndOff;
+    let mut restore = LightingProgram::Off;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.as_str() {
+            "--with-effects" => scope = ProbeScope::WithEffects,
+            "--sweep-effects" => scope = ProbeScope::EffectSweep,
+            "--restore" => {
+                let value = rest
+                    .next()
+                    .ok_or_else(|| "--restore needs a six-digit color".to_string())?;
+                restore = LightingProgram::Fixed {
+                    color: Rgb::parse_hex(value).map_err(|error| error.to_string())?,
+                    brightness: Brightness::new(60).map_err(|error| error.to_string())?,
+                };
+            }
+            unknown => return Err(format!("unknown argument {unknown}\n\n{USAGE}")),
+        }
+    }
+
+    let sysfs = SysfsRoot::from_env();
+    let record = nzxt_hardware_linux::probe(&sysfs);
+    let device = record
+        .device(RGB_CONTROLLER)
+        .filter(|device| device.is_supported())
+        .ok_or_else(|| format!("{RGB_CONTROLLER} is not connected to this machine"))?;
+
+    let paths = Paths::from_env();
+    paths
+        .ensure()
+        .map_err(|error| format!("could not prepare {}: {error}", paths.runtime_dir.display()))?;
+    let _lock = nzxt_daemon::ownership::acquire(&paths, RGB_CONTROLLER).map_err(|conflict| {
+        format!(
+            "another process owns the controller ({}). Stop nzxt-controld and try again.",
+            conflict.detail
+        )
+    })?;
+
+    let node = nzxt_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path));
+    let (topology, link) = nzxt_hardware_linux::rgb::connect(node);
+    let mut link = link.ok_or_else(|| {
+        format!(
+            "the controller did not answer: {}",
+            topology
+                .channels
+                .reason()
+                .unwrap_or("no reason was recorded")
+        )
+    })?;
+
+    let report = nzxt_daemon::rgb_probe::run(
+        &mut link,
+        &mut nzxt_daemon::rgb_probe::Terminal,
+        &topology,
+        scope,
+        restore,
+    )
+    .map_err(|refusal| refusal.to_string())?;
+
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("could not encode the probe record: {error}"))?;
+    println!("{json}");
+    Ok(())
 }
 
 /// Emit the capability record without touching ownership or the socket.
