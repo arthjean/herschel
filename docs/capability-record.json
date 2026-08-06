@@ -1,0 +1,444 @@
+{
+  "schema_version": 1,
+  "context": {
+    "kernel_release": {
+      "state": "known",
+      "value": "7.1.6-201.fc44.x86_64",
+      "source": "uname(2)"
+    },
+    "probed_at_unix_ms": 1786002635981
+  },
+  "devices": [
+    {
+      "support": {
+        "state": "supported"
+      },
+      "usb": {
+        "id": {
+          "vendor": 7793,
+          "product": 8225
+        },
+        "manufacturer": {
+          "state": "known",
+          "value": "NZXT, Inc.",
+          "source": "/sys/bus/usb/devices/1-12/manufacturer"
+        },
+        "product": {
+          "state": "known",
+          "value": "NZXT RGB Controller",
+          "source": "/sys/bus/usb/devices/1-12/product"
+        },
+        "serial": {
+          "state": "unknown",
+          "reason": "redacted",
+          "source": "policy:redact-serials"
+        },
+        "firmware": {
+          "state": "known",
+          "value": "0105",
+          "source": "/sys/bus/usb/devices/1-12/bcdDevice"
+        },
+        "sysfs_path": "/sys/bus/usb/devices/1-12"
+      },
+      "interfaces": [
+        {
+          "number": 0,
+          "class": 3,
+          "subclass": 0,
+          "protocol": 0,
+          "driver": {
+            "state": "known",
+            "value": "usbhid",
+            "source": "/sys/bus/usb/devices/1-12/1-12:1.0/driver"
+          }
+        }
+      ],
+      "hwmon": null,
+      "capabilities": [
+        {
+          "id": "rgb_fixed_color",
+          "state": {
+            "state": "unvalidated",
+            "required_story": "US-013",
+            "reason": "The channel topology and packet format are not recorded yet."
+          }
+        },
+        {
+          "id": "rgb_effects",
+          "state": {
+            "state": "unvalidated",
+            "required_story": "US-013",
+            "reason": "The channel topology and packet format are not recorded yet."
+          }
+        }
+      ]
+    },
+    {
+      "support": {
+        "state": "supported"
+      },
+      "usb": {
+        "id": {
+          "vendor": 7793,
+          "product": 12302
+        },
+        "manufacturer": {
+          "state": "known",
+          "value": "NZXT Inc.",
+          "source": "/sys/bus/usb/devices/1-9/manufacturer"
+        },
+        "product": {
+          "state": "known",
+          "value": "NZXT Kraken Base",
+          "source": "/sys/bus/usb/devices/1-9/product"
+        },
+        "serial": {
+          "state": "unknown",
+          "reason": "redacted",
+          "source": "policy:redact-serials"
+        },
+        "firmware": {
+          "state": "known",
+          "value": "0200",
+          "source": "/sys/bus/usb/devices/1-9/bcdDevice"
+        },
+        "sysfs_path": "/sys/bus/usb/devices/1-9"
+      },
+      "interfaces": [
+        {
+          "number": 0,
+          "class": 255,
+          "subclass": 0,
+          "protocol": 0,
+          "driver": {
+            "state": "unknown",
+            "reason": "no kernel driver is bound to this interface",
+            "source": "/sys/bus/usb/devices/1-9/1-9:1.0/driver"
+          }
+        },
+        {
+          "number": 1,
+          "class": 3,
+          "subclass": 0,
+          "protocol": 0,
+          "driver": {
+            "state": "known",
+            "value": "usbhid",
+            "source": "/sys/bus/usb/devices/1-9/1-9:1.1/driver"
+          }
+        }
+      ],
+      "hwmon": {
+        "driver": "kraken2023",
+        "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4",
+        "attributes": [
+          {
+            "name": "fan1_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_input",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "known",
+              "value": "Pump speed",
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_label"
+            }
+          },
+          {
+            "name": "fan1_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_label",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "fan1_label (no label)"
+            }
+          },
+          {
+            "name": "fan2_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_input",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "known",
+              "value": "Fan speed",
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_label"
+            }
+          },
+          {
+            "name": "fan2_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_label",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "fan2_label (no label)"
+            }
+          },
+          {
+            "name": "name",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/name",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "name (no label)"
+            }
+          },
+          {
+            "name": "pwm1",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm1",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "pwm1 (no label)"
+            }
+          },
+          {
+            "name": "pwm1_enable",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm1_enable",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "pwm1_enable (no label)"
+            }
+          },
+          {
+            "name": "pwm2",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm2",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "pwm2 (no label)"
+            }
+          },
+          {
+            "name": "pwm2_enable",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm2_enable",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "pwm2_enable (no label)"
+            }
+          },
+          {
+            "name": "temp1_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_input",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "known",
+              "value": "Coolant temp",
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_label"
+            }
+          },
+          {
+            "name": "temp1_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_label",
+            "readable": true,
+            "writable": false,
+            "label": {
+              "state": "unknown",
+              "reason": "attribute has no label",
+              "source": "temp1_label (no label)"
+            }
+          }
+        ],
+        "curve_points": [
+          {
+            "temp_index": 1,
+            "point_count": 40,
+            "writable": false
+          },
+          {
+            "temp_index": 2,
+            "point_count": 40,
+            "writable": false
+          }
+        ]
+      },
+      "capabilities": [
+        {
+          "id": "liquid_temperature",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_input"
+          }
+        },
+        {
+          "id": "pump_speed",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_input"
+          }
+        },
+        {
+          "id": "fan_speed",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_input"
+          }
+        },
+        {
+          "id": "pump_duty",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm1"
+          }
+        },
+        {
+          "id": "fan_duty",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm2"
+          }
+        },
+        {
+          "id": "pump_curve",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_auto_point*_pwm"
+          }
+        },
+        {
+          "id": "fan_curve",
+          "state": {
+            "state": "available",
+            "writable": false,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp2_auto_point*_pwm"
+          }
+        },
+        {
+          "id": "lcd_frame",
+          "state": {
+            "state": "unvalidated",
+            "required_story": "US-016",
+            "reason": "The LCD transport is not proven on this firmware."
+          }
+        },
+        {
+          "id": "lcd_display_control",
+          "state": {
+            "state": "unvalidated",
+            "required_story": "US-016",
+            "reason": "The LCD transport is not proven on this firmware."
+          }
+        }
+      ]
+    }
+  ],
+  "rejected": [
+    {
+      "id": {
+        "vendor": 2821,
+        "product": 6575
+      },
+      "sysfs_path": "/sys/bus/usb/devices/1-11",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 5075,
+        "product": 13681
+      },
+      "sysfs_path": "/sys/bus/usb/devices/1-5",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 4152,
+        "product": 5656
+      },
+      "sysfs_path": "/sys/bus/usb/devices/1-7",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 1133,
+        "product": 2844
+      },
+      "sysfs_path": "/sys/bus/usb/devices/3-1",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 4152,
+        "product": 6220
+      },
+      "sysfs_path": "/sys/bus/usb/devices/5-1",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 2
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb1",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 3
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb2",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 2
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb3",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 3
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb4",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 2
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb5",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 3
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb6",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    },
+    {
+      "id": {
+        "vendor": 7531,
+        "product": 2
+      },
+      "sysfs_path": "/sys/bus/usb/devices/usb7",
+      "reason": "Device is not on the validated allowlist. Nothing was opened."
+    }
+  ]
+}
