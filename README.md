@@ -127,4 +127,6 @@ L'[exploration initiale de GitHub NZXT et de l'écosystème Linux](./nzxt-linux-
 
 ## Licence
 
-Licence prévue : GPL-3.0-or-later. Aucun code externe n'est importé avant vérification de sa licence et de sa compatibilité.
+[GPL-3.0-or-later](./LICENSE). Aucun code externe n'est importé avant vérification de sa licence et de sa compatibilité.
+
+L'inventaire des dépendances et l'audit de compatibilité restent dus avant toute distribution de paquet (US-020).
