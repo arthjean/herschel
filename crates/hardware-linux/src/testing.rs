@@ -25,6 +25,7 @@ const KRAKEN_BUS_ID: &str = "1-9";
 const RGB_BUS_ID: &str = "1-12";
 const UNRELATED_BUS_ID: &str = "2-1";
 const KRAKEN_HID_ID: &str = "0003:1E71:300E.000B";
+const RGB_HID_ID: &str = "0003:1E71:2021.000D";
 
 /// Serial numbers of the fixture devices.
 ///
@@ -82,7 +83,7 @@ impl FakeSysfs {
         path
     }
 
-    fn add_interface(&self, device: &Path, number: u8, class: u8, driver: Option<&str>) {
+    fn add_interface(&self, device: &Path, number: u8, class: u8, driver: Option<&str>) -> PathBuf {
         let name = device.file_name().unwrap().to_string_lossy().into_owned();
         let interface = device.join(format!("{name}:1.{number}"));
         fs::create_dir_all(&interface).unwrap();
@@ -98,6 +99,24 @@ impl FakeSysfs {
             fs::create_dir_all(&driver_dir).unwrap();
             symlink(&driver_dir, interface.join("driver")).unwrap();
         }
+        interface
+    }
+
+    /// One endpoint directory, in the layout and formats sysfs uses.
+    pub fn add_endpoint(&self, interface: &Path, address: u8, direction: &str, max_packet: u16) {
+        let endpoint = interface.join(format!("ep_{address:02x}"));
+        fs::create_dir_all(&endpoint).unwrap();
+        Self::write(
+            &endpoint.join("bEndpointAddress"),
+            &format!("{address:02x}"),
+        );
+        Self::write(&endpoint.join("direction"), direction);
+        Self::write(&endpoint.join("type"), "Interrupt");
+        Self::write(
+            &endpoint.join("wMaxPacketSize"),
+            &format!("{max_packet:04x}"),
+        );
+        Self::write(&endpoint.join("bInterval"), "01");
     }
 
     /// The Kraken Base: a vendor interface with no driver plus a HID interface
@@ -112,10 +131,17 @@ impl FakeSysfs {
         Self::write(&device.join("serial"), KRAKEN_FIXTURE_SERIAL);
         Self::write(&device.join("bcdDevice"), "0200");
         self.add_interface(&device, 0, 0xff, None);
-        self.add_interface(&device, 1, 0x03, Some("usbhid"));
+        let hid = self.add_interface(&device, 1, 0x03, Some("usbhid"));
+        self.add_endpoint(&hid, 0x81, "in", 64);
         device
     }
 
+    /// The RGB Controller: one HID interface, an interrupt pair and a `hidraw`
+    /// node, exactly as the development machine exposes it.
+    ///
+    /// The node itself is a plain file under the fixture: the fixture cannot
+    /// create a character device, and every caller resolves the path before it
+    /// opens anything, so the path is what the tests need to be real.
     pub fn add_rgb_controller(&self) -> PathBuf {
         let device = self.devices().join(RGB_BUS_ID);
         fs::create_dir_all(&device).unwrap();
@@ -125,8 +151,20 @@ impl FakeSysfs {
         Self::write(&device.join("product"), "NZXT RGB Controller");
         Self::write(&device.join("serial"), RGB_FIXTURE_SERIAL);
         Self::write(&device.join("bcdDevice"), "0105");
-        self.add_interface(&device, 0, 0x03, Some("usbhid"));
+        let interface = self.add_interface(&device, 0, 0x03, Some("usbhid"));
+        self.add_endpoint(&interface, 0x02, "out", 64);
+        self.add_endpoint(&interface, 0x81, "in", 64);
+        fs::create_dir_all(interface.join(RGB_HID_ID).join("hidraw/hidraw12")).unwrap();
         device
+    }
+
+    /// Remove the `hidraw` node, as if the kernel had not created one.
+    pub fn remove_rgb_hidraw(&self) {
+        let interface = self
+            .devices()
+            .join(RGB_BUS_ID)
+            .join(format!("{RGB_BUS_ID}:1.0"));
+        let _ = fs::remove_dir_all(interface.join(RGB_HID_ID).join("hidraw"));
     }
 
     /// A device outside the allowlist, which the probe must leave alone.
@@ -336,4 +374,133 @@ fn walk(root: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// `access(2)` assertion meaningless.
 pub fn running_as_root() -> bool {
     rustix::process::geteuid().is_root()
+}
+
+/// A controller that answers the reports the real one answers.
+///
+/// It exists so the command path can be proven end to end without a physical
+/// device: the daemon, its integration tests and the write probe all drive the
+/// same encoding, ownership and cadence code, and this stands in for the only
+/// part a test cannot own.
+#[derive(Debug, Default)]
+pub struct FakeController {
+    firmware: String,
+    /// Accessory identifiers per channel, in channel order.
+    channels: Vec<Vec<u8>>,
+    pending: std::collections::VecDeque<[u8; crate::rgb::REPORT_BYTES]>,
+    /// Every command report the controller received, in order.
+    pub commands: Vec<[u8; crate::rgb::REPORT_BYTES]>,
+    /// When set, every write fails with this error instead of landing.
+    pub write_failure: Option<crate::rgb::RgbError>,
+    /// When true, queries are accepted but never answered.
+    pub silent: bool,
+    /// When true, the firmware answers but the topology never does.
+    ///
+    /// That is not hypothetical: the topology answer takes most of a second on
+    /// the owned controller while the firmware answer takes two milliseconds,
+    /// so a run that gives up too early sees exactly this.
+    pub withhold_topology: bool,
+}
+
+impl FakeController {
+    /// A controller reporting `firmware` and one accessory on each channel.
+    pub fn new(firmware: &str, channel_count: usize) -> Self {
+        Self {
+            firmware: firmware.to_string(),
+            channels: vec![vec![0x04]; channel_count],
+            ..Self::default()
+        }
+    }
+
+    /// A controller that answers nothing, like one that is wedged or gone.
+    pub fn silent() -> Self {
+        Self {
+            silent: true,
+            ..Self::new("0.0.0", 0)
+        }
+    }
+
+    /// A controller that answers its firmware and nothing else.
+    pub fn withholding_topology(mut self) -> Self {
+        self.withhold_topology = true;
+        self
+    }
+
+    /// Replace the accessories reported on one zero-based channel.
+    pub fn with_accessories(mut self, channel: usize, accessories: Vec<u8>) -> Self {
+        if let Some(slot) = self.channels.get_mut(channel) {
+            *slot = accessories;
+        }
+        self
+    }
+
+    /// Color commands received, excluding the queries.
+    pub fn command_count(&self) -> usize {
+        self.commands.len()
+    }
+
+    fn firmware_answer(&self) -> [u8; crate::rgb::REPORT_BYTES] {
+        let mut report = [0u8; crate::rgb::REPORT_BYTES];
+        report[0] = 0x11;
+        report[1] = 0x01;
+        for (index, part) in self.firmware.split('.').take(3).enumerate() {
+            report[0x11 + index] = part.parse().unwrap_or(0);
+        }
+        report
+    }
+
+    fn topology_answer(&self) -> [u8; crate::rgb::REPORT_BYTES] {
+        let mut report = [0u8; crate::rgb::REPORT_BYTES];
+        report[0] = 0x21;
+        report[1] = 0x03;
+        report[14] = self.channels.len() as u8;
+        for (channel, accessories) in self.channels.iter().enumerate() {
+            for (slot, id) in accessories
+                .iter()
+                .take(crate::rgb::MAX_ACCESSORIES_PER_CHANNEL)
+                .enumerate()
+            {
+                let offset = 15 + channel * crate::rgb::MAX_ACCESSORIES_PER_CHANNEL + slot;
+                if let Some(byte) = report.get_mut(offset) {
+                    *byte = *id;
+                }
+            }
+        }
+        report
+    }
+}
+
+impl crate::rgb::HidTransport for FakeController {
+    fn write_report(
+        &mut self,
+        report: &[u8; crate::rgb::REPORT_BYTES],
+    ) -> Result<(), crate::rgb::RgbError> {
+        if let Some(failure) = &self.write_failure {
+            return Err(failure.clone());
+        }
+        match [report[0], report[1]] {
+            crate::rgb::packet::FIRMWARE_REQUEST if !self.silent => {
+                let answer = self.firmware_answer();
+                self.pending.push_back(answer);
+            }
+            crate::rgb::packet::LIGHTING_REQUEST if !self.silent && !self.withhold_topology => {
+                let answer = self.topology_answer();
+                self.pending.push_back(answer);
+            }
+            crate::rgb::packet::COLOR_COMMAND => self.commands.push(*report),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn read_report(
+        &mut self,
+        _timeout: std::time::Duration,
+    ) -> Result<Option<[u8; crate::rgb::REPORT_BYTES]>, crate::rgb::RgbError> {
+        Ok(self.pending.pop_front())
+    }
+
+    fn source(&self) -> String {
+        "fake:hidraw".to_string()
+    }
 }

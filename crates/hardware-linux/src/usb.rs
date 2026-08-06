@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use nzxt_core::DeviceId;
-use nzxt_core::capability::{Evidenced, UsbIdentity, UsbInterface};
+use nzxt_core::capability::{Evidenced, UsbEndpoint, UsbIdentity, UsbInterface};
 
 use crate::sysfs::{
     SysfsRoot, bound_driver, read_attribute, read_hex_u8, read_hex_u16, sorted_entries,
@@ -95,12 +95,69 @@ pub fn interfaces(path: &Path) -> Vec<UsbInterface> {
                         format!("{source}/driver"),
                     ),
                 },
+                endpoints: endpoints(&entry),
             })
         })
         .collect();
 
     found.sort_by_key(|interface| interface.number);
     found
+}
+
+/// Endpoints published by one interface, in address order.
+///
+/// Endpoint directories are named `ep_XX`. `direction` and `type` are taken as
+/// the kernel already decoded them, so the record cannot contradict the kernel
+/// about the same endpoint. A directory missing `bEndpointAddress` is not an
+/// endpoint and is skipped rather than recorded with a guessed address.
+pub fn endpoints(interface: &Path) -> Vec<UsbEndpoint> {
+    let mut found: Vec<UsbEndpoint> = sorted_entries(interface)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("ep_"))
+        })
+        .filter_map(|entry| {
+            Some(UsbEndpoint {
+                address: read_hex_u8(&entry.join("bEndpointAddress"))?,
+                direction: read_attribute(&entry.join("direction")).unwrap_or_default(),
+                transfer: read_attribute(&entry.join("type")).unwrap_or_default(),
+                max_packet_size: read_hex_u16(&entry.join("wMaxPacketSize")).unwrap_or(0),
+                interval: read_hex_u8(&entry.join("bInterval")).unwrap_or(0),
+            })
+        })
+        .collect();
+
+    found.sort_by_key(|endpoint| endpoint.address);
+    found
+}
+
+/// The `hidraw` node the kernel created for a USB device, when it created one.
+///
+/// The chain is device -> interface -> HID device -> `hidraw/hidrawN`. Walking
+/// it is what links an allowlisted VID/PID to the node the transport opens, so
+/// no code has to hard-code a device number that changes on every reconnect.
+pub fn hidraw_node(device: &Path) -> Option<PathBuf> {
+    let device_name = device.file_name()?.to_str()?;
+    let prefix = format!("{device_name}:");
+
+    sorted_entries(device)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .flat_map(|interface| sorted_entries(&interface))
+        .flat_map(|entry| sorted_entries(&entry.join("hidraw")))
+        .find_map(|node| {
+            let name = node.file_name()?.to_str()?;
+            name.starts_with("hidraw")
+                .then(|| PathBuf::from("/dev").join(name))
+        })
 }
 
 /// Walk up from `start` to the USB device directory that owns it.
@@ -180,6 +237,43 @@ mod tests {
         assert_eq!(found[1].number, 1);
         assert_eq!(found[1].class, 0x03);
         assert_eq!(found[1].driver.value().map(String::as_str), Some("usbhid"));
+    }
+
+    #[test]
+    fn the_controller_resolves_to_the_node_the_kernel_created() {
+        let fake = FakeSysfs::new("usb-hidraw");
+        let device = fake.add_rgb_controller();
+
+        assert_eq!(hidraw_node(&device), Some(PathBuf::from("/dev/hidraw12")));
+
+        // The Kraken's HID interface publishes no hidraw node in the fixture,
+        // and a device without one resolves to nothing rather than to the
+        // first node it can find.
+        let kraken = fake.add_kraken();
+        assert_eq!(hidraw_node(&kraken), None);
+
+        fake.remove_rgb_hidraw();
+        assert_eq!(hidraw_node(&device), None);
+    }
+
+    #[test]
+    fn endpoints_are_read_in_address_order_with_the_kernels_own_decoding() {
+        let fake = FakeSysfs::new("usb-endpoints");
+        let device = fake.add_rgb_controller();
+
+        let interfaces = interfaces(&device);
+        assert_eq!(interfaces.len(), 1);
+        let endpoints = &interfaces[0].endpoints;
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].address, 0x02);
+        assert_eq!(endpoints[0].direction, "out");
+        assert_eq!(endpoints[1].address, 0x81);
+        assert_eq!(endpoints[1].direction, "in");
+        assert!(
+            endpoints
+                .iter()
+                .all(|endpoint| endpoint.max_packet_size == 64 && endpoint.interval == 1)
+        );
     }
 
     #[test]

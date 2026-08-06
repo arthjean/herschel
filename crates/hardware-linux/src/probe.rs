@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nzxt_core::capability::{
     CAPABILITY_SCHEMA_VERSION, Capability, CapabilityId, CapabilityRecord, CapabilityState,
-    DeviceRecord, Evidenced, HwmonCapabilities, ProbeContext, RejectedDevice, SupportState,
+    DeviceRecord, Evidenced, HwmonCapabilities, ProbeContext, RejectedDevice, RgbTopology,
+    SupportState,
 };
 use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, is_allowlisted};
 
@@ -52,6 +53,9 @@ pub fn probe(root: &SysfsRoot) -> CapabilityRecord {
             usb: usb::identity(discovered.id, &discovered.path),
             interfaces: usb::interfaces(&discovered.path),
             hwmon,
+            // Filled by `attach_rgb_topology` once the controller has answered.
+            // The sysfs pass never opens a device node, so it cannot know.
+            rgb: None,
         });
     }
 
@@ -90,7 +94,7 @@ fn kernel_release() -> Evidenced<String> {
 fn capabilities_for(id: DeviceId, hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
     match id {
         KRAKEN_BASE => kraken_capabilities(hwmon),
-        RGB_CONTROLLER => rgb_capabilities(),
+        RGB_CONTROLLER => rgb_capabilities(None),
         _ => Vec::new(),
     }
 }
@@ -203,18 +207,89 @@ fn lcd_capabilities() -> impl Iterator<Item = Capability> {
         })
 }
 
-/// The RGB protocol stays unvalidated until its probe story lands.
-fn rgb_capabilities() -> Vec<Capability> {
+/// Resolve the RGB surface against whatever the controller actually answered.
+///
+/// The gate is deliberately conservative and ordered from the cheapest evidence
+/// to the strongest: no topology at all, then a controller that answered
+/// nothing, then a firmware this project has never driven. Only a controller
+/// that answered a channel list *and* reports a firmware the US-013 write probe
+/// exercised becomes writable.
+fn rgb_capabilities(topology: Option<&RgbTopology>) -> Vec<Capability> {
+    let state = rgb_state(topology);
     [CapabilityId::RgbFixedColor, CapabilityId::RgbEffects]
         .into_iter()
         .map(|id| Capability {
             id,
-            state: CapabilityState::Unvalidated {
-                required_story: RGB_VALIDATION_STORY.to_string(),
-                reason: "The channel topology and packet format are not recorded yet.".to_string(),
-            },
+            state: state.clone(),
         })
         .collect()
+}
+
+fn rgb_state(topology: Option<&RgbTopology>) -> CapabilityState {
+    let unvalidated = |reason: String| CapabilityState::Unvalidated {
+        required_story: RGB_VALIDATION_STORY.to_string(),
+        reason,
+    };
+
+    let Some(topology) = topology else {
+        return unvalidated(
+            "The channel topology and packet format are not recorded yet.".to_string(),
+        );
+    };
+
+    let Some(node) = topology.node.value() else {
+        return CapabilityState::Unavailable {
+            reason: topology
+                .node
+                .reason()
+                .unwrap_or("The controller exposes no usable node.")
+                .to_string(),
+        };
+    };
+
+    if let Some(reason) = topology.channels.reason() {
+        // The reason already carries its own punctuation, so it is joined
+        // rather than wrapped: this string is shown verbatim on a control.
+        return unvalidated(format!("The channel topology is not readable. {reason}"));
+    }
+    if topology.channel_count().unwrap_or(0) == 0 {
+        return unvalidated("The controller reported zero lighting channels.".to_string());
+    }
+
+    let Some(firmware) = topology.firmware.value() else {
+        return unvalidated(
+            "The controller did not report a firmware revision, so its command set \
+             cannot be matched against a validated one."
+                .to_string(),
+        );
+    };
+    if !crate::rgb::is_validated_firmware(firmware) {
+        return unvalidated(format!(
+            "Firmware {firmware} is not validated for this operation."
+        ));
+    }
+
+    CapabilityState::Available {
+        writable: true,
+        source: node.clone(),
+    }
+}
+
+/// Fold a live controller answer into a record and re-resolve its capabilities.
+///
+/// Separate from [`probe`] because the sysfs pass opens no device node: it can
+/// see that a controller exists but not what it contains. The daemon owns the
+/// device, so it is the daemon that asks and then calls this.
+pub fn attach_rgb_topology(record: &mut CapabilityRecord, topology: RgbTopology) {
+    let Some(device) = record
+        .devices
+        .iter_mut()
+        .find(|device| device.usb.id == RGB_CONTROLLER)
+    else {
+        return;
+    };
+    device.capabilities = rgb_capabilities(Some(&topology));
+    device.rgb = Some(topology);
 }
 
 #[cfg(test)]
@@ -379,6 +454,142 @@ mod tests {
 
         let json = serde_json::to_string(&kraken.usb).unwrap();
         assert!(json.contains("\"state\":\"unknown\""), "{json}");
+    }
+
+    /// A topology as a healthy controller would report it.
+    fn answered_topology(firmware: &str, channels: u8) -> RgbTopology {
+        use nzxt_core::capability::RgbChannel;
+        RgbTopology {
+            node: Evidenced::known("/dev/hidraw12".into(), "sysfs"),
+            firmware: Evidenced::known(firmware.into(), "report 0x11 0x01"),
+            channels: Evidenced::known(
+                (1..=channels)
+                    .map(|index| RgbChannel {
+                        index,
+                        accessories: Vec::new(),
+                        led_count: Evidenced::unknown("not reported", "report 0x21 0x03"),
+                    })
+                    .collect(),
+                "report 0x21 0x03",
+            ),
+        }
+    }
+
+    #[test]
+    fn an_unanswered_controller_leaves_rgb_unvalidated_and_names_the_reason() {
+        let fake = fixture("probe-rgb-silent");
+        let mut record = probe(&fake.root());
+        attach_rgb_topology(
+            &mut record,
+            RgbTopology::unavailable(
+                "permission denied on /dev/hidraw12. Check the installed udev rule.",
+                "/dev/hidraw12",
+            ),
+        );
+
+        let rgb = record.device(RGB_CONTROLLER).unwrap();
+        assert!(!rgb.can_write(CapabilityId::RgbFixedColor));
+        assert!(!rgb.can_write(CapabilityId::RgbEffects));
+        let reason = rgb
+            .capability(CapabilityId::RgbFixedColor)
+            .unwrap()
+            .state
+            .blocked_reason()
+            .unwrap();
+        assert!(reason.contains("udev"), "{reason}");
+    }
+
+    #[test]
+    fn an_unvalidated_firmware_is_named_and_stays_read_only() {
+        let fake = fixture("probe-rgb-firmware");
+        let mut record = probe(&fake.root());
+        attach_rgb_topology(&mut record, answered_topology("9.9.9", 3));
+
+        let rgb = record.device(RGB_CONTROLLER).unwrap();
+        // The topology was recorded even though the command set was not
+        // validated: evidence and permission are separate questions.
+        assert_eq!(
+            rgb.rgb
+                .as_ref()
+                .and_then(|topology| topology.channel_count()),
+            Some(3)
+        );
+        assert!(!rgb.can_write(CapabilityId::RgbFixedColor));
+        let reason = rgb
+            .capability(CapabilityId::RgbFixedColor)
+            .unwrap()
+            .state
+            .blocked_reason()
+            .unwrap();
+        assert!(reason.contains("9.9.9"), "{reason}");
+        assert!(reason.contains(RGB_VALIDATION_STORY), "{reason}");
+    }
+
+    #[test]
+    fn a_controller_reporting_no_channel_is_never_writable() {
+        let fake = fixture("probe-rgb-empty");
+        let mut record = probe(&fake.root());
+        attach_rgb_topology(&mut record, answered_topology("1.0.0", 0));
+
+        let rgb = record.device(RGB_CONTROLLER).unwrap();
+        assert!(!rgb.can_write(CapabilityId::RgbFixedColor));
+        let reason = rgb
+            .capability(CapabilityId::RgbFixedColor)
+            .unwrap()
+            .state
+            .blocked_reason()
+            .unwrap();
+        assert!(reason.contains("zero lighting channels"), "{reason}");
+    }
+
+    #[test]
+    fn a_validated_firmware_is_the_only_thing_that_opens_the_write_path() {
+        let fake = fixture("probe-rgb-validated");
+
+        for firmware in crate::rgb::VALIDATED_FIRMWARE {
+            let mut record = probe(&fake.root());
+            attach_rgb_topology(&mut record, answered_topology(firmware, 3));
+            let rgb = record.device(RGB_CONTROLLER).unwrap();
+            assert!(
+                rgb.can_write(CapabilityId::RgbFixedColor),
+                "{firmware} is recorded as validated but did not open the write path"
+            );
+            assert!(rgb.can_write(CapabilityId::RgbEffects));
+        }
+
+        // And nothing else does, whatever else the controller reports.
+        let mut record = probe(&fake.root());
+        attach_rgb_topology(&mut record, answered_topology("0.0.0", 3));
+        assert!(
+            !record
+                .device(RGB_CONTROLLER)
+                .unwrap()
+                .can_write(CapabilityId::RgbFixedColor)
+        );
+    }
+
+    #[test]
+    fn the_kraken_never_gains_an_rgb_topology() {
+        let fake = fixture("probe-rgb-scope");
+        let mut record = probe(&fake.root());
+        attach_rgb_topology(&mut record, answered_topology("1.0.0", 3));
+        assert!(record.device(KRAKEN_BASE).unwrap().rgb.is_none());
+    }
+
+    #[test]
+    fn endpoints_are_recorded_for_the_interfaces_that_publish_them() {
+        let fake = fixture("probe-endpoints");
+        let record = probe(&fake.root());
+
+        let rgb = record.device(RGB_CONTROLLER).unwrap();
+        let endpoints = &rgb.interfaces[0].endpoints;
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].address, 0x02);
+        assert_eq!(endpoints[0].direction, "out");
+        assert_eq!(endpoints[0].transfer, "Interrupt");
+        assert_eq!(endpoints[0].max_packet_size, 64);
+        assert_eq!(endpoints[1].address, 0x81);
+        assert_eq!(endpoints[1].direction, "in");
     }
 
     #[test]
