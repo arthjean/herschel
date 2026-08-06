@@ -9,7 +9,7 @@
 //! for an unreadable sensor is indistinguishable from a cooler that is actually
 //! at zero, which is exactly the confusion this product exists to remove.
 //!
-//! Ageing lives here too. The daemon stamps each snapshot, the client decides
+//! Aging lives here too. The daemon stamps each snapshot, the client decides
 //! when a retained value becomes stale and when it disappears, and both use the
 //! same constants.
 
@@ -38,7 +38,7 @@ pub const HISTORY_WINDOW_MS: u64 = 15 * 60 * 1_000;
 /// Liquid temperature at which the firmware failsafe owns the cooler.
 ///
 /// The kernel curve ABI stops at 59 C by construction, so nothing this product
-/// writes can alter behaviour at or above this temperature. The threshold is
+/// writes can alter behavior at or above this temperature. The threshold is
 /// here so the interface can say so, not so it can intervene.
 pub const LIQUID_CRITICAL_C: f32 = 60.0;
 
@@ -223,7 +223,7 @@ impl ChannelTelemetry {
 ///
 /// Each section carries the time *it* was sampled rather than inheriting the
 /// snapshot's. The collectors run independently, so one that wedges must be
-/// visible as one ageing section next to sections that are still current.
+/// visible as one aging section next to sections that are still current.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KrakenTelemetry {
     pub at_unix_ms: u64,
@@ -298,7 +298,7 @@ impl GpuTelemetry {
     }
 }
 
-/// CPU and memory metrics, normalised.
+/// CPU and memory metrics, normalized.
 ///
 /// The GPU is a separate section because it is a separate collector on a
 /// separate vendor interface: a driver that stops answering must not take the
@@ -538,7 +538,7 @@ impl TelemetrySnapshot {
 pub enum MetricView<T> {
     /// Sampled recently enough to be shown as current.
     Fresh { value: T },
-    /// The last valid value, kept visible and marked as ageing.
+    /// The last valid value, kept visible and marked as aging.
     Stale { value: T, age_ms: u64 },
     /// Nothing valid is available, and `cause` says why when one is known.
     Unavailable { cause: Option<Unavailable> },
@@ -560,7 +560,7 @@ impl<T> MetricView<T> {
         matches!(self, Self::Unavailable { .. })
     }
 
-    /// A word shown next to the value, so state never rests on colour alone.
+    /// A word shown next to the value, so state never rests on color alone.
     pub fn qualifier(&self) -> Option<&'static str> {
         match self {
             Self::Fresh { .. } => None,

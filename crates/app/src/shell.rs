@@ -97,7 +97,7 @@ impl Destination {
         }
     }
 
-    /// Glyph shown in the rail, so an entry is not identified by colour alone.
+    /// Glyph shown in the rail, so an entry is not identified by color alone.
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Monitoring => "▤",
@@ -126,13 +126,13 @@ pub const SCREEN_TAB_BASE: isize = 10;
 /// Which popover, if any, is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Popover {
-    /// A colour swatch list anchored to one colour field.
+    /// A color swatch list anchored to one color field.
     Swatches { field: LcdColorField },
     /// An option list anchored to one select.
     Options { select: SharedString },
 }
 
-/// The four colour controls of the LCD editor.
+/// The four color controls of the LCD editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LcdColorField {
     Reading,
@@ -151,15 +151,15 @@ impl LcdColorField {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Reading => "Reading colour",
-            Self::Text => "Text colour",
+            Self::Reading => "Reading color",
+            Self::Text => "Text color",
             Self::Background => "Background",
-            Self::Logo => "Wordmark colour",
+            Self::Logo => "Wordmark color",
         }
     }
 }
 
-/// Swatches offered by a colour popover.
+/// Swatches offered by a color popover.
 pub const SWATCHES: [Color; 6] = [
     Color::rgb(0x6f4ef2),
     Color::rgb(0x30c8a0),
@@ -227,7 +227,7 @@ impl LcdEditor {
         vec![
             SelectOption::new("dual_infographic", "Dual infographic"),
             SelectOption::new("single_metric", "Single metric"),
-            SelectOption::new("solid_colour", "Solid colour"),
+            SelectOption::new("solid_color", "Solid color"),
         ]
     }
 
@@ -1226,49 +1226,46 @@ impl Shell {
             .link
             .control_state(RGB_CONTROLLER, CapabilityId::RgbEffects);
 
-        screen(
-            "Lighting",
-            "Per-channel colour on the validated controller.",
-        )
-        .child(
-            Panel::new("Channel 1")
-                .subtitle("Channel topology is recorded before any write is offered.")
-                .render()
-                .child(self.color_field(LcdColorField::Reading, SCREEN_TAB_BASE, cx))
-                .child(
-                    Toggle::new("channel-1-power", "Channel power", false)
-                        .state(fixed.clone())
-                        .tab_index(SCREEN_TAB_BASE + 1)
-                        .render(),
-                )
-                .child(
-                    Button::new("lighting-apply", "Apply")
-                        .variant(ButtonVariant::Primary)
-                        .state(fixed)
-                        .tab_index(SCREEN_TAB_BASE + 2)
-                        .render(),
-                ),
-        )
-        .child(
-            Panel::new("Effects")
-                .subtitle("Only effects proven on this exact controller appear here.")
-                .render()
-                .child(
-                    div().text_color(color::TEXT_MUTED.hsla()).child(
-                        effects
-                            .message()
-                            .unwrap_or("No validated effect.")
-                            .to_string(),
+        screen("Lighting", "Per-channel color on the validated controller.")
+            .child(
+                Panel::new("Channel 1")
+                    .subtitle("Channel topology is recorded before any write is offered.")
+                    .render()
+                    .child(self.color_field(LcdColorField::Reading, SCREEN_TAB_BASE, cx))
+                    .child(
+                        Toggle::new("channel-1-power", "Channel power", false)
+                            .state(fixed.clone())
+                            .tab_index(SCREEN_TAB_BASE + 1)
+                            .render(),
+                    )
+                    .child(
+                        Button::new("lighting-apply", "Apply")
+                            .variant(ButtonVariant::Primary)
+                            .state(fixed)
+                            .tab_index(SCREEN_TAB_BASE + 2)
+                            .render(),
                     ),
-                ),
-        )
+            )
+            .child(
+                Panel::new("Effects")
+                    .subtitle("Only effects proven on this exact controller appear here.")
+                    .render()
+                    .child(
+                        div().text_color(color::TEXT_MUTED.hsla()).child(
+                            effects
+                                .message()
+                                .unwrap_or("No validated effect.")
+                                .to_string(),
+                        ),
+                    ),
+            )
     }
 
     fn lcd(&self, cx: &mut Context<Self>) -> Div {
         let frame = self.link.control_state(KRAKEN_BASE, CapabilityId::LcdFrame);
         let editor = self.lcd.clone();
 
-        screen("LCD", "Layout and colours for the Kraken display.").child(
+        screen("LCD", "Layout and colors for the Kraken display.").child(
             div()
                 .flex()
                 .gap(space::LG)
@@ -1482,11 +1479,11 @@ impl Shell {
         })
     }
 
-    /// A colour field plus its swatch popover.
+    /// A color field plus its swatch popover.
     fn color_field(&self, field: LcdColorField, tab_index: isize, cx: &mut Context<Self>) -> Div {
         let value = self.lcd.color(field);
         let open = self.popover == Some(Popover::Swatches { field });
-        let id = SharedString::from(format!("colour-{}", field.label()));
+        let id = SharedString::from(format!("color-{}", field.label()));
 
         let control = ColorField::new(id.clone(), field.label(), format!("{:06X}", value.0))
             .tab_index(tab_index)
@@ -1614,7 +1611,7 @@ fn numeric() -> gpui::Font {
     crate::theme::numeric_font()
 }
 
-/// A compact labelled readback with its freshness qualifier.
+/// A compact labeled readback with its freshness qualifier.
 fn readback(label: &'static str, view: &MetricView<f32>, format: impl Fn(f32) -> String) -> Div {
     let (value, qualifier) = match view {
         MetricView::Fresh { value } => (format(*value), None),
@@ -1766,7 +1763,7 @@ fn setting_row_owned(label: String, value: String) -> Div {
 ///
 /// `anchored` is what keeps a popover opened near a window edge fully visible:
 /// it repositions itself rather than being clipped. `deferred` paints it above
-/// panels laid out after it, so a popover is never covered by its neighbour.
+/// panels laid out after it, so a popover is never covered by its neighbor.
 fn popover_surface(content: impl IntoElement) -> impl IntoElement {
     gpui::deferred(
         gpui::anchored().snap_to_window_with_margin(px(8.0)).child(
@@ -1842,7 +1839,7 @@ mod tests {
     }
 
     #[test]
-    fn the_editor_exposes_exactly_four_colour_controls() {
+    fn the_editor_exposes_exactly_four_color_controls() {
         assert_eq!(LcdColorField::ALL.len(), 4);
         let labels: Vec<_> = LcdColorField::ALL.map(LcdColorField::label).to_vec();
         let mut unique = labels.clone();
@@ -1869,7 +1866,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_a_colour_changes_only_that_field() {
+    fn setting_a_color_changes_only_that_field() {
         let mut editor = LcdEditor::default();
         let before = editor.clone();
         editor.set_color(LcdColorField::Text, Color::rgb(0x123456));
@@ -1882,7 +1879,7 @@ mod tests {
 
     #[test]
     fn swatches_are_distinct() {
-        let mut values: Vec<u32> = SWATCHES.iter().map(|colour| colour.0).collect();
+        let mut values: Vec<u32> = SWATCHES.iter().map(|color| color.0).collect();
         values.sort();
         values.dedup();
         assert_eq!(values.len(), SWATCHES.len());

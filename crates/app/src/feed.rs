@@ -8,7 +8,7 @@
 //! otherwise freeze the window for the length of the client timeout, and a
 //! frozen window cannot show the operator that anything is wrong.
 //!
-//! The worker owns a single connection and serialises polling and commands
+//! The worker owns a single connection and serializes polling and commands
 //! through it, so the ordering the daemon sees is the ordering the operator
 //! produced. Each cycle it publishes a complete [`LinkState`] and rings the
 //! notifier, which is what wakes the view: the window repaints when new data

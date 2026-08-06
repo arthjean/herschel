@@ -23,7 +23,7 @@ pub const DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
 /// Events retained in memory. Older events are dropped first.
 pub const DEFAULT_CAPACITY: usize = 512;
 
-/// Text substituted for anything the redactor recognises as sensitive.
+/// Text substituted for anything the redactor recognizes as sensitive.
 pub const REDACTION_PLACEHOLDER: &str = "[redacted]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

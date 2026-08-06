@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Centralised design tokens.
+//! Centralized design tokens.
 //!
-//! Every colour, size and font used by a component comes from here, so the
+//! Every color, size and font used by a component comes from here, so the
 //! interface can be checked as a system: the contrast tests below run against
 //! these values, not against a screenshot.
 //!
@@ -18,7 +18,7 @@ pub const PRODUCT_NAME: &str = "Kraken Control";
 /// Shown wherever the product identifies itself.
 pub const UNOFFICIAL_NOTICE: &str = "Unofficial. Not affiliated with or endorsed by NZXT.";
 
-/// One colour token, kept as packed RGB so contrast can be computed on it.
+/// One color token, kept as packed RGB so contrast can be computed on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color(pub u32);
 
@@ -59,7 +59,7 @@ impl Color {
         .into()
     }
 
-    /// The same colour at reduced opacity, for overlays and disabled fills.
+    /// The same color at reduced opacity, for overlays and disabled fills.
     pub fn alpha(self, alpha: f32) -> Hsla {
         let mut hsla = self.hsla();
         hsla.a = alpha.clamp(0.0, 1.0);
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn status_colours_meet_aa_on_the_panel() {
+    fn status_colors_meet_aa_on_the_panel() {
         for status in [SUCCESS, WARNING, DANGER] {
             let ratio = status.contrast(PANEL);
             assert!(ratio >= TEXT_MIN, "{status:?} on PANEL is {ratio:.2}:1");

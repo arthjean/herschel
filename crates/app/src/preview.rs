@@ -5,7 +5,7 @@
 //!
 //! The Kraken panel is round, so the preview is round. It is drawn from the
 //! same editor state the device output will use, which is why rotation and
-//! colours here are the ones a later transport story sends to the panel.
+//! colors here are the ones a later transport story sends to the panel.
 
 use gpui::{Bounds, Div, Hsla, PathBuilder, Pixels, Point, Window, canvas, div, prelude::*, px};
 
@@ -114,13 +114,13 @@ fn paint_preview(
     logo: Hsla,
     arcs: &PreviewArcs,
 ) {
-    let centre = bounds.center();
+    let center = bounds.center();
     let radius = bounds.size.width.min(bounds.size.height) / 2.0;
 
     // Outer track, always drawn: it is the panel edge, not a value.
     paint_arc(
         window,
-        centre,
+        center,
         radius - px(10.0),
         0.0,
         1.0,
@@ -132,7 +132,7 @@ fn paint_preview(
     if let Some(cpu) = arcs.cpu {
         paint_arc(
             window,
-            centre,
+            center,
             radius - px(10.0),
             start,
             cpu,
@@ -143,7 +143,7 @@ fn paint_preview(
     if let Some(gpu) = arcs.gpu {
         paint_arc(
             window,
-            centre,
+            center,
             radius - px(24.0),
             start,
             gpu,
@@ -157,12 +157,12 @@ fn paint_preview(
     let origin_angle = -std::f32::consts::FRAC_PI_2 + start * std::f32::consts::TAU;
     let mut mark = PathBuilder::stroke(px(3.0));
     mark.move_to(Point {
-        x: centre.x + (radius - px(34.0)) * origin_angle.cos(),
-        y: centre.y + (radius - px(34.0)) * origin_angle.sin(),
+        x: center.x + (radius - px(34.0)) * origin_angle.cos(),
+        y: center.y + (radius - px(34.0)) * origin_angle.sin(),
     });
     mark.line_to(Point {
-        x: centre.x + (radius - px(20.0)) * origin_angle.cos(),
-        y: centre.y + (radius - px(20.0)) * origin_angle.sin(),
+        x: center.x + (radius - px(20.0)) * origin_angle.cos(),
+        y: center.y + (radius - px(20.0)) * origin_angle.sin(),
     });
     if let Ok(path) = mark.build() {
         window.paint_path(path, logo);
@@ -171,7 +171,7 @@ fn paint_preview(
 
 fn paint_arc(
     window: &mut Window,
-    centre: Point<Pixels>,
+    center: Point<Pixels>,
     radius: Pixels,
     start: f32,
     sweep: f32,
@@ -189,8 +189,8 @@ fn paint_arc(
         let progress = start + (step as f32 / segments as f32) * sweep;
         let angle = -std::f32::consts::FRAC_PI_2 + progress * std::f32::consts::TAU;
         let point = Point {
-            x: centre.x + radius * angle.cos(),
-            y: centre.y + radius * angle.sin(),
+            x: center.x + radius * angle.cos(),
+            y: center.y + radius * angle.sin(),
         };
         if step == 0 {
             builder.move_to(point);
@@ -203,7 +203,7 @@ fn paint_arc(
     }
 }
 
-/// Colours the preview draws with, for a given editor state.
+/// Colors the preview draws with, for a given editor state.
 ///
 /// Exposed so the background and the text on top of it can be checked as a
 /// pair: a preview whose text vanishes into its background is a bug, not a

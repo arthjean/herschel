@@ -12,7 +12,7 @@
 use futures::future::BoxFuture;
 use gpui::http_client::{AsyncBody, HttpClient, Response, Url, http};
 
-/// The refusal message, shared with the test that pins this behaviour.
+/// The refusal message, shared with the test that pins this behavior.
 pub const REFUSAL: &str = "this application performs no network requests";
 
 /// An [`HttpClient`] that fails every request without opening a socket.

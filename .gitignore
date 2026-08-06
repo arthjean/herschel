@@ -1,4 +1,4 @@
-# Rust build artefacts
+# Rust build artifacts
 /target/
 
 # Agent tooling, local to this machine

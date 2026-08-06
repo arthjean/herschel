@@ -8,7 +8,7 @@
 //! A fake sysfs tree mirroring the layout of the development machine.
 //!
 //! The probe reads real files through real permission checks, so a fixture is
-//! the only way to prove its behaviour on absent attributes, unbound drivers
+//! the only way to prove its behavior on absent attributes, unbound drivers
 //! and read-only nodes without owning four different devices.
 
 use std::fs;
@@ -183,7 +183,7 @@ impl FakeSysfs {
     /// A hwmon instance from another driver, which must not be attributed to
     /// an NZXT device.
     ///
-    /// Deliberately not a CPU driver: the CPU temperature collector recognises
+    /// Deliberately not a CPU driver: the CPU temperature collector recognizes
     /// a fixed set of driver names, and a fixture that accidentally matched
     /// one would make an "no CPU sensor here" test pass for the wrong reason.
     pub fn add_unrelated_hwmon(&self) -> PathBuf {

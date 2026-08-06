@@ -4,7 +4,7 @@
 //! The daemon's authoritative state and the handler for every typed request.
 //!
 //! One instance owns the capability record, the per-device locks and the
-//! configuration. The server wraps it in a mutex, so requests are serialised:
+//! configuration. The server wraps it in a mutex, so requests are serialized:
 //! two clients can never interleave a command.
 
 use std::time::Duration;
@@ -65,7 +65,7 @@ impl Daemon {
 
     /// Start against explicit sources and an explicit sampling interval.
     ///
-    /// Only the sources and the cadence change; every other behaviour is
+    /// Only the sources and the cadence change; every other behavior is
     /// identical, so a test exercises the same paths without waiting on real
     /// seconds or mutating a process-global variable.
     pub fn start_with(

@@ -24,7 +24,7 @@ use nzxt_core::ipc::socket_path_from_env;
 fn main() -> ExitCode {
     let mut trace = StartupTrace::start();
 
-    // The backend is checked before GPUI initialises, so a headless or broken
+    // The backend is checked before GPUI initializes, so a headless or broken
     // session produces a diagnostic instead of a panic inside the graphics
     // stack.
     let backend = match detect_backend_from_env() {
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         eprintln!(
-            "{PRODUCT_NAME}: the {} backend failed during initialisation. \
+            "{PRODUCT_NAME}: the {} backend failed during initialization. \
              Check that a compositor is running and that a Vulkan driver is installed. \
              Details: {info}",
             backend.name()

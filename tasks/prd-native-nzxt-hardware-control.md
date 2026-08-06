@@ -93,7 +93,7 @@ A GPUI window containing a single `div` costs *more* than the complete shell. Of
 
 Two consequences for the budget:
 
-1. A total-RSS target below roughly 290 MiB is unreachable with this stack on this driver, regardless of what the application does. Total `VmRSS` is therefore a regression ceiling, not an optimisation target.
+1. A total-RSS target below roughly 290 MiB is unreachable with this stack on this driver, regardless of what the application does. Total `VmRSS` is therefore a regression ceiling, not an optimization target.
 2. `RssAnon` is the figure the project actually controls, and it is the one the Month-6 target tightens.
 
 ### Best Practices Applied

@@ -13,7 +13,7 @@ Native open source Linux application to monitor and control NZXT hardware.
 | Total `VmRSS` at idle | 253.2 MiB | ≤ 320 MiB |
 | CPU at idle, 5 min average | 1.10% | ≤ 1.5% |
 
-Total `VmRSS` is dominated by the graphics driver and shader compiler mappings linked in by GPUI, shared with the other GPU clients on the machine: an empty GPUI window accounts for 288.1 MiB of it. This is a non-regression ceiling, not an optimisation target. The metric the project steers by is `RssAnon`. Full breakdown in [`docs/ep-001-evidence.md`](./docs/ep-001-evidence.md).
+Total `VmRSS` is dominated by the graphics driver and shader compiler mappings linked in by GPUI, shared with the other GPU clients on the machine: an empty GPUI window accounts for 288.1 MiB of it. This is a non-regression ceiling, not an optimization target. The metric the project steers by is `RssAnon`. Full breakdown in [`docs/ep-001-evidence.md`](./docs/ep-001-evidence.md).
 
 ## Intent
 
@@ -68,7 +68,7 @@ The `lcd-renderer` crate (`DisplayPreset` and the exact framebuffer) will arrive
 
 The thermal path goes entirely through the `kraken2023` driver: no kernel driver is detached and no USB endpoint is opened for the thermal side. Telemetry only reads, and three independent collectors (Kraken, CPU/memory, GPU) sample in parallel so that one failing sensor does not stop the others. GPU metrics go through NVML, loaded dynamically: without an NVIDIA driver, the GPU is simply unavailable.
 
-The daemon stays independent from the window in order to serialise commands, detect concurrent writers and restore a compatible profile after reconnection or resume from sleep.
+The daemon stays independent from the window in order to serialize commands, detect concurrent writers and restore a compatible profile after reconnection or resume from sleep.
 
 ## Usage
 
@@ -126,10 +126,10 @@ The first story validates GPUI under Wayland and X11 with a representative LCD s
 
 ## Research
 
-The [initial exploration of the NZXT GitHub organisation and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
+The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
 
-## Licence
+## License
 
-[GPL-3.0-or-later](./LICENSE). No external code is imported before its licence and its compatibility have been verified.
+[GPL-3.0-or-later](./LICENSE). No external code is imported before its license and its compatibility have been verified.
 
 The dependency inventory and the compatibility audit are still due before any package distribution (US-020).

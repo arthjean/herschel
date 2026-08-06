@@ -1,22 +1,22 @@
-# Initial research: the NZXT GitHub organisation and the Linux ecosystem
+# Initial research: the NZXT GitHub organization and the Linux ecosystem
 
-> Research state: 30 July 2026. Sources limited to the official `NZXTCorp` GitHub organisation, its repositories, its code, its tags and its releases.
+> Research state: 30 July 2026. Sources limited to the official `NZXTCorp` GitHub organization, its repositories, its code, its tags and its releases.
 >
 > Decision note: this document keeps the exploration and its initial recommendation as history. The current direction is a hardware-only GPUI application, defined in the [PRD](./tasks/prd-native-nzxt-hardware-control.md). Web Integrations are out of scope.
 
 ## Verdict
 
-The public NZXT organisation contains no NZXT CAM code, no NZXT device driver, no USB/HID specification, no VID/PID table and no public API to drive fans, pumps, RGB, LCD screens or firmware. It publishes no authentication contract or NZXT cloud API usable for a clone either.
+The public NZXT organization contains no NZXT CAM code, no NZXT device driver, no USB/HID specification, no VID/PID table and no public API to drive fans, pumps, RGB, LCD screens or firmware. It publishes no authentication contract or NZXT cloud API usable for a clone either.
 
 The genuinely interesting find is the **Web Integrations** trio. It documents a JavaScript interface that CAM injects into a Chromium browser, and the pipeline that displays a web page on the screen of a Kraken. It is not a hardware control API, but it is a good compatibility contract: a Linux CAM could reimplement `window.nzxt.v1`, then run the existing Kraken integrations without modifying them.
 
-The few HID, USB and monitoring forks present in the organisation are old generic libraries. They hint at the historical building blocks of CAM, not at the protocol of NZXT devices.
+The few HID, USB and monitoring forks present in the organization are old generic libraries. They hint at the historical building blocks of CAM, not at the protocol of NZXT devices.
 
 ## Verified scope
 
-The [GitHub API of the organisation](https://api.github.com/orgs/NZXTCorp) reports 59 public repositories. The [official inventory](https://api.github.com/orgs/NZXTCorp/repos?per_page=100&type=public) contains only 7 non-forks and 52 forks. A repository search on `cam`, `kraken` and `hardware` returns, on the CAM side, only `web-integrations-docs`, `web-integrations-types` and `web-integrations-examples`.
+The [GitHub API of the organization](https://api.github.com/orgs/NZXTCorp) reports 59 public repositories. The [official inventory](https://api.github.com/orgs/NZXTCorp/repos?per_page=100&type=public) contains only 7 non-forks and 52 forks. A repository search on `cam`, `kraken` and `hardware` returns, on the CAM side, only `web-integrations-docs`, `web-integrations-types` and `web-integrations-examples`.
 
-The 7 original repositories were inspected, along with the forks whose name or content could touch HID, USB, GPU or displays. No NZXT-specific hardware control code emerged. That is a conclusion about what is published in this organisation, not proof that the protocols do not exist in private repositories or in the CAM binary.
+The 7 original repositories were inspected, along with the forks whose name or content could touch HID, USB, GPU or displays. No NZXT-specific hardware control code emerged. That is a conclusion about what is published in this organization, not proof that the protocols do not exist in private repositories or in the CAM binary.
 
 ## What is usable
 
@@ -33,15 +33,15 @@ The [`v1/index.d.ts`](https://github.com/NZXTCorp/web-integrations-types/blob/dc
 
 The units and conventions are precise enough to serve as a public schema: load between 0 and 1, temperatures in Celsius, frequencies in MHz, fans in RPM, power in watts and memory in MiB. Numeric values may be `undefined`.
 
-**Value for the project: high, but only at the UI compatibility level.** A Linux implementation can collect its own metrics, normalise them to these types and inject the same object into a web renderer. Nothing in this repository makes it possible to open a Kraken, read its HID reports, set a curve or send a frame to the LCD.
+**Value for the project: high, but only at the UI compatibility level.** A Linux implementation can collect its own metrics, normalize them to these types and inject the same object into a web renderer. Nothing in this repository makes it possible to open a Kraken, read its HID reports, set a curve or send a frame to the LCD.
 
-The repository is small, written in TypeScript, and under the [MIT licence](https://github.com/NZXTCorp/web-integrations-types/blob/dc41ac2fc12e2c47320d253f1130478d184f162c/LICENSE). Its last commit on `main` dates from [17 September 2024](https://github.com/NZXTCorp/web-integrations-types/commit/dc41ac2fc12e2c47320d253f1130478d184f162c). The `v0.4.1` tag points at that commit, but the most recent published GitHub release is [`v0.4.0`](https://github.com/NZXTCorp/web-integrations-types/releases/tag/v0.4.0), dated 31 August 2023.
+The repository is small, written in TypeScript, and under the [MIT license](https://github.com/NZXTCorp/web-integrations-types/blob/dc41ac2fc12e2c47320d253f1130478d184f162c/LICENSE). Its last commit on `main` dates from [17 September 2024](https://github.com/NZXTCorp/web-integrations-types/commit/dc41ac2fc12e2c47320d253f1130478d184f162c). The `v0.4.1` tag points at that commit, but the most recent published GitHub release is [`v0.4.0`](https://github.com/NZXTCorp/web-integrations-types/releases/tag/v0.4.0), dated 31 August 2023.
 
 There is one inconsistency not to propagate: the [README](https://github.com/NZXTCorp/web-integrations-types/blob/dc41ac2fc12e2c47320d253f1130478d184f162c/README.md) shows `npm install @nzxt/web-integrations`, whereas the [`package.json`](https://github.com/NZXTCorp/web-integrations-types/blob/dc41ac2fc12e2c47320d253f1130478d184f162c/package.json) and the documentation use `@nzxt/web-integrations-types`.
 
 ### 2. `web-integrations-docs`: the architecture of the LCD mode
 
-The [development documentation](https://github.com/NZXTCorp/web-integrations-docs/blob/1f769ba5a75c65c656aeb0946ab6ca8f509075ba/pages/docs/development.md) reveals the behaviour of CAM:
+The [development documentation](https://github.com/NZXTCorp/web-integrations-docs/blob/1f769ba5a75c65c656aeb0946ab6ca8f509075ba/pages/docs/development.md) reveals the behavior of CAM:
 
 1. CAM opens two Chromium browsers: a visible configuration browser and a hidden "Kraken Browser".
 2. The Kraken Browser loads the same URL with `?kraken=1`.
@@ -61,7 +61,7 @@ The [FAQ](https://github.com/NZXTCorp/web-integrations-docs/blob/1f769ba5a75c65c
 
 **Value for the project: high, as the functional specification of the LCD subsystem.** The USB driver and the frame transfer format remain entirely absent.
 
-The repository is written in TypeScript/Next.js. Its last commit dates from [25 January 2024](https://github.com/NZXTCorp/web-integrations-docs/commit/1f769ba5a75c65c656aeb0946ab6ca8f509075ba). GitHub detects no licence and the root of the repository contains no `LICENSE` file. Its code must therefore be treated as a behaviour reference, not as reusable code, as long as NZXT has not clarified the licence.
+The repository is written in TypeScript/Next.js. Its last commit dates from [25 January 2024](https://github.com/NZXTCorp/web-integrations-docs/commit/1f769ba5a75c65c656aeb0946ab6ca8f509075ba). GitHub detects no license and the root of the repository contains no `LICENSE` file. Its code must therefore be treated as a behavior reference, not as reusable code, as long as NZXT has not clarified the license.
 
 ### 3. `web-integrations-examples`: LCD compatibility fixtures
 
@@ -69,7 +69,7 @@ The [README](https://github.com/NZXTCorp/web-integrations-examples/blob/0c3888a9
 
 **Value for the project: a good set of end-to-end fixtures.** A compatibility test could load these pages in the Linux renderer and check the geometry, the query parameter, the shared sessions and the `window.nzxt.v1` injection.
 
-The repository is under the [MIT licence](https://github.com/NZXTCorp/web-integrations-examples/blob/0c3888a99005e0e2d1195aeed97a64e44124ec12/LICENSE). It looks active at the organisation level, with merges up to [23 July 2026](https://github.com/NZXTCorp/web-integrations-examples/commit/0c3888a99005e0e2d1195aeed97a64e44124ec12), but the recent changes concern the [`community.md`](https://github.com/NZXTCorp/web-integrations-examples/blob/0c3888a99005e0e2d1195aeed97a64e44124ec12/community.md) list. The files of the four official examples have not changed since their initial commit of [12 April 2023](https://github.com/NZXTCorp/web-integrations-examples/commit/fcdf05085c2155ca22fd2341faee1cd3acb7d501).
+The repository is under the [MIT license](https://github.com/NZXTCorp/web-integrations-examples/blob/0c3888a99005e0e2d1195aeed97a64e44124ec12/LICENSE). It looks active at the organization level, with merges up to [23 July 2026](https://github.com/NZXTCorp/web-integrations-examples/commit/0c3888a99005e0e2d1195aeed97a64e44124ec12), but the recent changes concern the [`community.md`](https://github.com/NZXTCorp/web-integrations-examples/blob/0c3888a99005e0e2d1195aeed97a64e44124ec12/community.md) list. The files of the four official examples have not changed since their initial commit of [12 April 2023](https://github.com/NZXTCorp/web-integrations-examples/commit/fcdf05085c2155ca22fd2341faee1cd3acb7d501).
 
 The OAuth flows present are exclusively those of Google and Spotify. For instance, the Spotify code calls `accounts.spotify.com` and `api.spotify.com`, and the Google code calls `oauth2.googleapis.com`. They document no NZXT login, CAM token or NZXT cloud endpoint. This old example code must remain a fixture, not a production dependency.
 
@@ -79,13 +79,13 @@ The OAuth flows present are exclusively those of Google and Spotify. For instanc
 
 The [`NZXTCorp/hidapi-rs`](https://github.com/NZXTCorp/hidapi-rs) fork is a generic Rust wrapper around HIDAPI. Its [`Cargo.toml`](https://github.com/NZXTCorp/hidapi-rs/blob/7cdbb94cd8f14ab1240ba392318c02cfd7d9b250/Cargo.toml) exposes Linux `libusb` and `hidraw` backends, and its [README](https://github.com/NZXTCorp/hidapi-rs/blob/7cdbb94cd8f14ab1240ba392318c02cfd7d9b250/README.md) only shows how to open an arbitrary VID/PID and read or write bytes.
 
-It contains no NZXT VID/PID and no HID reports or commands specific to the Kraken, Hue, Grid or Smart Device. The last commit of the fork on its default branch dates from 11 May 2019, it announces version 0.5.2 and it points explicitly at the upstream project. MIT licence.
+It contains no NZXT VID/PID and no HID reports or commands specific to the Kraken, Hue, Grid or Smart Device. The last commit of the fork on its default branch dates from 11 May 2019, it announces version 0.5.2 and it points explicitly at the upstream project. MIT license.
 
 **Decision:** a historical hint confirming that HID is a plausible route, but a poor base to take as is. Pick a maintained Linux library once the real protocol is known.
 
 ### `periscope-usbid`
 
-The [`periscope-usbid`](https://github.com/NZXTCorp/periscope-usbid) fork is a Python API to walk the Linux USB topology in `/sys/bus/usb/devices`. Its [README](https://github.com/NZXTCorp/periscope-usbid/blob/2a54e0e41024e068fb9d5b1553b2ab19d8d7a039/README.rst) covers buses, ports, interfaces and TTYs, not HID transfers. The last commit dates from 2 February 2016. Its [`setup.py`](https://github.com/NZXTCorp/periscope-usbid/blob/2a54e0e41024e068fb9d5b1553b2ab19d8d7a039/setup.py) declares a simplified BSD licence.
+The [`periscope-usbid`](https://github.com/NZXTCorp/periscope-usbid) fork is a Python API to walk the Linux USB topology in `/sys/bus/usb/devices`. Its [README](https://github.com/NZXTCorp/periscope-usbid/blob/2a54e0e41024e068fb9d5b1553b2ab19d8d7a039/README.rst) covers buses, ports, interfaces and TTYs, not HID transfers. The last commit dates from 2 February 2016. Its [`setup.py`](https://github.com/NZXTCorp/periscope-usbid/blob/2a54e0e41024e068fb9d5b1553b2ab19d8d7a039/setup.py) declares a simplified BSD license.
 
 **Decision:** possibly useful as a sysfs enumeration reference, of no value for the device protocol.
 
@@ -105,7 +105,7 @@ The two other original repositories, [`crucible`](https://github.com/NZXTCorp/cr
 
 ## Function coverage for a Linux CAM
 
-| Target function | What the NZXT organisation provides | Coverage |
+| Target function | What the NZXT organization provides | Coverage |
 |---|---|---|
 | CPU/GPU/RAM monitoring | Public schema and injection frequency, no Linux collection | Partial |
 | Kraken liquid temperature | `kraken.liquidTemperature` field, no read command | Partial |
@@ -116,19 +116,19 @@ The two other original repositories, [`crucible`](https://github.com/NZXTCorp/cr
 | USB detection | Two old generic libraries, no NZXT identifier | Weak |
 | Firmware | No format, endpoint or update mechanism | None |
 | NZXT account and cloud | No OAuth, endpoint, schema or NZXT client | None |
-| Web Integrations compatibility | Official types, behaviour and examples | Good |
+| Web Integrations compatibility | Official types, behavior and examples | Good |
 
 ## Practical consequences
 
-The official GitHub organisation provides a **top-of-stack compatibility specification**, not the hardware bottom of the stack. The best use is to:
+The official GitHub organization provides a **top-of-stack compatibility specification**, not the hardware bottom of the stack. The best use is to:
 
 1. adopt `window.nzxt.v1` as the public interface of the Linux LCD renderer;
 2. convert Linux metrics to the official schema;
 3. use the MIT examples as compatibility tests;
-4. maintain a driver layer separated by family and firmware, since nothing in the organisation guarantees that Kraken, RGB and fan controllers share a protocol;
-5. look for the protocols, USB identifiers and command sequences outside the NZXT organisation, or establish them through clean reverse engineering with real devices.
+4. maintain a driver layer separated by family and firmware, since nothing in the organization guarantees that Kraken, RGB and fan controllers share a protocol;
+5. look for the protocols, USB identifiers and command sequences outside the NZXT organization, or establish them through clean reverse engineering with real devices.
 
-Do not call the project or its API "NZXT CAM" as if it were an official product. The MIT licences of the two repositories allow reuse of their code under their terms, but they do not amount to permission to use the NZXT trademark. For the forked repositories, presence in the NZXT organisation implies neither current maintenance nor product support.
+Do not call the project or its API "NZXT CAM" as if it were an official product. The MIT licenses of the two repositories allow reuse of their code under their terms, but they do not amount to permission to use the NZXT trademark. For the forked repositories, presence in the NZXT organization implies neither current maintenance nor product support.
 
 ## The repositories outside NZXTCorp that change the strategy
 
@@ -156,7 +156,7 @@ The strategic consequence is clear: redoing monitoring, profiles, persistence, r
 
 ### OpenRGB: useful if the RGB scope goes beyond NZXT
 
-[`OpenRGB`](https://gitlab.com/CalcProgrammer1/OpenRGB) supports many NZXT devices and publishes the [current VID/PID matrix](https://openrgb.org/devices.html?search=nzxt), including HUE 2, Kraken X3, several RGB & Fan Controllers and the Kraken 2024 Elite RGB. It is a good C++ reference for effects and LED topology, but it replaces neither thermal control nor the LCD. GPL-2.0 licence.
+[`OpenRGB`](https://gitlab.com/CalcProgrammer1/OpenRGB) supports many NZXT devices and publishes the [current VID/PID matrix](https://openrgb.org/devices.html?search=nzxt), including HUE 2, Kraken X3, several RGB & Fan Controllers and the Kraken 2024 Elite RGB. It is a good C++ reference for effects and LED topology, but it replaces neither thermal control nor the LCD. GPL-2.0 license.
 
 ### `AIOLCDUnchained`: the permissive lead for frame streaming
 
@@ -166,7 +166,7 @@ The current transport uses WinUSB and the documented binaries are for Windows. T
 
 ### `KrakenZPlayground`: a Linux precedent, but old and narrow
 
-[`ProtozeFOSS/KrakenZPlayground`](https://github.com/ProtozeFOSS/KrakenZPlayground) talks directly over USB to the Z53/Z63/Z73 and can display animations, images and QML views in real time under Linux. It proves that the dynamic pipeline works, but its last release dates from April 2022, its scope is limited to PID `1e71:3008`, and its Qt5/QML dependency is not a choice to adopt by default. GPL-3.0 licence.
+[`ProtozeFOSS/KrakenZPlayground`](https://github.com/ProtozeFOSS/KrakenZPlayground) talks directly over USB to the Z53/Z63/Z73 and can display animations, images and QML views in real time under Linux. It proves that the dynamic pipeline works, but its last release dates from April 2022, its scope is limited to PID `1e71:3008`, and its Qt5/QML dependency is not a choice to adopt by default. GPL-3.0 license.
 
 ## Recommended direction
 
@@ -176,12 +176,12 @@ Do not start with a general-purpose CAM clone. Start with a **Web Integrations r
 2. let `hwmon` and CoolerControl handle sensors, pumps, fans and thermal safety;
 3. reserve direct HID/libusb access for the LCD, in a single daemon so as to avoid concurrent access;
 4. load a Web Integration in an isolated Chromium renderer with `?kraken=1`;
-5. inject `window.nzxt.v1` and the normalised metrics from the CoolerControl API;
+5. inject `window.nzxt.v1` and the normalized metrics from the CoolerControl API;
 6. capture the framebuffer at the device resolution, encode it, then transmit it to the Kraken;
 7. use the official MIT examples as compatibility tests.
 
-The first experiment to run before choosing the UI stack is a spike with no interface: a local animated page, 640 x 640 or 320 x 320 depending on the hardware, frame capture and stable sending for thirty minutes. The real throughput, the USB errors, the CPU cost and the behaviour after sleep will decide whether Web Integrations compatibility is viable.
+The first experiment to run before choosing the UI stack is a spike with no interface: a local animated page, 640 x 640 or 320 x 320 depending on the hardware, frame capture and stable sending for thirty minutes. The real throughput, the USB errors, the CPU cost and the behavior after sleep will decide whether Web Integrations compatibility is viable.
 
 If the renderer accepts arbitrary URLs, it must stay without a privileged bridge to the daemon or to the file system. The remote page is untrusted code: isolated process, minimal permissions, per-origin storage and an explicit list of the only data injected.
 
-Finally, avoid copy-pasting between GPL-2.0, GPL-3.0 and MIT projects. For a published project, choose the licence before importing code. For a personal MVP, using the existing programs as separate processes immediately reduces the surface to write.
+Finally, avoid copy-pasting between GPL-2.0, GPL-3.0 and MIT projects. For a published project, choose the license before importing code. For a personal MVP, using the existing programs as separate processes immediately reduces the surface to write.

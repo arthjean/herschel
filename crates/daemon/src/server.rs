@@ -84,7 +84,7 @@ impl Server {
 
             let daemon = Arc::clone(&self.daemon);
             // One thread per client. The state mutex, not the thread count,
-            // is what serialises commands.
+            // is what serializes commands.
             std::thread::spawn(move || serve(stream, daemon));
         }
 

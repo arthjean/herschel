@@ -54,7 +54,7 @@ fn run() -> Result<(), String> {
 
 /// Emit the capability record without touching ownership or the socket.
 ///
-/// This is the artefact later stories read to find their exact prerequisite.
+/// This is the artifact later stories read to find their exact prerequisite.
 /// Serial numbers are redacted so the output can be attached to an issue or
 /// committed without publishing a device identifier.
 fn print_capabilities() -> Result<(), String> {

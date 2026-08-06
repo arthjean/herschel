@@ -7,7 +7,7 @@
 //! detached, no USB endpoint is opened, and nothing outside the `pwmN`,
 //! `pwmN_enable` and `tempN_auto_pointM_pwm` attributes of one `hwmon`
 //! directory is ever touched. The curve ABI stops at 59 C by construction, so
-//! no value written here can alter the firmware's behaviour above it.
+//! no value written here can alter the firmware's behavior above it.
 //!
 //! Write order matters and is deliberate. `pwmN` is written before
 //! `pwmN_enable`, so switching a channel into direct mode applies the duty the
@@ -76,7 +76,7 @@ impl ChannelSnapshot {
     /// Curve points are inert unless the channel is in curve mode, so a
     /// channel that was on the failsafe or on a fixed duty is fully restored
     /// by its mode and duty alone.
-    pub fn restores_behaviour(&self) -> bool {
+    pub fn restores_behavior(&self) -> bool {
         match self.mode {
             None => false,
             Some(PwmMode::FullSpeed) => true,
@@ -211,7 +211,7 @@ impl CoolingControl {
 
     /// Put a channel back to a captured state after a failed transaction.
     ///
-    /// Only what actually differs is written. That is not an optimisation: the
+    /// Only what actually differs is written. That is not an optimization: the
     /// write that failed may be the very attribute a blind restoration would
     /// rewrite, and failing to re-write a value that is already correct would
     /// report an uncertain state for a channel that never moved.
@@ -243,7 +243,7 @@ impl CoolingControl {
             self.write(&mode_attribute(channel), mode.to_kernel())?;
         }
 
-        let mut confirmed = snapshot.restores_behaviour();
+        let mut confirmed = snapshot.restores_behavior();
         if let Some(mode) = snapshot.mode {
             confirmed &= self.hwmon.mode(channel).copied() == Some(mode);
         }
@@ -424,7 +424,7 @@ mod tests {
             .snapshot(Channel::Pump)
             .with_curve(Some(original.clone()));
         assert_eq!(snapshot.mode, Some(PwmMode::Curve));
-        assert!(snapshot.restores_behaviour());
+        assert!(snapshot.restores_behavior());
 
         // Something else moves the channel, then the snapshot puts it back.
         control.apply_fixed(Channel::Pump, 200).unwrap();
@@ -447,7 +447,7 @@ mod tests {
         let snapshot = control.snapshot(Channel::Fan);
         assert_eq!(snapshot.mode, Some(PwmMode::FullSpeed));
         assert!(
-            snapshot.restores_behaviour(),
+            snapshot.restores_behavior(),
             "curve points are inert outside curve mode"
         );
 
@@ -472,7 +472,7 @@ mod tests {
             duty: None,
             curve: None,
         };
-        assert!(!snapshot.restores_behaviour());
+        assert!(!snapshot.restores_behavior());
         assert!(
             !control.restore(&snapshot).unwrap(),
             "an empty snapshot must not report a confirmed restoration"
@@ -486,19 +486,19 @@ mod tests {
     }
 
     #[test]
-    fn a_curve_snapshot_without_its_curve_cannot_restore_behaviour() {
+    fn a_curve_snapshot_without_its_curve_cannot_restore_behavior() {
         let snapshot = ChannelSnapshot {
             channel: Channel::Pump,
             mode: Some(PwmMode::Curve),
             duty: Some(200),
             curve: None,
         };
-        assert!(!snapshot.restores_behaviour());
+        assert!(!snapshot.restores_behavior());
         assert!(
             snapshot
                 .clone()
                 .with_curve(Some(CurveNodes::flat(90).interpolate()))
-                .restores_behaviour()
+                .restores_behavior()
         );
     }
 

@@ -6,7 +6,7 @@
 //! Every control shares one interaction model: it is either enabled, disabled
 //! with a reason, or in error. Disabled is never decorative here. It is how the
 //! product refuses to expose a write the hardware has not proven it supports,
-//! so each primitive carries the reason rather than silently greying out.
+//! so each primitive carries the reason rather than silently graying out.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -125,7 +125,7 @@ fn interactive(id: impl Into<ElementId>, state: &ControlState, tab_index: isize)
     }
 }
 
-/// A labelled action.
+/// A labeled action.
 pub struct Button {
     key: SharedString,
     label: SharedString,
@@ -458,7 +458,7 @@ impl Slider {
     }
 }
 
-/// A six-digit hexadecimal colour input with a live swatch.
+/// A six-digit hexadecimal color input with a live swatch.
 pub struct ColorField {
     key: SharedString,
     label: SharedString,
@@ -515,7 +515,7 @@ impl ColorField {
     }
 }
 
-/// Parse a six-digit hexadecimal colour, naming the exact problem.
+/// Parse a six-digit hexadecimal color, naming the exact problem.
 pub fn parse_hex_color(value: &str) -> Result<Color, String> {
     let trimmed = value.trim().trim_start_matches('#');
     if trimmed.len() != 6 {
@@ -603,7 +603,7 @@ impl DeviceHealth {
         }
     }
 
-    /// Text label, so status is never carried by colour alone.
+    /// Text label, so status is never carried by color alone.
     pub fn label(self) -> &'static str {
         match self {
             Self::Ready => "Ready",
@@ -844,7 +844,7 @@ fn paint_ring(
         return;
     }
 
-    let centre = bounds.center();
+    let center = bounds.center();
     let radius = (bounds.size.width.min(bounds.size.height) - thickness) / 2.0;
     if radius <= px(0.0) {
         return;
@@ -856,8 +856,8 @@ fn paint_ring(
         let progress = step as f32 / segments as f32 * fraction;
         let angle = -std::f32::consts::FRAC_PI_2 + progress * std::f32::consts::TAU;
         let point = Point {
-            x: centre.x + radius * angle.cos(),
-            y: centre.y + radius * angle.sin(),
+            x: center.x + radius * angle.cos(),
+            y: center.y + radius * angle.sin(),
         };
         if step == 0 {
             builder.move_to(point);
@@ -873,8 +873,8 @@ fn paint_ring(
 
 /// A numeric readout with its unit, freshness and one dominant bar.
 ///
-/// The qualifier is a word, not a colour: "Stale" and "N/A" are what carry the
-/// meaning, and the colour only reinforces them.
+/// The qualifier is a word, not a color: "Stale" and "N/A" are what carry the
+/// meaning, and the color only reinforces them.
 pub struct Metric {
     label: SharedString,
     value: Option<String>,
@@ -1087,7 +1087,7 @@ impl Sparkline {
         let gap_color = color::TEXT_DISABLED.hsla();
         let baseline_color = color::SEPARATOR.alpha(0.7);
         let segments = self.segments();
-        // Normalised once here, so the painter only places points and the
+        // Normalized once here, so the painter only places points and the
         // scale is exercised by the same code a test can call.
         let values: Vec<Option<f32>> = self
             .history
@@ -1147,7 +1147,7 @@ fn downsample(history: &History, limit: usize) -> Vec<Option<f32>> {
         .collect()
 }
 
-/// Paint a series whose values are already normalised into 0.0 to 1.0.
+/// Paint a series whose values are already normalized into 0.0 to 1.0.
 #[allow(clippy::too_many_arguments)]
 fn paint_sparkline(
     window: &mut Window,
@@ -1396,20 +1396,20 @@ fn paint_curve(
     }
 
     // Node markers, so each control point is visible without hovering, and the
-    // selected one is drawn wider so keyboard focus is legible without colour.
+    // selected one is drawn wider so keyboard focus is legible without color.
     for (index, duty) in nodes.duty.iter().enumerate() {
-        let centre = plot_node(index, *duty, bounds);
+        let center = plot_node(index, *duty, bounds);
         let half = if index == selected { px(7.0) } else { px(3.0) };
         let thickness = if index == selected { px(6.0) } else { px(4.0) };
         stroke_line(
             window,
             Point {
-                x: centre.x - half,
-                y: centre.y,
+                x: center.x - half,
+                y: center.y,
             },
             Point {
-                x: centre.x + half,
-                y: centre.y,
+                x: center.x + half,
+                y: center.y,
             },
             thickness,
             if index == selected {
@@ -1453,7 +1453,7 @@ impl NoteLevel {
         }
     }
 
-    /// A word, so urgency is never carried by colour alone.
+    /// A word, so urgency is never carried by color alone.
     pub fn label(self) -> &'static str {
         match self {
             Self::Info => "Note",
@@ -1506,7 +1506,7 @@ impl Note {
     }
 }
 
-/// A labelled control with its optional state message underneath.
+/// A labeled control with its optional state message underneath.
 ///
 /// The wrapper carries the element id, so the whole field is one click target
 /// rather than just the control box inside it.
@@ -1553,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_colours_are_parsed_and_their_failures_are_named() {
+    fn hex_colors_are_parsed_and_their_failures_are_named() {
         assert_eq!(parse_hex_color("7C5CFF").unwrap(), Color::rgb(0x7c5cff));
         assert_eq!(parse_hex_color("#7c5cff").unwrap(), Color::rgb(0x7c5cff));
         assert_eq!(parse_hex_color(" 000000 ").unwrap(), Color::rgb(0x000000));
@@ -1566,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_field_with_invalid_input_is_in_error_not_silently_reset() {
+    fn a_color_field_with_invalid_input_is_in_error_not_silently_reset() {
         let state = match parse_hex_color("12345") {
             Ok(_) => ControlState::Enabled,
             Err(error) => ControlState::error(error),
@@ -1623,7 +1623,7 @@ mod tests {
     }
 
     #[test]
-    fn device_health_is_never_conveyed_by_colour_alone() {
+    fn device_health_is_never_conveyed_by_color_alone() {
         for health in [
             DeviceHealth::Ready,
             DeviceHealth::ReadOnly,

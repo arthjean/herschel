@@ -26,7 +26,7 @@ pub const SOURCE: &str = "NVML";
 /// Shared library the NVIDIA driver package installs.
 ///
 /// Named here rather than left to the wrapper's default so the one path this
-/// product loads is visible, and so the absent-driver behaviour can be
+/// product loads is visible, and so the absent-driver behavior can be
 /// exercised by pointing at a library that is not there.
 pub const NVML_LIBRARY: &str = "libnvidia-ml.so.1";
 
@@ -89,7 +89,7 @@ impl GpuSensor {
     /// One GPU sample.
     ///
     /// Each field is resolved independently, so a driver that answers for the
-    /// temperature but not for utilisation reports one value and one `N/A`
+    /// temperature but not for utilization reports one value and one `N/A`
     /// rather than losing both.
     pub fn sample(&self, at_unix_ms: u64) -> GpuTelemetry {
         let Some(nvml) = &self.nvml else {
@@ -125,7 +125,7 @@ impl GpuSensor {
             load_percent: match device.utilization_rates() {
                 Ok(rates) => Reading::valid(clamp_percent(rates.gpu as f32)),
                 Err(error) => Reading::unavailable(Unavailable::unreadable(format!(
-                    "NVML did not report utilisation: {error}"
+                    "NVML did not report utilization: {error}"
                 ))),
             },
             // NVML reports whole degrees; the value keeps the product's single

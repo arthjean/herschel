@@ -9,7 +9,7 @@ version = 1
 # licensing keeps it, and this table only fills the gaps. Aggregating would
 # staple a second, identical copyright line onto every Rust source.
 #
-# The licence text is not annotated here. It is the Free Software Foundation's
+# The license text is not annotated here. It is the Free Software Foundation's
 # work rather than this project's, and REUSE already excludes both LICENSES/
 # and a root LICENSE file from the lint, so an annotation for it would be
 # configuration that decides nothing. The root copy exists because GitHub's

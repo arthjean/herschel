@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The serialised cooling executor.
+//! The serialized cooling executor.
 //!
 //! One instance owns every write to the thermal path. It remembers what it last
 //! committed per channel, which is what lets a repeated Apply perform zero

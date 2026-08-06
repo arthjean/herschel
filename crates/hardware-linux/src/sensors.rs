@@ -145,7 +145,7 @@ impl SystemSensors {
 
         let total = meminfo_field(&text, "MemTotal");
         // `MemAvailable` is the kernel's own estimate of what a workload can
-        // claim without swapping, which is the figure an operator recognises.
+        // claim without swapping, which is the figure an operator recognizes.
         // `MemFree` would count reclaimable cache as used.
         let available = meminfo_field(&text, "MemAvailable");
 
@@ -203,7 +203,7 @@ fn meminfo_field(text: &str, key: &str) -> Option<u64> {
     value.checked_mul(1024)
 }
 
-/// The `temp1_input` of the first recognised CPU temperature driver.
+/// The `temp1_input` of the first recognized CPU temperature driver.
 fn cpu_temperature_path(sysfs: &SysfsRoot) -> Option<PathBuf> {
     for entry in sorted_entries(&sysfs.hwmon()) {
         let Some(name) = read_attribute(&entry.join("name")) else {
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn cpu_temperature_comes_from_the_recognised_driver_only() {
+    fn cpu_temperature_comes_from_the_recognized_driver_only() {
         let (fake, proc_root) = fixture("sensors-cpu-temp");
         // Only an unrelated driver is present.
         fake.add_unrelated_hwmon();

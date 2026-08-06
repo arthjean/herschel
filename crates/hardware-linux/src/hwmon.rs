@@ -61,7 +61,7 @@ fn read_capabilities(path: &Path, driver: String) -> HwmonCapabilities {
         if !entry.is_file() || name == "uevent" {
             continue;
         }
-        // Curve points are summarised per channel instead of listed one by one.
+        // Curve points are summarized per channel instead of listed one by one.
         if name.contains("auto_point") {
             continue;
         }
@@ -236,7 +236,7 @@ impl KrakenHwmon {
             Ok(value) => match PwmMode::from_kernel(value) {
                 Some(mode) => Reading::valid(mode),
                 None => Reading::unavailable(Unavailable::unparsable(format!(
-                    "{} reports control mode {value}, which this build does not recognise.",
+                    "{} reports control mode {value}, which this build does not recognize.",
                     path.display()
                 ))),
             },

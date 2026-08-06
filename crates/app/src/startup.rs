@@ -3,7 +3,7 @@
 
 //! Launch preflight and startup instrumentation.
 //!
-//! GPUI initialises a display backend before any of this crate's code runs, so
+//! GPUI initializes a display backend before any of this crate's code runs, so
 //! an unusable environment has to be diagnosed *before* the framework is
 //! entered. The alternative is a panic inside a graphics stack, which tells an
 //! operator nothing about what to fix.
@@ -55,7 +55,7 @@ impl std::fmt::Display for BackendUnavailable {
 ///
 /// Wayland wins when both are present, matching GPUI's own preference. The
 /// error names the backend that was attempted and the next diagnostic step,
-/// rather than reporting a generic initialisation failure.
+/// rather than reporting a generic initialization failure.
 pub fn detect_backend(
     wayland_display: Option<&str>,
     x11_display: Option<&str>,
@@ -90,7 +90,7 @@ pub struct StartupTrace {
 }
 
 impl StartupTrace {
-    /// Start the clock, honouring [`STARTUP_TRACE_ENV`].
+    /// Start the clock, honoring [`STARTUP_TRACE_ENV`].
     pub fn start() -> Self {
         Self {
             started: Instant::now(),
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn truthy_environment_values_are_recognised() {
+    fn truthy_environment_values_are_recognized() {
         let key = "NZXT_TEST_FLAG_TRUTHY";
         for value in ["1", "true", "yes", "on", " 1 "] {
             unsafe { std::env::set_var(key, value) };

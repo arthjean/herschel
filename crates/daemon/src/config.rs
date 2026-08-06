@@ -272,7 +272,7 @@ fn preserve(path: &Path) -> Option<PathBuf> {
     std::fs::rename(path, &target).ok().map(|_| target)
 }
 
-/// Serialise to a temporary file, flush it to disk, then rename over the
+/// Serialize to a temporary file, flush it to disk, then rename over the
 /// target. The previous file stays intact until the rename lands.
 fn write_atomically(path: &Path, document: &ConfigDocument) -> Result<(), ConfigError> {
     use std::os::unix::fs::PermissionsExt;

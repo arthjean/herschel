@@ -76,7 +76,7 @@ pub enum CapabilityId {
     PumpCurve,
     /// Onboard fan curve over the driver's temperature points.
     FanCurve,
-    /// Per-channel fixed RGB colour.
+    /// Per-channel fixed RGB color.
     RgbFixedColor,
     /// Animated RGB effects.
     RgbEffects,
@@ -97,7 +97,7 @@ impl CapabilityId {
             Self::FanDuty => "Fan duty",
             Self::PumpCurve => "Pump curve",
             Self::FanCurve => "Fan curve",
-            Self::RgbFixedColor => "RGB fixed colour",
+            Self::RgbFixedColor => "RGB fixed color",
             Self::RgbEffects => "RGB effects",
             Self::LcdFrame => "LCD frame transfer",
             Self::LcdDisplayControl => "LCD display control",

@@ -56,7 +56,7 @@ pub fn identity(id: DeviceId, path: &Path) -> UsbIdentity {
         product: field("product"),
         serial: field("serial"),
         // USB has no firmware attribute. bcdDevice is the device release
-        // number, which is the closest published value, and it is labelled as
+        // number, which is the closest published value, and it is labeled as
         // such rather than presented as a firmware version.
         firmware: field("bcdDevice"),
         sysfs_path: source,

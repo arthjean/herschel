@@ -260,7 +260,7 @@ impl CurveNodes {
 
 /// A named local profile.
 ///
-/// Unknown fields are refused: an unrecognised key means the file or frame came
+/// Unknown fields are refused: an unrecognized key means the file or frame came
 /// from a version this build cannot interpret, which is a recovery case rather
 /// than something to silently ignore.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

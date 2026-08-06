@@ -41,7 +41,7 @@ device, which has three consequences the design had to absorb:
    writer. `ChannelSnapshot::with_curve` folds that record in.
 3. Curve points are inert outside curve mode, so a channel that was on the
    failsafe or on a fixed duty is fully restored by its mode and duty alone.
-   `ChannelSnapshot::restores_behaviour` encodes exactly that.
+   `ChannelSnapshot::restores_behavior` encodes exactly that.
 
 Order of writes is deliberate: `pwmN` before `pwmN_enable`, so switching into
 direct mode applies the duty the operator asked for rather than whatever the
@@ -62,7 +62,7 @@ device never runs a half-updated curve.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| CPU load/temperature, GPU load/temperature and RAM used/total sampled once per second from local interfaces | `hardware-linux/src/sensors.rs` (`/proc/stat`, `/proc/meminfo`, `k10temp`), `hardware-linux/src/gpu.rs` (NVML) | `cpu_load_is_the_busy_fraction_between_two_samples`, `memory_reports_used_and_total_in_bytes`, `cpu_temperature_comes_from_the_recognised_driver_only`; live figures below |
+| CPU load/temperature, GPU load/temperature and RAM used/total sampled once per second from local interfaces | `hardware-linux/src/sensors.rs` (`/proc/stat`, `/proc/meminfo`, `k10temp`), `hardware-linux/src/gpu.rs` (NVML) | `cpu_load_is_the_busy_fraction_between_two_samples`, `memory_reports_used_and_total_in_bytes`, `cpu_temperature_comes_from_the_recognized_driver_only`; live figures below |
 | Percentages clamped to 0-100, temperatures to one decimal, memory in an explicit binary unit | `telemetry::clamp_percent`, `format_temperature`, `format_binary_bytes` | `percentages_are_clamped_and_temperatures_keep_one_decimal`, `memory_is_reported_in_explicit_binary_units` |
 | A missing GPU driver or sensor shows `N/A` while other metrics keep updating | Three independent collectors; `GpuTelemetry::unavailable`, `MetricView::qualifier` | `a_missing_library_leaves_every_gpu_value_unavailable_with_a_reason`, `an_unavailable_gpu_leaves_every_other_metric_updating`, `a_section_that_stops_updating_ages_alone` |
 | Zero network requests during collection | No HTTP client in the daemon; NVML is a local `dlopen` of `libnvidia-ml.so.1`; the client installs `offline::NoNetwork` | `every_request_is_refused_with_the_target_named`; live: `ss -tulpn` lists no entry for either binary, and the daemon holds exactly one socket descriptor |
@@ -80,7 +80,7 @@ section, and the client ages that section out while the others stay current.
 | CPU, GPU, RAM and Kraken sections with values, units and one dominant bar each | `app/src/shell.rs` `monitoring()`, `components::Metric` | Live run below; `a_metric_without_a_value_reads_as_unavailable_not_as_zero` |
 | Charts use an in-memory rolling window and write no history database | `telemetry::History` bounded by `HISTORY_WINDOW_MS`, pruned by timestamp | `history_keeps_only_the_window_and_records_gaps`, `the_default_history_window_is_the_fifteen_minutes_the_prd_allows`, `a_series_records_one_point_per_new_sample` |
 | No horizontal scrolling at 920x640 and 1280x720 | `metric_row()` wraps; every column carries `min_w_0`; only the work surface scrolls, vertically | Live run at 920x640 |
-| A stale or unavailable value and its chart gap are distinct, and not by colour alone | `MetricView::qualifier` renders the words `Stale` and `N/A`; `Sparkline` breaks the line and marks a baseline tick under each hole | `a_metric_takes_its_qualifier_from_the_view_it_was_built_from`, `a_sparkline_breaks_its_line_at_every_gap`, `downsampling_never_hides_a_gap` |
+| A stale or unavailable value and its chart gap are distinct, and not by color alone | `MetricView::qualifier` renders the words `Stale` and `N/A`; `Sparkline` breaks the line and marks a baseline tick under each hole | `a_metric_takes_its_qualifier_from_the_view_it_was_built_from`, `a_sparkline_breaks_its_line_at_every_gap`, `downsampling_never_hides_a_gap` |
 | Tabular numerals keep adjacent labels from moving | `theme::numeric_font` with `tnum`, used by every readout | Inherited from EP-001; every new readout uses `numeric_font()` |
 
 ## US-009: Apply validated fixed pump and fan duty
@@ -110,15 +110,15 @@ daemon would accept rather than one that fails on the far side of the socket.
 | Ten control nodes over 20-59 C, linearly interpolated to exactly 40 integer PWM values | `profile::CurveNodes` | `ten_nodes_span_exactly_the_kernel_range`, `nodes_interpolate_to_exactly_forty_integer_points`, `interpolation_between_two_nodes_is_linear`, `nodes_sit_on_whole_points_and_whole_degrees` |
 | Validation fixes temperature order, keeps PWM in the channel's safe range and duty monotonically non-decreasing | Temperatures are positional and cannot be edited; `CurveNodes::set` maintains monotonicity by construction; `validate_curve` re-checks | `editing_one_node_keeps_the_whole_set_monotonic`, `an_edited_node_set_always_validates_as_a_curve`, `curve_must_not_decrease`, `a_pump_curve_node_cannot_be_edited_below_the_pump_floor` |
 | Pointer or keyboard node movement writes nothing until Apply | `CoolingEditor` holds pending state only; `Shell::apply` is the sole sender of `Command::Apply` | `every_edit_keeps_the_program_valid`, `a_curve_edit_needs_both_the_record_and_the_reported_mode`; the editor has no `Feed` handle |
-| Apply prevalidates all 40 values, serialises one curve transaction and records readback where supported | `Daemon::execute` validates before the executor is reached; `apply_curve` writes 40 points then the mode | `a_curve_apply_writes_forty_values_per_channel_in_one_transaction`, `a_non_monotonic_curve_is_refused_before_the_first_point_is_written`, `a_curve_of_the_wrong_length_is_refused_before_the_first_write` |
-| A failure after one or more attributes changed attempts a complete last known-good restoration and reports confirmed or uncertain | `CoolingControl::restore` writes only what differs; `ChannelSnapshot::restores_behaviour` decides which of the two states is reported | `a_snapshot_restores_the_program_the_channel_was_running`, `a_channel_on_the_failsafe_is_restored_by_its_mode_alone`, `a_snapshot_that_read_nothing_cannot_claim_a_restoration` |
+| Apply prevalidates all 40 values, serializes one curve transaction and records readback where supported | `Daemon::execute` validates before the executor is reached; `apply_curve` writes 40 points then the mode | `a_curve_apply_writes_forty_values_per_channel_in_one_transaction`, `a_non_monotonic_curve_is_refused_before_the_first_point_is_written`, `a_curve_of_the_wrong_length_is_refused_before_the_first_write` |
+| A failure after one or more attributes changed attempts a complete last known-good restoration and reports confirmed or uncertain | `CoolingControl::restore` writes only what differs; `ChannelSnapshot::restores_behavior` decides which of the two states is reported | `a_snapshot_restores_the_program_the_channel_was_running`, `a_channel_on_the_failsafe_is_restored_by_its_mode_alone`, `a_snapshot_that_read_nothing_cannot_claim_a_restoration` |
 | The 100% failsafe at or above 60 C is neither disabled nor overridden | The ABI stops at point 40 (59 C); nothing outside the 40 points and `pwmN`/`pwmN_enable` is ever written | `a_curve_stops_at_the_last_point_the_kernel_abi_defines`, `the_critical_alert_states_that_the_failsafe_is_not_overridden`, `a_coolant_at_the_failsafe_threshold_raises_a_critical_alert` |
 
-`restore` writing only what differs is not an optimisation. A blind restoration
+`restore` writing only what differs is not an optimization. A blind restoration
 would rewrite the very attribute whose write had just failed, turn that second
 failure into a reported uncertainty, and claim a channel had moved when it had
 not. `a_partial_failure_restores_the_previous_program_and_reports_it` fails if
-that behaviour comes back.
+that behavior comes back.
 
 ## US-011: Save, activate and recover named profiles
 
@@ -135,7 +135,7 @@ path, which is the one a fresh daemon exercises.
 
 Deletion had the same shape of defect as the per-channel gate, in the other
 direction: the daemon implemented it, the socket test exercised it, and no
-control in the window ever sent `Command::DeleteProfile`. A behaviour reachable
+control in the window ever sent `Command::DeleteProfile`. A behavior reachable
 only from a test is not reachable. The Cooling screen now carries a Delete
 control that arms on the first activation and fires on the second, because
 removing the configuration an operator is running is not something one stray

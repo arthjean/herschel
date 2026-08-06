@@ -2,7 +2,7 @@
 
 Every acceptance criterion of the Validated Native Foundation, with the code
 that implements it and the check that proves it. Automated checks are test
-names inside `cargo test --workspace`; manual checks name the artefact.
+names inside `cargo test --workspace`; manual checks name the artifact.
 
 Machine under test: Fedora 44, Linux `7.1.6-201.fc44.x86_64`, Wayland session
 with XWayland available, NZXT Kraken Base `1e71:300e` (bcdDevice 0200) and NZXT
@@ -12,7 +12,7 @@ RGB Controller `1e71:2021` (bcdDevice 0105).
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| 920x640 window with two selects, four colour controls, a rotate action and a custom-painted circular preview | `crates/app/src/shell.rs` (LCD destination), `crates/app/src/preview.rs` | `docs/screenshots/lcd-colour-popover.png`, `docs/screenshots/lcd-rotated-180.png`; `the_editor_exposes_two_selects_with_options`, `the_editor_exposes_exactly_four_colour_controls`, `rotation_cycles_through_the_four_validated_increments` |
+| 920x640 window with two selects, four color controls, a rotate action and a custom-painted circular preview | `crates/app/src/shell.rs` (LCD destination), `crates/app/src/preview.rs` | `docs/screenshots/lcd-color-popover.png`, `docs/screenshots/lcd-rotated-180.png`; `the_editor_exposes_two_selects_with_options`, `the_editor_exposes_exactly_four_color_controls`, `rotation_cycles_through_the_four_validated_increments` |
 | Median first frame <=700 ms over five cold launches; idle `RssAnon` <=110 MiB; idle `VmRSS` <=320 MiB; five-minute idle CPU <=1.5% | `crates/app/src/startup.rs`, `crates/app/src/main.rs` | Measurements below |
 | Keyboard-only traversal in a logical order with a visible focus state | `Destination::tab_index`, `SCREEN_TAB_BASE`, `interactive()` focus style | `docs/screenshots/monitoring-keyboard-focus.png`; `rail_tab_order_is_stable_and_precedes_screen_controls` |
 | No clipping at 200% desktop scale | Layout uses `min_w_0` and wrapping text throughout | `docs/screenshots/monitoring-200-percent.png` (1840x1280 device pixels for 920x640 logical) |
@@ -102,7 +102,7 @@ evidence US-016 needs, recorded rather than assumed.
 | Criterion | Implementation | Proof |
 |---|---|---|
 | One process lock per device, one user-owned Unix socket | `daemon/src/ownership.rs`, `daemon/src/server.rs`, `core::ipc::socket_path_from_env` | `one_lock_is_held_per_supported_device`, `the_socket_is_owner_only`, `the_first_holder_wins_and_the_second_is_told_who_holds_it`, `the_daemon_binds_the_socket_the_client_connects_to`; live: `srw-------` at `/run/user/1000/nzxt-control/nzxt-control.sock`, two locks held |
-| Local peer authenticated, typed message validated, operation serialised | `server::peer_credentials` (SO_PEERCRED), `Arc<Mutex<Daemon>>` | `a_client_completes_the_handshake_and_reads_status`, `several_clients_are_served_without_interleaving` |
+| Local peer authenticated, typed message validated, operation serialized | `server::peer_credentials` (SO_PEERCRED), `Arc<Mutex<Daemon>>` | `a_client_completes_the_handshake_and_reads_status`, `several_clients_are_served_without_interleaving` |
 | A conflicting holder puts the application in read-only mode without forcing access | `Daemon::access_mode`, `ownership::observed_holders` | `read_only_mode_names_the_conflict`, `one_lock_is_held_per_supported_device` (second daemon is read-only) |
 | Out-of-range, unknown or malformed commands produce zero hardware writes and a typed rejection | `Daemon::dispatch`, `ipc::read_frame` ceiling | `malformed_and_oversized_frames_are_refused_without_touching_hardware`, `out_of_range_values_are_rejected_with_their_accepted_range` (both compare a full mtime snapshot of the hwmon tree) |
 | The daemon survives a client crash and the onboard program continues | one thread per connection, no hardware handle in the client | `the_daemon_survives_a_client_that_disappears_mid_request` |
@@ -114,10 +114,10 @@ evidence US-016 needs, recorded rather than assumed.
 |---|---|---|
 | Monitoring, Cooling, Lighting, LCD plus a secondary Settings | `shell::Destination` | `the_shell_exposes_four_primary_destinations_and_one_secondary`; screenshots |
 | Fixed dark rail, charcoal surface, low-contrast separators, one violet accent, tabular numerals, no vendor asset | `crates/app/src/theme.rs` | `separators_stay_low_contrast_without_disappearing`, `body_text_meets_aa_on_every_surface`, `text_on_the_accent_meets_aa_in_every_interaction_state`; `numeric_font()` sets `tnum` on a fixed-advance family |
-| Centralised tokens and nine primitives with hover, focus, active, disabled and error states | `theme.rs`, `components.rs` | `interactive()` is the single source of those states; `a_disabled_control_carries_its_reason`, `a_colour_field_with_invalid_input_is_in_error_not_silently_reset` |
+| Centralized tokens and nine primitives with hover, focus, active, disabled and error states | `theme.rs`, `components.rs` | `interactive()` is the single source of those states; `a_disabled_control_carries_its_reason`, `a_color_field_with_invalid_input_is_in_error_not_silently_reset` |
 | No horizontal scroll at 920x640; pointer targets >=40x40 | `TARGET_MIN`, `min_w_0` on every flex column | `pointer_targets_are_at_least_forty_logical_pixels`; screenshots at 920x640 |
 | No device, missing permission or read-only conflict disables write controls behind one actionable message | `link::LinkState::control_state` for capability-scoped controls, `LinkState::write_state` for the profile selector, `LinkState::banner` | `without_a_daemon_every_control_is_disabled_with_one_actionable_message`, `a_read_only_conflict_disables_controls_and_shows_the_conflict`, `an_unvalidated_capability_disables_its_control_and_names_the_story`, `a_read_only_conflict_also_disables_the_profile_selector`, `the_profile_selector_is_enabled_only_when_a_device_can_be_written` |
-| A popover near a window edge stays fully visible | `popover_surface` uses `gpui::deferred(gpui::anchored().snap_to_window_with_margin(...))` | `docs/screenshots/lcd-colour-popover.png` |
+| A popover near a window edge stays fully visible | `popover_surface` uses `gpui::deferred(gpui::anchored().snap_to_window_with_margin(...))` | `docs/screenshots/lcd-color-popover.png` |
 
 The popover placement is delegated to GPUI's `anchored` element rather than a
 hand-rolled calculation. An earlier local `resolve_placement` helper was removed
@@ -199,7 +199,7 @@ and the duplicate `record_client_rejected` on the uid-mismatch path.
 `gpui` depends on `gpui_http_client`, which pulls `hyper` and a `reqwest` fork
 into the dependency graph. That dependency is not optional and cannot be
 removed without forking GPUI, so `cargo tree` will show it. It is a linked
-library, not a runtime behaviour: no code in this workspace calls it, and the
+library, not a runtime behavior: no code in this workspace calls it, and the
 process opens no listening socket.
 
 Rather than rely on that, `crates/app/src/main.rs` installs
