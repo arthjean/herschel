@@ -1,0 +1,218 @@
+{
+  "scope": "effect_sweep",
+  "device": "1e71:2021",
+  "node": "/dev/hidraw12",
+  "firmware": {
+    "state": "known",
+    "value": "1.5.0",
+    "source": "/dev/hidraw12 report 0x11 0x01"
+  },
+  "channels": [
+    {
+      "index": 1,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    },
+    {
+      "index": 2,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    },
+    {
+      "index": 3,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    }
+  ],
+  "prior_state": "Les trois ventilateurs sont en violet fixe.",
+  "steps": [
+    {
+      "channel": 1,
+      "program": "Breathing at slowest speed",
+      "report_hex": "2a040101072800191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991dabe020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 312,
+      "error": null,
+      "observed": "Le ventilateur du haut et blanc et pusle lentement et les 2 autres sotn toujours violet."
+    },
+    {
+      "channel": 1,
+      "program": "Breathing at slower speed",
+      "report_hex": "2a040101071e00191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991dbbe020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 931,
+      "error": null,
+      "observed": "Le ventilateur du haut pulse plus vite et toujours blanc et les autres toujours violet."
+    },
+    {
+      "channel": 1,
+      "program": "Breathing at normal speed",
+      "report_hex": "2a040101071400191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991dcbe020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 148,
+      "error": null,
+      "observed": "Le ventilateur du haut pulse plus vite et toujours blanc et les 2 autres violet."
+    },
+    {
+      "channel": 1,
+      "program": "Breathing at faster speed",
+      "report_hex": "2a040101070a00191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991ddbe020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 830,
+      "error": null,
+      "observed": "Le ventilateur du haut pulse encore plus vite et toujours blanc et les 2 autres toujours en violets fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Breathing at fastest speed",
+      "report_hex": "2a040101070400191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991debe020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 346,
+      "error": null,
+      "observed": "Le ventilateur du haut pulse toujours encore plus vite en blanc et les 2 autres en violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at slowest speed, forward",
+      "report_hex": "2a040101025e01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991dfbe020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 228,
+      "error": null,
+      "observed": "Le ventilateur du haut totate dans le sens d'un aiguille d'une montre et rainbow et les 2 autres ventilateurs en violet fixe"
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at slower speed, forward",
+      "report_hex": "2a040101022c01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e0be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 462,
+      "error": null,
+      "observed": "La rotation du ventilateur du haut et plus rapide et les 2 autres en violt fixe toujours"
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at normal speed, forward",
+      "report_hex": "2a04010102fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e1be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 782,
+      "error": null,
+      "observed": "Leentilateur du haut rotate encore plus vite et toujours en rainbow et les 2 autres en violet fixe"
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at faster speed, forward",
+      "report_hex": "2a040101029600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e2be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 466,
+      "error": null,
+      "observed": "Le ventilateur du haut rotate toujours plus vite et en rainbow et les 2 autres toujours violet fixe"
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at fastest speed, forward",
+      "report_hex": "2a040101025000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e3be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 167,
+      "error": null,
+      "observed": "Le ventilateur du haut rotate encore plus vite et en raibow et les 2 autres toujours en violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at slowest speed, backward",
+      "report_hex": "2a040101025e01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e4be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 356,
+      "error": null,
+      "observed": "Le ventilateur du haut m'a l'air plus lent et les 2 autres toujours en violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at slower speed, backward",
+      "report_hex": "2a040101022c01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e5be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 286,
+      "error": null,
+      "observed": "Comme avant dans le sens inverse d'une montre je crois et plus vite et les 2 autres ventilos toujours en violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at normal speed, backward",
+      "report_hex": "2a04010102fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e6be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 300,
+      "error": null,
+      "observed": "Le ventilateur du haut tourne toujours à l'inverse et plus rapidement et les 2 autres sont violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at faster speed, backward",
+      "report_hex": "2a040101029600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e7be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 490,
+      "error": null,
+      "observed": "Le ventilateur du haut rotate à l'inverse encore plus vite et les 2 autres en violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at fastest speed, backward",
+      "report_hex": "2a040101025000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e8be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 1042,
+      "error": null,
+      "observed": "Le ventilateur du haute rotate toujours à l'inverse encore plus vite et les 2 autres en violet fixe."
+    },
+    {
+      "channel": 1,
+      "program": "off",
+      "report_hex": "2a040101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e9be020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 380,
+      "error": null,
+      "observed": "Le ventilateur du haut et coupé ou noir je ne sais pas et les 2 autres en violet fixe."
+    }
+  ],
+  "cadence": {
+    "tried_ms": [
+      200,
+      100,
+      50,
+      25,
+      10
+    ],
+    "stable_interval_ms": 10,
+    "first_failure_ms": null,
+    "detail": "5 commands landed at every interval down to 10 ms without an error."
+  },
+  "restoration": {
+    "state": "confirmed",
+    "program": "off",
+    "observed": "Les trois ventilateur ont l'air éteint ou noir"
+  }
+}

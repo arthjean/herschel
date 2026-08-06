@@ -1,0 +1,128 @@
+{
+  "scope": "fixed_and_off",
+  "device": "1e71:2021",
+  "node": "/dev/hidraw12",
+  "firmware": {
+    "state": "known",
+    "value": "1.5.0",
+    "source": "/dev/hidraw12 report 0x11 0x01"
+  },
+  "channels": [
+    {
+      "index": 1,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    },
+    {
+      "index": 2,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    },
+    {
+      "index": 3,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    }
+  ],
+  "prior_state": "trois ventilateurs en violet fixe",
+  "steps": [
+    {
+      "channel": 1,
+      "program": "fixed #FFFFFF at 10%",
+      "report_hex": "2a040101003200191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991ffa2020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 414,
+      "error": null,
+      "observed": "le ventilateur du haut s'allume en blanc faible, les deux autres inchangés"
+    },
+    {
+      "channel": 1,
+      "program": "off",
+      "report_hex": "2a040101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d899100a3020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 1075,
+      "error": null,
+      "observed": "le ventilateur du haut s'éteint complètement, les deux autres inchangés"
+    },
+    {
+      "channel": 2,
+      "program": "fixed #FFFFFF at 10%",
+      "report_hex": "2a040202003200191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d899101a3020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 440,
+      "error": null,
+      "observed": "le ventilateur du milieu s'allume en blanc faible, celui du haut reste éteint, celui du bas toujours en violet"
+    },
+    {
+      "channel": 2,
+      "program": "off",
+      "report_hex": "2a040202000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d899102a3020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 951,
+      "error": null,
+      "observed": "le ventilateur du milieu s'éteint complètement, celui du haut toujours éteint, celui du bas toujours en violet"
+    },
+    {
+      "channel": 3,
+      "program": "fixed #FFFFFF at 10%",
+      "report_hex": "2a040404003200191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d899103a3020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 184,
+      "error": null,
+      "observed": "le ventilateur du bas s'allume en blanc faible, les deux autres restent éteints"
+    },
+    {
+      "channel": 3,
+      "program": "off",
+      "report_hex": "2a040404000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff011209488854e50259915d89912a04000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 349,
+      "error": null,
+      "observed": "le ventilateur du bas s'éteint complètement, les trois sont noirs"
+    }
+  ],
+  "cadence": {
+    "tried_ms": [
+      200,
+      100,
+      50,
+      25,
+      10
+    ],
+    "stable_interval_ms": 10,
+    "first_failure_ms": null,
+    "detail": "5 commands landed at every interval down to 10 ms without an error."
+  },
+  "restoration": {
+    "state": "confirmed",
+    "program": "off",
+    "observed": "les trois ventilateurs sont éteints comme demandé, le violet d'origine n'est pas revenu"
+  }
+}

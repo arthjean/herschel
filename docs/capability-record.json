@@ -1,12 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "context": {
     "kernel_release": {
       "state": "known",
       "value": "7.1.6-201.fc44.x86_64",
       "source": "uname(2)"
     },
-    "probed_at_unix_ms": 1786002635981
+    "probed_at_unix_ms": 1786045122395
   },
   "devices": [
     {
@@ -50,25 +50,101 @@
             "state": "known",
             "value": "usbhid",
             "source": "/sys/bus/usb/devices/1-12/1-12:1.0/driver"
-          }
+          },
+          "endpoints": [
+            {
+              "address": 2,
+              "direction": "out",
+              "transfer": "Interrupt",
+              "max_packet_size": 64,
+              "interval": 1
+            },
+            {
+              "address": 129,
+              "direction": "in",
+              "transfer": "Interrupt",
+              "max_packet_size": 64,
+              "interval": 1
+            }
+          ]
         }
       ],
       "hwmon": null,
+      "rgb": {
+        "node": {
+          "state": "known",
+          "value": "/dev/hidraw12",
+          "source": "sysfs"
+        },
+        "firmware": {
+          "state": "known",
+          "value": "1.5.0",
+          "source": "/dev/hidraw12 report 0x11 0x01"
+        },
+        "channels": {
+          "state": "known",
+          "value": [
+            {
+              "index": 1,
+              "accessories": [
+                {
+                  "id": 23,
+                  "name": "F140 RGB Core"
+                }
+              ],
+              "led_count": {
+                "state": "unknown",
+                "reason": "the controller reports accessory identifiers, not LED counts",
+                "source": "hidraw report 0x21 0x03"
+              }
+            },
+            {
+              "index": 2,
+              "accessories": [
+                {
+                  "id": 23,
+                  "name": "F140 RGB Core"
+                }
+              ],
+              "led_count": {
+                "state": "unknown",
+                "reason": "the controller reports accessory identifiers, not LED counts",
+                "source": "hidraw report 0x21 0x03"
+              }
+            },
+            {
+              "index": 3,
+              "accessories": [
+                {
+                  "id": 23,
+                  "name": "F140 RGB Core"
+                }
+              ],
+              "led_count": {
+                "state": "unknown",
+                "reason": "the controller reports accessory identifiers, not LED counts",
+                "source": "hidraw report 0x21 0x03"
+              }
+            }
+          ],
+          "source": "/dev/hidraw12 report 0x21 0x03"
+        }
+      },
       "capabilities": [
         {
           "id": "rgb_fixed_color",
           "state": {
-            "state": "unvalidated",
-            "required_story": "US-013",
-            "reason": "The channel topology and packet format are not recorded yet."
+            "state": "available",
+            "writable": true,
+            "source": "/dev/hidraw12"
           }
         },
         {
           "id": "rgb_effects",
           "state": {
-            "state": "unvalidated",
-            "required_story": "US-013",
-            "reason": "The channel topology and packet format are not recorded yet."
+            "state": "available",
+            "writable": true,
+            "source": "/dev/hidraw12"
           }
         }
       ]
@@ -114,7 +190,16 @@
             "state": "unknown",
             "reason": "no kernel driver is bound to this interface",
             "source": "/sys/bus/usb/devices/1-9/1-9:1.0/driver"
-          }
+          },
+          "endpoints": [
+            {
+              "address": 2,
+              "direction": "out",
+              "transfer": "Bulk",
+              "max_packet_size": 512,
+              "interval": 1
+            }
+          ]
         },
         {
           "number": 1,
@@ -125,7 +210,23 @@
             "state": "known",
             "value": "usbhid",
             "source": "/sys/bus/usb/devices/1-9/1-9:1.1/driver"
-          }
+          },
+          "endpoints": [
+            {
+              "address": 1,
+              "direction": "out",
+              "transfer": "Interrupt",
+              "max_packet_size": 64,
+              "interval": 1
+            },
+            {
+              "address": 129,
+              "direction": "in",
+              "transfer": "Interrupt",
+              "max_packet_size": 64,
+              "interval": 1
+            }
+          ]
         }
       ],
       "hwmon": {
@@ -267,6 +368,7 @@
           }
         ]
       },
+      "rgb": null,
       "capabilities": [
         {
           "id": "liquid_temperature",

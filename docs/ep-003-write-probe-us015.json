@@ -1,0 +1,209 @@
+{
+  "scope": "with_effects",
+  "device": "1e71:2021",
+  "node": "/dev/hidraw12",
+  "firmware": {
+    "state": "known",
+    "value": "1.5.0",
+    "source": "/dev/hidraw12 report 0x11 0x01"
+  },
+  "channels": [
+    {
+      "index": 1,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    },
+    {
+      "index": 2,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    },
+    {
+      "index": 3,
+      "accessories": [
+        {
+          "id": 23,
+          "name": "F140 RGB Core"
+        }
+      ],
+      "led_count": {
+        "state": "unknown",
+        "reason": "the controller reports accessory identifiers, not LED counts",
+        "source": "hidraw report 0x21 0x03"
+      }
+    }
+  ],
+  "prior_state": "les trois ventilateurs sont éteints, laissés ainsi par la sonde précédente",
+  "steps": [
+    {
+      "channel": 1,
+      "program": "fixed #FFFFFF at 10%",
+      "report_hex": "2a040101003200191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991ddba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 510,
+      "error": null,
+      "observed": "le ventilateur du haut s'allume en blanc faible, les deux autres restent éteints"
+    },
+    {
+      "channel": 1,
+      "program": "off",
+      "report_hex": "2a040101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991deba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 469,
+      "error": null,
+      "observed": "le ventilateur du haut s'éteint complètement, les deux autres restent éteints"
+    },
+    {
+      "channel": 1,
+      "program": "Breathing at normal speed",
+      "report_hex": "2a040101071400191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991dfba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 102,
+      "error": null,
+      "observed": "le ventilateur du haut pulse en blanc, montée et descente d'environ une seconde, les deux autres restent éteints"
+    },
+    {
+      "channel": 1,
+      "program": "Spectrum wave at normal speed, forward",
+      "report_hex": "2a04010102fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e0ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 306,
+      "error": null,
+      "observed": "le ventilateur du haut affiche un arc-en-ciel qui défile sur l'anneau dans le sens horaire, les deux autres restent éteints"
+    },
+    {
+      "channel": 1,
+      "program": "off",
+      "report_hex": "2a040101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e1ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 469,
+      "error": null,
+      "observed": "le ventilateur du haut s'éteint complètement, l'animation s'arrête, les deux autres restent éteints"
+    },
+    {
+      "channel": 2,
+      "program": "fixed #FFFFFF at 10%",
+      "report_hex": "2a040202003200191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e2ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 443,
+      "error": null,
+      "observed": "le ventilateur du milieu s'allume en blanc faible, les deux autres restent éteints"
+    },
+    {
+      "channel": 2,
+      "program": "off",
+      "report_hex": "2a040202000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e3ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 777,
+      "error": null,
+      "observed": "le ventilateur du milieu s'éteint complètement, les deux autres restent éteints"
+    },
+    {
+      "channel": 2,
+      "program": "Breathing at normal speed",
+      "report_hex": "2a040202071400191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff031209488854e50259915d8991e4ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 396,
+      "error": null,
+      "observed": "le ventilateur du milieu pulse en blanc au même rythme que le canal 1, les deux autres restent éteints"
+    },
+    {
+      "channel": 2,
+      "program": "Spectrum wave at normal speed, forward",
+      "report_hex": "2a04020202fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e5ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 739,
+      "error": null,
+      "observed": "le ventilateur du milieu affiche un arc-en-ciel qui défile dans le sens horaire, comme le canal 1, les deux autres restent éteints"
+    },
+    {
+      "channel": 2,
+      "program": "off",
+      "report_hex": "2a040202000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e6ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 910,
+      "error": null,
+      "observed": "le ventilateur du milieu s'éteint complètement, l'animation s'arrête, les deux autres restent éteints"
+    },
+    {
+      "channel": 3,
+      "program": "fixed #FFFFFF at 10%",
+      "report_hex": "2a040404003200191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e7ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 555,
+      "error": null,
+      "observed": "le ventilateur du bas s'allume en blanc faible, les deux autres restent éteints"
+    },
+    {
+      "channel": 3,
+      "program": "off",
+      "report_hex": "2a040404000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e8ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 259,
+      "error": null,
+      "observed": "le ventilateur du bas s'éteint complètement, les deux autres restent éteints"
+    },
+    {
+      "channel": 3,
+      "program": "Breathing at normal speed",
+      "report_hex": "2a040404071400191919000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000108080300000000",
+      "response_hex": "ff011209488854e50259915d89912a04000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 426,
+      "error": null,
+      "observed": "le ventilateur du bas pulse en blanc au même rythme que les deux autres canaux, les deux autres restent éteints"
+    },
+    {
+      "channel": 3,
+      "program": "Spectrum wave at normal speed, forward",
+      "report_hex": "2a04040402fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991e9ba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 483,
+      "error": null,
+      "observed": "le ventilateur du bas affiche un arc-en-ciel qui défile dans le sens horaire, comme les deux autres canaux, qui restent éteints"
+    },
+    {
+      "channel": 3,
+      "program": "off",
+      "report_hex": "2a040404000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100080300000000",
+      "response_hex": "ff031209488854e50259915d8991eaba020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "write_micros": 167,
+      "error": null,
+      "observed": "le ventilateur du bas s'éteint complètement, l'animation s'arrête, les trois sont noirs"
+    }
+  ],
+  "cadence": {
+    "tried_ms": [
+      200,
+      100,
+      50,
+      25,
+      10
+    ],
+    "stable_interval_ms": 10,
+    "first_failure_ms": null,
+    "detail": "5 commands landed at every interval down to 10 ms without an error."
+  },
+  "restoration": {
+    "state": "confirmed",
+    "program": "fixed #7C5CFF at 60%",
+    "observed": "les trois ventilateurs sont en violet fixe, identiques, conformes à la couleur demandée"
+  }
+}
