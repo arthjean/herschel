@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use nzxt_core::DeviceId;
 use nzxt_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
-use nzxt_core::ipc::{AccessMode, DaemonStatus};
+use nzxt_core::ipc::{AccessMode, ChannelState, DaemonStatus};
+use nzxt_core::lighting::LightingProgram;
 use nzxt_core::profile::{Channel, Profile};
 use nzxt_core::telemetry::{
     Collector, CollectorFailure, STALE_AFTER_MS, SafetyAlert, TelemetrySnapshot,
@@ -93,6 +94,26 @@ impl LinkState {
         self.failed_collectors()
             .iter()
             .find(|failure| failure.collector == collector)
+    }
+
+    /// Lighting channels the controller reported, empty when it reported none.
+    ///
+    /// Empty is the normal state until the controller answers: the screen shows
+    /// the reason the capability record carries rather than an invented channel.
+    pub fn lighting_channels(&self) -> &[ChannelState] {
+        match self.status() {
+            Some(status) => &status.lighting,
+            None => &[],
+        }
+    }
+
+    /// The program the daemon last committed to a channel, if any.
+    pub fn committed_lighting(&self, channel: u8) -> Option<&LightingProgram> {
+        self.lighting_channels()
+            .iter()
+            .find(|state| state.channel == channel)?
+            .committed
+            .as_ref()
     }
 
     pub fn active_profile(&self) -> Option<&str> {
@@ -182,6 +203,30 @@ impl LinkState {
             );
         };
 
+        let Some(record) = self.device(device) else {
+            return ControlState::disabled(format!("{device} is not connected."));
+        };
+
+        // The capability's own reason comes first when it has one. A daemon in
+        // read-only mode reports one conflict for the whole machine, and that
+        // conflict is about whatever made it read-only: showing "no writable
+        // hwmon attribute" on a lighting control would name the wrong evidence
+        // for the wrong device. A capability that is otherwise fine still falls
+        // through to the conflict, because ownership outranks a clean record.
+        match record.capability(capability) {
+            Some(entry) => {
+                if let Some(reason) = entry.state.blocked_reason() {
+                    return ControlState::disabled(reason);
+                }
+            }
+            None => {
+                return ControlState::disabled(format!(
+                    "{} is absent from the capability record for {device}.",
+                    capability.label()
+                ));
+            }
+        }
+
         if let AccessMode::ReadOnly { conflicts } = &status.access
             && let Some(conflict) = conflicts
                 .iter()
@@ -190,20 +235,7 @@ impl LinkState {
             return ControlState::disabled(conflict.detail.clone());
         }
 
-        let Some(record) = self.device(device) else {
-            return ControlState::disabled(format!("{device} is not connected."));
-        };
-
-        match record.capability(capability) {
-            Some(entry) => match entry.state.blocked_reason() {
-                None => ControlState::Enabled,
-                Some(reason) => ControlState::disabled(reason),
-            },
-            None => ControlState::disabled(format!(
-                "{} is absent from the capability record for {device}.",
-                capability.label()
-            )),
-        }
+        ControlState::Enabled
     }
 
     /// State of a Cooling write control.
@@ -382,6 +414,7 @@ mod tests {
             },
             interfaces: vec![],
             hwmon: None,
+            rgb: None,
             capabilities,
         }
     }
@@ -447,6 +480,7 @@ mod tests {
                 }],
                 active_profile: "Onboard safe".into(),
                 config: ConfigState::Loaded,
+                lighting: Vec::new(),
                 socket_path: "/run/user/1000/nzxt-control/nzxt-control.sock".into(),
             }),
             capabilities: Arc::new(CapabilityRecord {
@@ -461,6 +495,90 @@ mod tests {
             profiles: vec![Profile::safe()].into(),
             telemetry: snapshot.map(Arc::new),
         }
+    }
+
+    #[test]
+    fn a_capability_with_its_own_reason_is_not_shadowed_by_a_machine_wide_conflict() {
+        // The daemon reports one conflict for the whole machine when nothing is
+        // writable. It is about hwmon, and it must not become the explanation
+        // shown on a lighting control whose record already says exactly why the
+        // controller is refused. US-013 requires the missing evidence to be
+        // reported, not a neighbouring one.
+        let link = connected(
+            AccessMode::ReadOnly {
+                conflicts: vec![OwnershipConflict {
+                    device: None,
+                    resource: "hwmon".into(),
+                    detail: "No writable control attribute is available to this user.".into(),
+                }],
+            },
+            vec![Capability {
+                id: CapabilityId::RgbFixedColor,
+                state: CapabilityState::Unvalidated {
+                    required_story: "US-013".into(),
+                    reason: "The channel topology is not readable. permission denied on \
+                             /dev/hidraw12."
+                        .into(),
+                },
+            }],
+        );
+
+        let state = link.control_state(KRAKEN_BASE, CapabilityId::RgbFixedColor);
+        let message = state.message().unwrap_or_default();
+        assert!(state.is_disabled());
+        assert!(message.contains("/dev/hidraw12"), "{message}");
+        assert!(message.contains("US-013"), "{message}");
+        assert!(!message.contains("hwmon"), "{message}");
+    }
+
+    #[test]
+    fn ownership_still_outranks_a_capability_record_that_looks_fine() {
+        // The other direction: a capability the record calls writable is still
+        // refused while another process owns the device, because the record
+        // describes the device and the conflict describes who is holding it.
+        let link = connected(
+            AccessMode::ReadOnly {
+                conflicts: vec![OwnershipConflict {
+                    device: Some(KRAKEN_BASE),
+                    resource: "/dev/hidraw3".into(),
+                    detail: "Another process owns this device.".into(),
+                }],
+            },
+            vec![writable(CapabilityId::PumpDuty)],
+        );
+
+        let state = link.control_state(KRAKEN_BASE, CapabilityId::PumpDuty);
+        assert!(state.is_disabled());
+        assert!(
+            state
+                .message()
+                .unwrap_or_default()
+                .contains("Another process"),
+            "{:?}",
+            state.message()
+        );
+    }
+
+    #[test]
+    fn an_unconflicted_writable_capability_stays_enabled() {
+        let link = connected(
+            AccessMode::ReadWrite,
+            vec![writable(CapabilityId::PumpDuty)],
+        );
+        assert!(
+            link.control_state(KRAKEN_BASE, CapabilityId::PumpDuty)
+                .is_enabled()
+        );
+        // And a device that is not in the record at all is named as absent.
+        let state = link.control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor);
+        assert!(
+            state
+                .message()
+                .unwrap_or_default()
+                .contains("not connected"),
+            "{:?}",
+            state.message()
+        );
     }
 
     fn writable(id: CapabilityId) -> Capability {

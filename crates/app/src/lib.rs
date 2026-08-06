@@ -12,6 +12,7 @@
 pub mod components;
 pub mod cooling;
 pub mod feed;
+pub mod lighting;
 pub mod link;
 pub mod metrics;
 pub mod offline;

@@ -18,6 +18,8 @@ use gpui::{
     SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
 use nzxt_core::capability::CapabilityId;
+use nzxt_core::ipc::ChannelState;
+use nzxt_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
 use nzxt_core::profile::{
     CURVE_NODE_COUNT, Channel, CoolingProgram, CurveNodes, MAX_DUTY, Profile, SAFE_PROFILE_NAME,
 };
@@ -29,10 +31,11 @@ use nzxt_core::{KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::components::{
     Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceRow, Metric, Note,
-    NoteLevel, Panel, Select, SelectOption, Sparkline, Toggle, node_at,
+    NoteLevel, Panel, Select, SelectOption, Sparkline, node_at,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::feed::{Command, CommandOutcome, Feed, OutcomeSeverity, now_unix_ms};
+use crate::lighting::{LightingEditor, LightingMode};
 use crate::link::LinkState;
 use crate::metrics::MetricBook;
 use crate::theme::{
@@ -123,11 +126,29 @@ impl Destination {
 /// First tab index available to a screen's own controls.
 pub const SCREEN_TAB_BASE: isize = 10;
 
+/// Tab stops of the Lighting screen, in traversal order.
+///
+/// Named rather than written as offsets at each call site: the brightness
+/// stepper takes two stops rather than one, so a hand-counted offset after it
+/// lands on a control that already exists. Every stop is asserted distinct by
+/// `every_lighting_control_has_its_own_tab_stop_inside_the_screen_range`.
+pub const LIGHTING_TAB_CHANNEL: isize = SCREEN_TAB_BASE;
+pub const LIGHTING_TAB_MODE: isize = LIGHTING_TAB_CHANNEL + 1;
+pub const LIGHTING_TAB_COLOR: isize = LIGHTING_TAB_MODE + 1;
+/// First of the stepper's two buttons; the second is this plus one.
+pub const LIGHTING_TAB_BRIGHTNESS: isize = LIGHTING_TAB_COLOR + 1;
+pub const LIGHTING_TAB_SPEED: isize = LIGHTING_TAB_BRIGHTNESS + 2;
+pub const LIGHTING_TAB_DIRECTION: isize = LIGHTING_TAB_SPEED + 1;
+pub const LIGHTING_TAB_APPLY: isize = LIGHTING_TAB_DIRECTION + 1;
+pub const LIGHTING_TAB_OFF: isize = LIGHTING_TAB_APPLY + 1;
+
 /// Which popover, if any, is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Popover {
-    /// A color swatch list anchored to one color field.
+    /// A color swatch list anchored to one LCD color field.
     Swatches { field: LcdColorField },
+    /// A color swatch list anchored to one lighting channel.
+    LightingSwatches { channel: u8 },
     /// An option list anchored to one select.
     Options { select: SharedString },
 }
@@ -261,6 +282,7 @@ pub struct Shell {
     destination: Destination,
     popover: Option<Popover>,
     lcd: LcdEditor,
+    lighting: LightingEditor,
     /// Wall clock of the last refresh, used to age every reading.
     now_unix_ms: u64,
 }
@@ -302,6 +324,7 @@ impl Shell {
             destination: Destination::Monitoring,
             popover: None,
             lcd: LcdEditor::default(),
+            lighting: LightingEditor::default(),
             now_unix_ms: now_unix_ms(),
         }
     }
@@ -315,6 +338,15 @@ impl Shell {
                 self.metrics.observe(snapshot);
             }
             self.link = link;
+            // The controller's channel list is the only source of what can be
+            // addressed, so the editor follows it rather than assuming three.
+            let channels: Vec<u8> = self
+                .link
+                .lighting_channels()
+                .iter()
+                .map(|state| state.channel)
+                .collect();
+            self.lighting.sync(&channels);
         }
 
         if let Some(outcome) = self.feed.outcome()
@@ -1202,6 +1234,7 @@ impl Shell {
             name: name.chars().take(48).collect(),
             program: self.cooling.program(),
             device: Some(KRAKEN_BASE),
+            lighting: Vec::new(),
         };
         self.feed.send(Command::SaveProfile(profile));
         cx.notify();
@@ -1225,39 +1258,207 @@ impl Shell {
         let effects = self
             .link
             .control_state(RGB_CONTROLLER, CapabilityId::RgbEffects);
+        let channels = self.link.lighting_channels();
 
-        screen("Lighting", "Per-channel color on the validated controller.")
+        let screen = screen("Lighting", "Per-channel color on the validated controller.");
+
+        // No channel means the controller has not told this daemon what it is.
+        // The reason the capability record carries is the whole content of the
+        // screen: there is nothing to control and nothing to pretend about.
+        let Some(editor) = self.lighting.selected().filter(|_| !channels.is_empty()) else {
+            return screen.child(
+                Note::new(
+                    NoteLevel::Warning,
+                    fixed
+                        .message()
+                        .unwrap_or(
+                            "No lighting controller answered. Lighting is read-only until it does.",
+                        )
+                        .to_string(),
+                )
+                .render(),
+            );
+        };
+
+        let reported = channels
+            .iter()
+            .find(|state| state.channel == editor.channel);
+        let write = if matches!(editor.mode, LightingMode::Effect(_)) {
+            effects.clone()
+        } else {
+            fixed.clone()
+        };
+        // Apply is gated on the pending program being buildable as well as on
+        // the capability: an unusable color must disable it with its own
+        // reason, not with the capability's.
+        let apply = match (write.clone(), editor.program()) {
+            (ControlState::Enabled, Err(error)) => ControlState::error(error.to_string()),
+            (state, _) => state,
+        };
+
+        screen
             .child(
-                Panel::new("Channel 1")
-                    .subtitle("Channel topology is recorded before any write is offered.")
+                Panel::new("Channels")
+                    .subtitle("Each channel is addressed on its own.")
                     .render()
-                    .child(self.color_field(LcdColorField::Reading, SCREEN_TAB_BASE, cx))
                     .child(
-                        Toggle::new("channel-1-power", "Channel power", false)
-                            .state(fixed.clone())
-                            .tab_index(SCREEN_TAB_BASE + 1)
-                            .render(),
+                        self.select(
+                            "lighting-channel",
+                            "Channel",
+                            channels
+                                .iter()
+                                .map(|state| {
+                                    SelectOption::new(
+                                        state.channel.to_string(),
+                                        channel_label(state),
+                                    )
+                                })
+                                .collect(),
+                            editor.channel.to_string(),
+                            ControlState::Enabled,
+                            LIGHTING_TAB_CHANNEL,
+                            cx,
+                            |shell, value, _| {
+                                if let Ok(channel) = value.parse() {
+                                    shell.lighting.select(channel);
+                                }
+                            },
+                        ),
                     )
-                    .child(
-                        Button::new("lighting-apply", "Apply")
-                            .variant(ButtonVariant::Primary)
-                            .state(fixed)
-                            .tab_index(SCREEN_TAB_BASE + 2)
-                            .render(),
-                    ),
+                    .child(setting_row_owned(
+                        "Detected".to_string(),
+                        reported
+                            .map(accessory_summary)
+                            .unwrap_or_else(|| "not reported".to_string()),
+                    ))
+                    .child(setting_row_owned(
+                        "Confirmed".to_string(),
+                        match self.link.committed_lighting(editor.channel) {
+                            Some(program) => program.summary(),
+                            None => "nothing has been sent to this channel".to_string(),
+                        },
+                    )),
             )
             .child(
-                Panel::new("Effects")
-                    .subtitle("Only effects proven on this exact controller appear here.")
+                Panel::new(format!("Channel {}", editor.channel))
+                    .subtitle(
+                        "The controller reports no state to read back, so what is shown here is \
+                         what this service last sent.",
+                    )
                     .render()
                     .child(
-                        div().text_color(color::TEXT_MUTED.hsla()).child(
-                            effects
-                                .message()
-                                .unwrap_or("No validated effect.")
-                                .to_string(),
+                        self.select(
+                            "lighting-mode",
+                            "Mode",
+                            LightingMode::all(effects.is_enabled())
+                                .into_iter()
+                                .map(|mode| SelectOption::new(mode.value(), mode.label()))
+                                .collect(),
+                            editor.mode.value(),
+                            write.clone(),
+                            LIGHTING_TAB_MODE,
+                            cx,
+                            |shell, value, _| {
+                                if let Some(mode) = LightingMode::from_value(value)
+                                    && let Some(channel) = shell.lighting.selected_mut()
+                                {
+                                    channel.mode = mode;
+                                }
+                            },
                         ),
-                    ),
+                    )
+                    .when(editor.mode.uses_color(), |panel| {
+                        panel.child(self.lighting_color_field(editor, LIGHTING_TAB_COLOR, cx))
+                    })
+                    .when(editor.mode.uses_brightness(), |panel| {
+                        panel.child(self.brightness_row(
+                            editor.brightness,
+                            write.clone(),
+                            LIGHTING_TAB_BRIGHTNESS,
+                            cx,
+                        ))
+                    })
+                    .when(editor.mode.uses_speed(), |panel| {
+                        panel.child(
+                            self.select(
+                                "lighting-speed",
+                                "Speed",
+                                EffectSpeed::ALL
+                                    .into_iter()
+                                    .map(|speed| SelectOption::new(speed.key(), speed.label()))
+                                    .collect(),
+                                editor.speed.key().to_string(),
+                                write.clone(),
+                                LIGHTING_TAB_SPEED,
+                                cx,
+                                |shell, value, _| {
+                                    if let Some(speed) = EffectSpeed::from_key(value)
+                                        && let Some(channel) = shell.lighting.selected_mut()
+                                    {
+                                        channel.speed = speed;
+                                    }
+                                },
+                            ),
+                        )
+                    })
+                    .when(editor.mode.uses_direction(), |panel| {
+                        panel.child(
+                            self.select(
+                                "lighting-direction",
+                                "Direction",
+                                EffectDirection::ALL
+                                    .into_iter()
+                                    .map(|direction| {
+                                        SelectOption::new(direction.key(), direction.label())
+                                    })
+                                    .collect(),
+                                editor.direction.key().to_string(),
+                                write.clone(),
+                                LIGHTING_TAB_DIRECTION,
+                                cx,
+                                |shell, value, _| {
+                                    if let Some(direction) = EffectDirection::from_key(value)
+                                        && let Some(channel) = shell.lighting.selected_mut()
+                                    {
+                                        channel.direction = direction;
+                                    }
+                                },
+                            ),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap(space::SM)
+                            .child(
+                                Button::new("lighting-apply", "Apply")
+                                    .variant(ButtonVariant::Primary)
+                                    .state(apply)
+                                    .tab_index(LIGHTING_TAB_APPLY)
+                                    .render()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.popover = None;
+                                        this.apply_lighting(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("lighting-off", "Turn off")
+                                    .state(fixed.clone())
+                                    .tab_index(LIGHTING_TAB_OFF)
+                                    .render()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.popover = None;
+                                        // The mode changes, so the color the
+                                        // operator chose is still there to come
+                                        // back to.
+                                        if let Some(channel) = this.lighting.selected_mut() {
+                                            channel.mode = LightingMode::Off;
+                                        }
+                                        this.apply_lighting(cx);
+                                    })),
+                            ),
+                    )
+                    .children(self.outcome_note()),
             )
     }
 
@@ -1475,6 +1676,148 @@ impl Shell {
                                 cx.notify();
                             }))
                     })),
+            ))
+        })
+    }
+
+    /// Send the selected channel's pending program.
+    ///
+    /// Nothing is sent when the program cannot be built: the button is already
+    /// disabled in that state, and checking again here is what keeps a keyboard
+    /// activation from bypassing the same rule.
+    fn apply_lighting(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.lighting.selected() else {
+            return;
+        };
+        let channel = editor.channel;
+        if let Ok(program) = editor.program() {
+            self.feed
+                .send(Command::ApplyLighting(LightingCommand { channel, program }));
+        }
+        cx.notify();
+    }
+
+    /// Brightness as a stepper, matching the Cooling screen's fixed duty.
+    ///
+    /// Not a slider. `Slider` in this codebase paints a value and receives no
+    /// input, so rendering one here would put an enabled-looking control on
+    /// screen that quietly does nothing. Two buttons and a readout are operable
+    /// by pointer and by keyboard alike.
+    fn brightness_row(
+        &self,
+        brightness: u8,
+        state: ControlState,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let step = |shell: &mut Self, steps: i16| {
+            if let Some(channel) = shell.lighting.selected_mut() {
+                channel.adjust_brightness(steps);
+            }
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap(space::SM)
+            .child(
+                div()
+                    .flex_none()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child("Brightness"),
+            )
+            .child(
+                Button::new("lighting-brightness-down", "\u{2212}")
+                    .state(state.clone())
+                    .tab_index(tab_index)
+                    .render()
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        shell.popover = None;
+                        step(shell, -1);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .font(numeric())
+                    .flex_none()
+                    .min_w(px(72.0))
+                    .text_align(gpui::TextAlign::Center)
+                    .text_color(color::TEXT.hsla())
+                    .child(format!("{brightness}%")),
+            )
+            .child(
+                Button::new("lighting-brightness-up", "+")
+                    .state(state)
+                    .tab_index(tab_index + 1)
+                    .render()
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        shell.popover = None;
+                        step(shell, 1);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(format!(
+                        "Accepted range 0-{}",
+                        nzxt_core::lighting::MAX_BRIGHTNESS
+                    )),
+            )
+    }
+
+    /// One channel's color field plus its swatch popover.
+    fn lighting_color_field(
+        &self,
+        editor: &crate::lighting::ChannelEditor,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let channel = editor.channel;
+        let open = self.popover == Some(Popover::LightingSwatches { channel });
+        let id = SharedString::from(format!("lighting-color-{channel}"));
+
+        // `ColorField` renders its own error state, so a stored color that
+        // cannot be parsed names the problem on the field rather than only on
+        // the disabled Apply button.
+        let control = ColorField::new(id.clone(), "Color", editor.color.clone())
+            .tab_index(tab_index)
+            .render()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_popover(Popover::LightingSwatches { channel }, cx)
+            }));
+
+        div().relative().child(control).when(open, |this| {
+            this.child(popover_surface(
+                div().flex().flex_wrap().gap(space::SM).children(
+                    SWATCHES.into_iter().enumerate().map(|(index, swatch)| {
+                        div()
+                            .id(SharedString::from(format!("{id}-swatch-{index}")))
+                            .tab_index(tab_index)
+                            .tab_stop(true)
+                            .w(TARGET_MIN)
+                            .h(TARGET_MIN)
+                            .rounded(RADIUS)
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(color::SEPARATOR.hsla())
+                            .bg(swatch.hsla())
+                            .hover(|this| this.border_color(color::FOCUS.hsla()))
+                            .focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(editor) = this.lighting.channel_mut(channel) {
+                                    editor.color = format!("{:06X}", swatch.0);
+                                }
+                                this.popover = None;
+                                cx.notify();
+                            }))
+                    }),
+                ),
             ))
         })
     }
@@ -1734,6 +2077,30 @@ pub fn next_deletion(active: Option<&str>, armed: bool) -> (bool, Option<Command
     }
 }
 
+/// A channel's entry in the selector: its number and what is plugged into it.
+pub fn channel_label(state: &ChannelState) -> String {
+    match state.accessories.len() {
+        0 => format!("Channel {}", state.channel),
+        1 => format!("Channel {} ({})", state.channel, state.accessories[0]),
+        count => format!("Channel {} ({count} accessories)", state.channel),
+    }
+}
+
+/// What the controller reported about one channel's contents.
+///
+/// The controller reports accessory identifiers and never an LED count, so the
+/// summary says so instead of leaving the operator to assume a number was
+/// measured.
+pub fn accessory_summary(state: &ChannelState) -> String {
+    if state.accessories.is_empty() {
+        return "nothing detected on this channel".to_string();
+    }
+    format!(
+        "{} (LED count not reported by the controller)",
+        state.accessories.join(", ")
+    )
+}
+
 fn setting_row(label: &'static str, value: String) -> Div {
     setting_row_owned(label.to_string(), value)
 }
@@ -1787,6 +2154,67 @@ fn popover_surface(content: impl IntoElement) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn channel_state(channel: u8, accessories: &[&str]) -> ChannelState {
+        ChannelState {
+            channel,
+            accessories: accessories.iter().map(|name| name.to_string()).collect(),
+            committed: None,
+        }
+    }
+
+    #[test]
+    fn a_channel_names_what_the_controller_detected_and_never_an_led_count() {
+        let one = channel_state(1, &["HUE 2 LED Strip 300 mm"]);
+        assert_eq!(channel_label(&one), "Channel 1 (HUE 2 LED Strip 300 mm)");
+        let summary = accessory_summary(&one);
+        assert!(summary.contains("HUE 2 LED Strip 300 mm"), "{summary}");
+        assert!(summary.contains("not reported"), "{summary}");
+
+        let many = channel_state(2, &["AER RGB 2 120 mm", "AER RGB 2 140 mm"]);
+        assert_eq!(channel_label(&many), "Channel 2 (2 accessories)");
+
+        let empty = channel_state(3, &[]);
+        assert_eq!(channel_label(&empty), "Channel 3");
+        assert_eq!(
+            accessory_summary(&empty),
+            "nothing detected on this channel"
+        );
+    }
+
+    #[test]
+    fn every_lighting_control_has_its_own_tab_stop_inside_the_screen_range() {
+        // The stops the screen actually passes, in traversal order. The
+        // brightness stepper renders two buttons from one constant, so its
+        // second stop is listed here as the screen emits it: a successor
+        // counted by hand instead lands on a control that already exists.
+        let indices = [
+            LIGHTING_TAB_CHANNEL,
+            LIGHTING_TAB_MODE,
+            LIGHTING_TAB_COLOR,
+            LIGHTING_TAB_BRIGHTNESS,
+            LIGHTING_TAB_BRIGHTNESS + 1,
+            LIGHTING_TAB_SPEED,
+            LIGHTING_TAB_DIRECTION,
+            LIGHTING_TAB_APPLY,
+            LIGHTING_TAB_OFF,
+        ];
+
+        let mut sorted = indices.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            indices.to_vec(),
+            sorted,
+            "no two lighting controls share a tab stop, and they run in order"
+        );
+        assert!(
+            indices
+                .iter()
+                .all(|index| *index > Destination::Settings.tab_index()),
+            "screen controls come after every rail entry"
+        );
+    }
 
     #[test]
     fn the_shell_exposes_four_primary_destinations_and_one_secondary() {

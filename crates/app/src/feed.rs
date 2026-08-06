@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use nzxt_core::client::{Client, ClientError};
-use nzxt_core::ipc::{ApplyOutcome, HardwareState, Request, Response};
+use nzxt_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome, Request, Response};
+use nzxt_core::lighting::LightingCommand;
 use nzxt_core::profile::{CoolingProgram, Profile};
 
 use crate::link::LinkState;
@@ -35,6 +36,8 @@ const SHUTDOWN_GRANULARITY: Duration = Duration::from_millis(25);
 pub enum Command {
     /// Write a cooling program without saving it as a profile.
     Apply(CoolingProgram),
+    /// Write one channel's lighting without saving it as a profile.
+    ApplyLighting(LightingCommand),
     SaveProfile(Profile),
     ActivateProfile(String),
     DeleteProfile(String),
@@ -68,6 +71,48 @@ impl CommandOutcome {
             message: message.into(),
             severity: OutcomeSeverity::Refused,
             hardware: None,
+        }
+    }
+
+    /// The outcome of one lighting command.
+    ///
+    /// The controller answers no report that reads a channel back, so a
+    /// confirmed command says the controller accepted it and claims nothing
+    /// about what the strip is showing.
+    fn from_lighting(outcome: &LightingOutcome) -> Self {
+        let (severity, message) = match &outcome.hardware {
+            HardwareState::Confirmed if outcome.deduplicated => (
+                OutcomeSeverity::Confirmed,
+                format!(
+                    "Channel {} already shows this. Nothing was sent.",
+                    outcome.channel
+                ),
+            ),
+            HardwareState::Confirmed => (
+                OutcomeSeverity::Confirmed,
+                format!(
+                    "Channel {} set to {}. The controller accepted the command; it reports no \
+                     state to read back.",
+                    outcome.channel,
+                    outcome.program.summary()
+                ),
+            ),
+            HardwareState::Onboard => (
+                OutcomeSeverity::Confirmed,
+                "The controller keeps its own program. Nothing was sent.".to_string(),
+            ),
+            HardwareState::NotApplied { reason } => (OutcomeSeverity::Refused, reason.clone()),
+            HardwareState::Uncertain { reason } => (
+                OutcomeSeverity::Unconfirmed,
+                format!("Channel {} is uncertain: {reason}", outcome.channel),
+            ),
+        };
+
+        Self {
+            at_unix_ms: now_unix_ms(),
+            message,
+            severity,
+            hardware: Some(outcome.hardware.clone()),
         }
     }
 
@@ -289,6 +334,16 @@ fn execute(session: &mut Session, command: Command) -> (CommandOutcome, bool) {
             Ok(outcome) => (CommandOutcome::from_apply(&outcome), false),
             Err(error) => (CommandOutcome::refused(error.to_string()), false),
         },
+        Command::ApplyLighting(command) => {
+            let channel = command.channel;
+            match session.client.apply_lighting(command) {
+                Ok(outcome) => (CommandOutcome::from_lighting(&outcome), false),
+                Err(error) => (
+                    CommandOutcome::refused(format!("Channel {channel}: {error}")),
+                    false,
+                ),
+            }
+        }
         Command::SaveProfile(profile) => {
             let name = profile.name.clone();
             match session.client.request(Request::SaveProfile { profile }) {
