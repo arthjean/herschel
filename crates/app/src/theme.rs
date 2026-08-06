@@ -1,0 +1,227 @@
+//! Centralised design tokens.
+//!
+//! Every colour, size and font used by a component comes from here, so the
+//! interface can be checked as a system: the contrast tests below run against
+//! these values, not against a screenshot.
+//!
+//! The palette is the project's own. It borrows the operational density of a
+//! dark control surface without reusing any vendor logo, asset or wordmark.
+
+use gpui::{Font, FontFeatures, FontStyle, FontWeight, Hsla, Pixels, Rgba, px};
+use std::sync::Arc;
+
+/// Product name shown in the shell. Deliberately not a vendor trademark.
+pub const PRODUCT_NAME: &str = "Kraken Control";
+/// Shown wherever the product identifies itself.
+pub const UNOFFICIAL_NOTICE: &str = "Unofficial. Not affiliated with or endorsed by NZXT.";
+
+/// One colour token, kept as packed RGB so contrast can be computed on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Color(pub u32);
+
+impl Color {
+    pub const fn rgb(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Relative luminance, per WCAG 2.1.
+    pub fn luminance(self) -> f32 {
+        fn channel(value: f32) -> f32 {
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        let r = channel(((self.0 >> 16) & 0xff) as f32 / 255.0);
+        let g = channel(((self.0 >> 8) & 0xff) as f32 / 255.0);
+        let b = channel((self.0 & 0xff) as f32 / 255.0);
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    /// WCAG contrast ratio between two tokens, from 1.0 to 21.0.
+    pub fn contrast(self, other: Self) -> f32 {
+        let (a, b) = (self.luminance(), other.luminance());
+        let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    pub fn hsla(self) -> Hsla {
+        Rgba {
+            r: ((self.0 >> 16) & 0xff) as f32 / 255.0,
+            g: ((self.0 >> 8) & 0xff) as f32 / 255.0,
+            b: (self.0 & 0xff) as f32 / 255.0,
+            a: 1.0,
+        }
+        .into()
+    }
+
+    /// The same colour at reduced opacity, for overlays and disabled fills.
+    pub fn alpha(self, alpha: f32) -> Hsla {
+        let mut hsla = self.hsla();
+        hsla.a = alpha.clamp(0.0, 1.0);
+        hsla
+    }
+}
+
+/// The palette.
+pub mod color {
+    use super::Color;
+
+    /// Fixed navigation rail, darkest surface.
+    pub const RAIL: Color = Color::rgb(0x14161a);
+    /// Charcoal work surface.
+    pub const SURFACE: Color = Color::rgb(0x1c1f25);
+    /// Raised panel on the work surface.
+    pub const PANEL: Color = Color::rgb(0x23272f);
+    /// Input and control fill.
+    pub const CONTROL: Color = Color::rgb(0x2a2f38);
+    /// Low-contrast separator.
+    pub const SEPARATOR: Color = Color::rgb(0x333944);
+
+    /// The single selection accent.
+    ///
+    /// Dark enough for white label text to clear 4.5:1 on top of it, light
+    /// enough to clear 3:1 against the work surface behind it.
+    pub const ACCENT: Color = Color::rgb(0x6f4ef2);
+    pub const ACCENT_HOVER: Color = Color::rgb(0x7a5af0);
+    pub const ACCENT_ACTIVE: Color = Color::rgb(0x5f3fd8);
+    /// Focus ring, light enough to read on the accent it may sit against.
+    pub const FOCUS: Color = Color::rgb(0xcdbcff);
+
+    pub const TEXT: Color = Color::rgb(0xe8eaee);
+    pub const TEXT_MUTED: Color = Color::rgb(0xa3aab6);
+    pub const TEXT_DISABLED: Color = Color::rgb(0x6b7280);
+    /// Text drawn on top of the accent.
+    pub const TEXT_ON_ACCENT: Color = Color::rgb(0xffffff);
+
+    pub const SUCCESS: Color = Color::rgb(0x5ee49a);
+    pub const WARNING: Color = Color::rgb(0xf5c451);
+    pub const DANGER: Color = Color::rgb(0xff8a8a);
+}
+
+/// Spacing scale, in logical pixels.
+pub mod space {
+    use gpui::{Pixels, px};
+
+    pub const XS: Pixels = px(4.0);
+    pub const SM: Pixels = px(8.0);
+    pub const MD: Pixels = px(12.0);
+    pub const LG: Pixels = px(16.0);
+    pub const XL: Pixels = px(24.0);
+}
+
+/// Minimum size of any pointer target, in logical pixels.
+pub const TARGET_MIN: Pixels = px(40.0);
+/// Width of the fixed navigation rail.
+pub const RAIL_WIDTH: Pixels = px(196.0);
+/// Corner radius shared by controls and panels.
+pub const RADIUS: Pixels = px(6.0);
+/// Width of the visible focus ring, in logical pixels.
+pub const FOCUS_RING: Pixels = px(2.0);
+
+/// Window size the layout is designed for.
+pub const WINDOW_WIDTH: Pixels = px(920.0);
+pub const WINDOW_HEIGHT: Pixels = px(640.0);
+
+/// Font for numeric readouts.
+///
+/// A fixed-advance family plus `tnum` keeps digit width constant, so a value
+/// changing from `9` to `10` cannot shift the label next to it.
+pub fn numeric_font() -> Font {
+    Font {
+        family: "monospace".into(),
+        features: FontFeatures(Arc::new(vec![("tnum".into(), 1), ("lnum".into(), 1)])),
+        fallbacks: None,
+        weight: FontWeight::MEDIUM,
+        style: FontStyle::Normal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::color::*;
+    use super::*;
+
+    /// WCAG AA for body text.
+    const TEXT_MIN: f32 = 4.5;
+    /// WCAG AA for interface components and their states.
+    const NON_TEXT_MIN: f32 = 3.0;
+
+    #[test]
+    fn body_text_meets_aa_on_every_surface() {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL] {
+            let ratio = TEXT.contrast(surface);
+            assert!(ratio >= TEXT_MIN, "TEXT on {surface:?} is {ratio:.2}:1");
+        }
+    }
+
+    #[test]
+    fn muted_text_meets_aa_on_every_surface() {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL] {
+            let ratio = TEXT_MUTED.contrast(surface);
+            assert!(
+                ratio >= TEXT_MIN,
+                "TEXT_MUTED on {surface:?} is {ratio:.2}:1"
+            );
+        }
+    }
+
+    #[test]
+    fn text_on_the_accent_meets_aa_in_every_interaction_state() {
+        for state in [ACCENT, ACCENT_HOVER, ACCENT_ACTIVE] {
+            let ratio = TEXT_ON_ACCENT.contrast(state);
+            assert!(ratio >= TEXT_MIN, "on-accent text is {ratio:.2}:1");
+        }
+    }
+
+    #[test]
+    fn the_accent_itself_is_distinguishable_from_the_surface() {
+        assert!(ACCENT.contrast(SURFACE) >= NON_TEXT_MIN);
+    }
+
+    #[test]
+    fn status_colours_meet_aa_on_the_panel() {
+        for status in [SUCCESS, WARNING, DANGER] {
+            let ratio = status.contrast(PANEL);
+            assert!(ratio >= TEXT_MIN, "{status:?} on PANEL is {ratio:.2}:1");
+        }
+    }
+
+    #[test]
+    fn the_focus_ring_is_visible_against_every_background_it_sits_on() {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, ACCENT] {
+            let ratio = FOCUS.contrast(surface);
+            assert!(
+                ratio >= NON_TEXT_MIN,
+                "FOCUS on {surface:?} is {ratio:.2}:1"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_text_is_visibly_dimmer_but_still_perceivable() {
+        assert!(TEXT_DISABLED.contrast(CONTROL) < TEXT.contrast(CONTROL));
+        assert!(TEXT_DISABLED.contrast(CONTROL) >= 2.0);
+    }
+
+    #[test]
+    fn separators_stay_low_contrast_without_disappearing() {
+        let ratio = SEPARATOR.contrast(SURFACE);
+        assert!((1.1..2.5).contains(&ratio), "separator is {ratio:.2}:1");
+    }
+
+    #[test]
+    fn contrast_is_symmetric_and_bounded() {
+        assert!((TEXT.contrast(SURFACE) - SURFACE.contrast(TEXT)).abs() < 0.001);
+        let white = Color::rgb(0xffffff);
+        let black = Color::rgb(0x000000);
+        assert!((white.contrast(black) - 21.0).abs() < 0.01);
+        assert!((white.contrast(white) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn pointer_targets_are_at_least_forty_logical_pixels() {
+        assert!(TARGET_MIN >= px(40.0));
+    }
+}

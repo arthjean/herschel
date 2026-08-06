@@ -1,0 +1,22 @@
+[package]
+name = "nzxt-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native GPUI control surface for allowlisted NZXT hardware"
+
+[[bin]]
+name = "nzxt-control"
+path = "src/main.rs"
+
+[dependencies]
+nzxt-core.workspace = true
+gpui = "0.2.2"
+serde_json.workspace = true
+anyhow.workspace = true
+futures = "0.3"
+
+[lints]
+workspace = true
