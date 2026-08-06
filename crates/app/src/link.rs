@@ -3,62 +3,46 @@
 
 //! The client's view of the daemon.
 //!
-//! The window never touches hardware. It asks the daemon what exists and what
-//! is writable, and derives every control state from that answer. When the
-//! daemon is unreachable the shell stays usable and read-only rather than
-//! showing values it cannot vouch for.
+//! The window never touches hardware. It asks the daemon what exists, what is
+//! writable and what the sensors currently read, and derives every control
+//! state from that answer. When the daemon is unreachable the shell stays
+//! usable and read-only rather than showing values it cannot vouch for.
 
-use std::path::Path;
+use std::sync::Arc;
 
 use nzxt_core::DeviceId;
 use nzxt_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
-use nzxt_core::client::{Client, ClientError};
-use nzxt_core::ipc::{AccessMode, DaemonStatus, Request, Response};
-use nzxt_core::profile::Profile;
+use nzxt_core::ipc::{AccessMode, DaemonStatus};
+use nzxt_core::profile::{Channel, Profile};
+use nzxt_core::telemetry::{
+    Collector, CollectorFailure, STALE_AFTER_MS, SafetyAlert, TelemetrySnapshot,
+};
 
 use crate::components::{ControlState, DeviceHealth};
 
 /// What the client knows about the daemon right now.
+///
+/// Cheap to clone: the worker publishes one of these per cycle and the view
+/// takes a copy, so nothing is read out from under a repaint.
+#[derive(Debug, Clone)]
 pub enum LinkState {
     /// Connected, with the state the daemon reported.
     Connected {
-        status: Box<DaemonStatus>,
-        capabilities: Box<CapabilityRecord>,
-        profiles: Vec<Profile>,
+        status: Arc<DaemonStatus>,
+        capabilities: Arc<CapabilityRecord>,
+        profiles: Arc<[Profile]>,
+        telemetry: Option<Arc<TelemetrySnapshot>>,
     },
     /// Not connected. `message` is shown verbatim to the operator.
     Unavailable { message: String },
 }
 
 impl LinkState {
-    /// Connect to `socket` and fetch everything the shell renders.
-    ///
-    /// One round of requests at startup. Live streaming belongs to the
-    /// telemetry stories, and adding it here would mean inventing values.
-    pub fn connect(socket: &Path) -> Self {
-        match Self::try_connect(socket) {
-            Ok(state) => state,
-            Err(error) => Self::Unavailable {
-                message: error.operator_message(),
-            },
+    /// The state shown before the worker's first cycle completes.
+    pub fn connecting() -> Self {
+        Self::Unavailable {
+            message: "Connecting to the background service...".to_string(),
         }
-    }
-
-    fn try_connect(socket: &Path) -> Result<Self, ClientError> {
-        let mut client = Client::connect(socket)?;
-        let status = client.status()?;
-        let capabilities = client.capabilities()?;
-        let profiles = match client.request(Request::Profiles)? {
-            Response::Profiles { profiles, .. } => profiles,
-            Response::Error(error) => return Err(ClientError::Refused(error)),
-            _ => Vec::new(),
-        };
-
-        Ok(Self::Connected {
-            status: Box::new(status),
-            capabilities: Box::new(capabilities),
-            profiles,
-        })
     }
 
     pub fn status(&self) -> Option<&DaemonStatus> {
@@ -82,12 +66,47 @@ impl LinkState {
         }
     }
 
+    pub fn telemetry(&self) -> Option<&TelemetrySnapshot> {
+        match self {
+            Self::Connected { telemetry, .. } => telemetry.as_deref(),
+            Self::Unavailable { .. } => None,
+        }
+    }
+
+    /// Conditions the Cooling screen must surface immediately.
+    pub fn alerts(&self) -> &[SafetyAlert] {
+        match self.telemetry() {
+            Some(snapshot) => &snapshot.alerts,
+            None => &[],
+        }
+    }
+
+    pub fn failed_collectors(&self) -> &[CollectorFailure] {
+        match self.telemetry() {
+            Some(snapshot) => &snapshot.failed,
+            None => &[],
+        }
+    }
+
+    /// The reported failure of one collector, when it has one.
+    pub fn collector_failure(&self, collector: Collector) -> Option<&CollectorFailure> {
+        self.failed_collectors()
+            .iter()
+            .find(|failure| failure.collector == collector)
+    }
+
     pub fn active_profile(&self) -> Option<&str> {
         self.status().map(|status| status.active_profile.as_str())
     }
 
     pub fn device(&self, id: DeviceId) -> Option<&DeviceRecord> {
         self.capabilities()?.device(id)
+    }
+
+    /// Age of the Kraken readings, in milliseconds.
+    pub fn kraken_age_ms(&self, now_unix_ms: u64) -> Option<u64> {
+        let snapshot = self.telemetry()?;
+        Some(now_unix_ms.saturating_sub(snapshot.kraken.at_unix_ms))
     }
 
     /// The one sentence a destination shows when something needs attention.
@@ -187,6 +206,87 @@ impl LinkState {
         }
     }
 
+    /// State of a Cooling write control.
+    ///
+    /// Everything [`LinkState::control_state`] refuses, plus the two conditions
+    /// only the Cooling screen can judge: telemetry that has gone stale, and a
+    /// hardware state the daemon could not confirm. Both mean the readback a
+    /// write would be checked against is not trustworthy, so no further write
+    /// is offered until it is.
+    pub fn cooling_state(
+        &self,
+        device: DeviceId,
+        capability: CapabilityId,
+        now_unix_ms: u64,
+    ) -> ControlState {
+        let base = self.control_state(device, capability);
+        if !base.is_enabled() {
+            return base;
+        }
+
+        let Some(snapshot) = self.telemetry() else {
+            return ControlState::disabled(
+                "No telemetry has arrived yet, so no write can be checked against a readback.",
+            );
+        };
+
+        if !snapshot.kraken.present {
+            return ControlState::disabled(
+                "The Kraken is not reporting through its kernel driver. Controls stay read-only \
+                 until it does.",
+            );
+        }
+
+        let age_ms = now_unix_ms.saturating_sub(snapshot.kraken.at_unix_ms);
+        if age_ms >= STALE_AFTER_MS {
+            return ControlState::disabled(format!(
+                "Cooling telemetry is {:.1} s old. Controls stay read-only until a fresh reading \
+                 confirms the hardware state.",
+                age_ms as f32 / 1000.0
+            ));
+        }
+
+        ControlState::Enabled
+    }
+
+    /// State of a control that applies a whole cooling program.
+    ///
+    /// A program is offered only when *every* capability it writes is
+    /// available, and the list comes from
+    /// [`nzxt_core::profile::CoolingProgram::required_capabilities`], which is
+    /// the same list the daemon checks in `program_incompatibilities`. A
+    /// control that stays enabled here is therefore one the daemon would
+    /// accept, rather than one that fails on the far side of the socket.
+    ///
+    /// A program that requires nothing writes nothing: the onboard fallback
+    /// stays reachable whatever the hardware reports, which is what makes it a
+    /// fallback.
+    pub fn program_state(
+        &self,
+        device: DeviceId,
+        required: &[CapabilityId],
+        now_unix_ms: u64,
+    ) -> ControlState {
+        if self.status().is_none() {
+            return ControlState::disabled(
+                "The background service is not running, so no control can be applied.",
+            );
+        }
+        required
+            .iter()
+            .map(|capability| self.cooling_state(device, *capability, now_unix_ms))
+            .find(|state| !state.is_enabled())
+            .unwrap_or(ControlState::Enabled)
+    }
+
+    /// Alerts affecting one channel, plus every alert that names no channel.
+    pub fn channel_alerts(&self, channel: Channel) -> Vec<&SafetyAlert> {
+        self.alerts()
+            .iter()
+            .filter(|alert| alert.channel().is_none_or(|affected| affected == channel))
+            .collect()
+    }
+
     /// Rows for the device list, one per allowlisted device.
     pub fn device_rows(&self) -> Vec<DeviceSummary> {
         let Self::Connected {
@@ -262,6 +362,11 @@ mod tests {
     use nzxt_core::ipc::{
         BlockedCapability, ConfigState, DeviceStatus, OwnershipConflict, PROTOCOL_VERSION,
     };
+    use nzxt_core::profile::{CoolingProgram, TemperatureCurve};
+    use nzxt_core::telemetry::{
+        ChannelTelemetry, GpuTelemetry, KrakenTelemetry, PwmMode, Reading, SystemTelemetry,
+        Unavailable,
+    };
     use nzxt_core::{KRAKEN_BASE, RGB_CONTROLLER};
 
     fn device_record(id: DeviceId, capabilities: Vec<Capability>) -> DeviceRecord {
@@ -281,10 +386,43 @@ mod tests {
         }
     }
 
+    fn telemetry(at_unix_ms: u64, present: bool) -> TelemetrySnapshot {
+        let channel = |channel| ChannelTelemetry {
+            channel,
+            rpm: Reading::valid(2_970),
+            duty: Reading::valid(255),
+            mode: Reading::valid(PwmMode::FullSpeed),
+        };
+        TelemetrySnapshot {
+            sequence: 1,
+            at_unix_ms,
+            interval_ms: 1_000,
+            kraken: KrakenTelemetry {
+                at_unix_ms,
+                present,
+                liquid_temperature_c: Reading::valid(29.8),
+                pump: channel(Channel::Pump),
+                fan: channel(Channel::Fan),
+            },
+            system: SystemTelemetry::unavailable(at_unix_ms, Unavailable::absent("not sampled")),
+            gpu: GpuTelemetry::unavailable(at_unix_ms, Unavailable::absent("no NVML")),
+            alerts: Vec::new(),
+            failed: Vec::new(),
+        }
+    }
+
     fn connected(access: AccessMode, capabilities: Vec<Capability>) -> LinkState {
+        connected_at(access, capabilities, Some(telemetry(1_000, true)))
+    }
+
+    fn connected_at(
+        access: AccessMode,
+        capabilities: Vec<Capability>,
+        snapshot: Option<TelemetrySnapshot>,
+    ) -> LinkState {
         let record = device_record(KRAKEN_BASE, capabilities.clone());
         LinkState::Connected {
-            status: Box::new(DaemonStatus {
+            status: Arc::new(DaemonStatus {
                 daemon_version: "0.1.0".into(),
                 protocol_version: PROTOCOL_VERSION,
                 access,
@@ -311,7 +449,7 @@ mod tests {
                 config: ConfigState::Loaded,
                 socket_path: "/run/user/1000/nzxt-control/nzxt-control.sock".into(),
             }),
-            capabilities: Box::new(CapabilityRecord {
+            capabilities: Arc::new(CapabilityRecord {
                 schema_version: CAPABILITY_SCHEMA_VERSION,
                 context: ProbeContext {
                     kernel_release: Evidenced::known("7.1.6".into(), "uname(2)"),
@@ -320,7 +458,8 @@ mod tests {
                 devices: vec![record],
                 rejected: vec![],
             }),
-            profiles: vec![Profile::safe()],
+            profiles: vec![Profile::safe()].into(),
+            telemetry: snapshot.map(Arc::new),
         }
     }
 
@@ -348,6 +487,8 @@ mod tests {
         assert!(link.banner().unwrap().contains("nzxt-controld"));
         assert!(link.device_rows().is_empty());
         assert!(link.profiles().is_empty());
+        assert!(link.telemetry().is_none());
+        assert!(link.alerts().is_empty());
 
         // The profile selector commands the hardware without naming a single
         // capability, so it needs its own gate to satisfy the same criterion.
@@ -392,7 +533,10 @@ mod tests {
 
         let mut empty = connected(AccessMode::ReadWrite, vec![]);
         if let LinkState::Connected { capabilities, .. } = &mut empty {
-            capabilities.devices.clear();
+            *capabilities = Arc::new(CapabilityRecord {
+                devices: vec![],
+                ..(**capabilities).clone()
+            });
         }
         let state = empty.write_state();
         assert!(state.is_disabled());
@@ -466,14 +610,209 @@ mod tests {
     }
 
     #[test]
+    fn stale_cooling_telemetry_disables_write_controls_and_says_how_old_it_is() {
+        let link = connected(
+            AccessMode::ReadWrite,
+            vec![writable(CapabilityId::PumpDuty)],
+        );
+
+        // Fresh: the underlying capability gate is the only one that applies.
+        assert!(
+            link.cooling_state(KRAKEN_BASE, CapabilityId::PumpDuty, 1_500)
+                .is_enabled()
+        );
+
+        let stale = link.cooling_state(KRAKEN_BASE, CapabilityId::PumpDuty, 1_000 + STALE_AFTER_MS);
+        assert!(stale.is_disabled());
+        let message = stale.message().unwrap();
+        assert!(message.contains("2.0 s old"), "{message}");
+        assert!(message.contains("read-only"), "{message}");
+    }
+
+    #[test]
+    fn an_absent_kraken_disables_cooling_controls_even_when_the_capability_is_writable() {
+        let link = connected_at(
+            AccessMode::ReadWrite,
+            vec![writable(CapabilityId::PumpDuty)],
+            Some(telemetry(1_000, false)),
+        );
+        let state = link.cooling_state(KRAKEN_BASE, CapabilityId::PumpDuty, 1_100);
+        assert!(state.is_disabled());
+        assert!(state.message().unwrap().contains("kernel driver"));
+    }
+
+    #[test]
+    fn cooling_controls_stay_disabled_until_the_first_sample_arrives() {
+        let link = connected_at(
+            AccessMode::ReadWrite,
+            vec![writable(CapabilityId::PumpDuty)],
+            None,
+        );
+        let state = link.cooling_state(KRAKEN_BASE, CapabilityId::PumpDuty, 1_100);
+        assert!(state.is_disabled());
+        assert!(state.message().unwrap().contains("No telemetry"));
+        assert_eq!(link.kraken_age_ms(1_100), None);
+    }
+
+    /// A capability the device exposes but this user cannot write, which is
+    /// what a udev rule covering only one channel produces.
+    fn read_only(id: CapabilityId) -> Capability {
+        Capability {
+            id,
+            state: CapabilityState::Available {
+                writable: false,
+                source: "/sys/class/hwmon/hwmon4/pwm2".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn each_cooling_channel_is_gated_on_its_own_capability() {
+        // The probe resolves pwm1 and pwm2 independently, so a rule granting
+        // only the pump leaves the fan read-only.
+        let link = connected(
+            AccessMode::ReadWrite,
+            vec![
+                writable(CapabilityId::PumpDuty),
+                read_only(CapabilityId::FanDuty),
+            ],
+        );
+
+        let pump = link.cooling_state(KRAKEN_BASE, Channel::Pump.duty_capability(), 1_100);
+        assert!(pump.is_enabled(), "the pump is writable");
+
+        let fan = link.cooling_state(KRAKEN_BASE, Channel::Fan.duty_capability(), 1_100);
+        assert!(
+            fan.is_disabled(),
+            "a read-only fan must not present an enabled control"
+        );
+        assert!(fan.message().unwrap().contains("pwm2"), "{fan:?}");
+    }
+
+    #[test]
+    fn a_program_is_refused_unless_every_channel_it_writes_is_writable() {
+        let link = connected(
+            AccessMode::ReadWrite,
+            vec![
+                writable(CapabilityId::PumpDuty),
+                read_only(CapabilityId::FanDuty),
+                writable(CapabilityId::PumpCurve),
+                writable(CapabilityId::FanCurve),
+            ],
+        );
+
+        // Fixed writes both duties, and one of them is refused.
+        let fixed = CoolingProgram::Fixed { pump: 180, fan: 90 };
+        let state = link.program_state(KRAKEN_BASE, &fixed.required_capabilities(), 1_100);
+        assert!(
+            state.is_disabled(),
+            "Apply must not be offered for a program the daemon would refuse"
+        );
+        assert!(state.message().unwrap().contains("Read-only"), "{state:?}");
+
+        // The curve program writes different capabilities, and both are open.
+        let curve = CoolingProgram::Curve {
+            pump: TemperatureCurve::flat(120),
+            fan: TemperatureCurve::flat(120),
+        };
+        assert!(
+            link.program_state(KRAKEN_BASE, &curve.required_capabilities(), 1_100)
+                .is_enabled()
+        );
+
+        // The onboard program writes nothing, so it stays available.
+        assert!(
+            link.program_state(
+                KRAKEN_BASE,
+                &CoolingProgram::Onboard.required_capabilities(),
+                1_100
+            )
+            .is_enabled()
+        );
+    }
+
+    #[test]
+    fn no_program_is_offered_without_a_daemon() {
+        let link = LinkState::Unavailable {
+            message: "The background service is not running.".into(),
+        };
+        for program in [
+            CoolingProgram::Onboard,
+            CoolingProgram::Fixed { pump: 180, fan: 90 },
+        ] {
+            let state = link.program_state(KRAKEN_BASE, &program.required_capabilities(), 1_100);
+            assert!(state.is_disabled(), "{program:?}");
+            assert!(state.message().unwrap().contains("background service"));
+        }
+    }
+
+    #[test]
+    fn a_program_is_refused_while_its_readback_is_stale() {
+        let link = connected(
+            AccessMode::ReadWrite,
+            vec![
+                writable(CapabilityId::PumpDuty),
+                writable(CapabilityId::FanDuty),
+            ],
+        );
+        let fixed = CoolingProgram::Fixed { pump: 180, fan: 90 };
+
+        assert!(
+            link.program_state(KRAKEN_BASE, &fixed.required_capabilities(), 1_500)
+                .is_enabled()
+        );
+        let stale = link.program_state(
+            KRAKEN_BASE,
+            &fixed.required_capabilities(),
+            1_000 + STALE_AFTER_MS,
+        );
+        assert!(stale.is_disabled());
+        assert!(stale.message().unwrap().contains("2.0 s old"), "{stale:?}");
+    }
+
+    #[test]
+    fn alerts_are_routed_to_the_channel_they_name() {
+        let mut link = connected(
+            AccessMode::ReadWrite,
+            vec![writable(CapabilityId::PumpDuty)],
+        );
+        if let LinkState::Connected { telemetry, .. } = &mut link {
+            let mut snapshot = (**telemetry.as_ref().unwrap()).clone();
+            snapshot.alerts = vec![
+                SafetyAlert::ChannelStalled {
+                    channel: Channel::Pump,
+                    commanded_duty: 180,
+                    samples: 3,
+                    rpm: 0,
+                },
+                SafetyAlert::LiquidCritical {
+                    temperature_c: 61.0,
+                    threshold_c: 60.0,
+                },
+            ];
+            *telemetry = Some(Arc::new(snapshot));
+        }
+
+        assert_eq!(link.channel_alerts(Channel::Pump).len(), 2);
+        assert_eq!(
+            link.channel_alerts(Channel::Fan).len(),
+            1,
+            "an alert naming no channel affects both"
+        );
+    }
+
+    #[test]
     fn a_recovered_configuration_takes_priority_in_the_banner() {
         let mut link = connected(AccessMode::ReadWrite, vec![]);
         if let LinkState::Connected { status, .. } = &mut link {
-            status.config = ConfigState::Recovered {
-                detail: "expected schema 1, found 9".into(),
-                preserved_path: "/home/a/.config/nzxt-control/config.toml.corrupt.1".into(),
-                recovery_action: "Save a profile to write a fresh configuration.".into(),
-            };
+            *status = Arc::new(DaemonStatus {
+                config: ConfigState::Recovered {
+                    detail: "expected schema 1, found 9".into(),
+                    preserved_path: "/home/a/.config/nzxt-control/config.toml.corrupt.1".into(),
+                    recovery_action: "Save a profile to write a fresh configuration.".into(),
+                },
+                ..(**status).clone()
+            });
         }
         assert!(link.banner().unwrap().contains("Safe defaults are active"));
     }
@@ -497,6 +836,21 @@ mod tests {
             }],
         );
         assert_eq!(read_only.device_rows()[0].health, DeviceHealth::ReadOnly);
+    }
+
+    #[test]
+    fn a_failed_collector_is_reported_by_name() {
+        let mut link = connected(AccessMode::ReadWrite, vec![]);
+        if let LinkState::Connected { telemetry, .. } = &mut link {
+            let mut snapshot = (**telemetry.as_ref().unwrap()).clone();
+            snapshot.failed = vec![CollectorFailure {
+                collector: Collector::Gpu,
+                detail: "The GPU collector panicked and was isolated.".into(),
+            }];
+            *telemetry = Some(Arc::new(snapshot));
+        }
+        assert!(link.collector_failure(Collector::Gpu).is_some());
+        assert!(link.collector_failure(Collector::Cpu).is_none());
     }
 
     #[test]

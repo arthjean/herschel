@@ -8,10 +8,15 @@
 //! product refuses to expose a write the hardware has not proven it supports,
 //! so each primitive carries the reason rather than silently greying out.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
     Bounds, Div, ElementId, Hsla, PathBuilder, Pixels, Point, SharedString, Stateful, Window,
     canvas, div, prelude::*, px,
 };
+use nzxt_core::profile::{CURVE_NODE_COUNT, CurveNodes};
+use nzxt_core::telemetry::{History, MetricView};
 
 use crate::theme::{Color, FOCUS_RING, RADIUS, TARGET_MIN, color, numeric_font, space};
 
@@ -866,11 +871,358 @@ fn paint_ring(
     }
 }
 
-/// A control node of the cooling curve.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CurveNode {
-    pub temperature_c: f32,
-    pub duty_percent: f32,
+/// A numeric readout with its unit, freshness and one dominant bar.
+///
+/// The qualifier is a word, not a colour: "Stale" and "N/A" are what carry the
+/// meaning, and the colour only reinforces them.
+pub struct Metric {
+    label: SharedString,
+    value: Option<String>,
+    unit: SharedString,
+    qualifier: Option<&'static str>,
+    detail: Option<String>,
+    fraction: Option<f32>,
+    stale: bool,
+}
+
+impl Metric {
+    /// Build from a formatted value, or `None` when there is nothing to show.
+    pub fn new(label: impl Into<SharedString>, value: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            value,
+            unit: SharedString::default(),
+            qualifier: None,
+            detail: None,
+            fraction: None,
+            stale: false,
+        }
+    }
+
+    /// Build straight from a metric view, taking its value and its freshness.
+    pub fn from_view(
+        label: impl Into<SharedString>,
+        view: &MetricView<f32>,
+        format: impl Fn(f32) -> String,
+    ) -> Self {
+        let mut metric = Self::new(label, view.copied().map(format))
+            .qualifier(view.qualifier())
+            .detail(view.detail().map(str::to_string));
+        // Taken from the view rather than inferred from the qualifier string:
+        // freshness is a state, not a label to parse back.
+        metric.stale = view.is_stale();
+        debug_assert_eq!(metric.value.is_none(), view.is_unavailable());
+        metric
+    }
+
+    pub fn unit(mut self, unit: impl Into<SharedString>) -> Self {
+        self.unit = unit.into();
+        self
+    }
+
+    pub fn qualifier(mut self, qualifier: Option<&'static str>) -> Self {
+        self.qualifier = qualifier;
+        self
+    }
+
+    pub fn detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
+    }
+
+    /// Add the section's dominant bar, as a fraction of full scale.
+    pub fn bar(mut self, fraction: Option<f32>) -> Self {
+        self.fraction = fraction.map(|value| value.clamp(0.0, 1.0));
+        self
+    }
+
+    /// The number as shown, using an explicit marker rather than a zero.
+    pub fn readout(&self) -> String {
+        match &self.value {
+            Some(value) => format!("{value}{}", self.unit),
+            None => "--".to_string(),
+        }
+    }
+
+    pub fn render(self) -> Div {
+        let readout = self.readout();
+        let available = self.value.is_some();
+        let fill = if !available {
+            color::TEXT_DISABLED.hsla()
+        } else if self.stale {
+            color::WARNING.hsla()
+        } else {
+            color::ACCENT.hsla()
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            // Shares the row with its siblings so the bar spans the width it
+            // is given: a dominant bar per section is the point, and a bar
+            // sized to the width of its label is not one.
+            .flex_1()
+            .min_w(px(150.0))
+            .gap(space::XS)
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .gap(space::SM)
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(color::TEXT_MUTED.hsla())
+                            .child(self.label),
+                    )
+                    .children(self.qualifier.map(|qualifier| {
+                        div()
+                            .flex_none()
+                            .text_sm()
+                            .text_color(if available {
+                                color::WARNING.hsla()
+                            } else {
+                                color::TEXT_DISABLED.hsla()
+                            })
+                            .child(qualifier)
+                    })),
+            )
+            .child(
+                div()
+                    .font(numeric_font())
+                    .text_color(if available {
+                        color::TEXT.hsla()
+                    } else {
+                        color::TEXT_DISABLED.hsla()
+                    })
+                    .child(readout),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(6.0))
+                    .rounded(px(3.0))
+                    .bg(color::SEPARATOR.hsla())
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui::relative(self.fraction.unwrap_or(0.0)))
+                            .rounded(px(3.0))
+                            .bg(fill),
+                    ),
+            )
+            .children(self.detail.map(|detail| {
+                div()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(detail)
+            }))
+    }
+}
+
+/// A rolling series drawn as a line, with holes where samples are missing.
+///
+/// A gap is drawn as a gap. Joining across it would invent a value, and
+/// flattening it to zero would invent a plunge.
+pub struct Sparkline {
+    history: Vec<Option<f32>>,
+    min: f32,
+    max: f32,
+}
+
+/// Height of every chart, so four sections read as one system.
+const SPARKLINE_HEIGHT: Pixels = px(56.0);
+
+/// Most points a chart ever plots.
+///
+/// A fifteen-minute window holds nine hundred samples, and a chart this size is
+/// a few hundred pixels wide: plotting every sample would build a path with
+/// more vertices than the chart has columns, once per second, for every
+/// section. The cost of that is measurable in the idle CPU budget and none of
+/// it is visible.
+pub const MAX_PLOTTED_POINTS: usize = 180;
+
+impl Sparkline {
+    pub fn new(history: &History, min: f32, max: f32) -> Self {
+        Self {
+            history: downsample(history, MAX_PLOTTED_POINTS),
+            min,
+            max,
+        }
+    }
+
+    /// Vertical position of a value inside the plot, from 0.0 at the bottom.
+    pub fn fraction(&self, value: f32) -> f32 {
+        if self.max <= self.min {
+            return 0.0;
+        }
+        ((value - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+    }
+
+    /// Runs of consecutive present samples, as index ranges.
+    ///
+    /// Each run becomes one path, which is what leaves the holes visible.
+    pub fn segments(&self) -> Vec<(usize, usize)> {
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+        for (index, value) in self.history.iter().enumerate() {
+            match (value, start) {
+                (Some(_), None) => start = Some(index),
+                (None, Some(first)) => {
+                    runs.push((first, index - 1));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(first) = start {
+            runs.push((first, self.history.len() - 1));
+        }
+        runs
+    }
+
+    pub fn render(self) -> Div {
+        let line_color = color::ACCENT.hsla();
+        let gap_color = color::TEXT_DISABLED.hsla();
+        let baseline_color = color::SEPARATOR.alpha(0.7);
+        let segments = self.segments();
+        // Normalised once here, so the painter only places points and the
+        // scale is exercised by the same code a test can call.
+        let values: Vec<Option<f32>> = self
+            .history
+            .iter()
+            .map(|value| value.map(|value| self.fraction(value)))
+            .collect();
+
+        div()
+            .w_full()
+            .h(SPARKLINE_HEIGHT)
+            .rounded(RADIUS)
+            .bg(color::SURFACE.hsla())
+            .border_1()
+            .border_color(color::SEPARATOR.hsla())
+            .child(
+                canvas(
+                    move |_, _, _| {},
+                    move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
+                        paint_sparkline(
+                            window,
+                            bounds,
+                            &values,
+                            &segments,
+                            line_color,
+                            gap_color,
+                            baseline_color,
+                        );
+                    },
+                )
+                .size_full(),
+            )
+    }
+}
+
+/// Reduce a series to at most `limit` plotted points.
+///
+/// A bucket is a gap when *any* sample inside it is missing, never when only
+/// some are. Widening a hole by one bucket overstates how much is missing;
+/// averaging it away would claim data that was never read, and that is the
+/// error this product refuses to make.
+fn downsample(history: &History, limit: usize) -> Vec<Option<f32>> {
+    let samples: Vec<Option<f32>> = history.points().map(|point| point.value).collect();
+    if samples.len() <= limit || limit == 0 {
+        return samples;
+    }
+
+    let bucket = samples.len().div_ceil(limit);
+    samples
+        .chunks(bucket)
+        .map(|chunk| {
+            if chunk.iter().any(Option::is_none) {
+                return None;
+            }
+            let sum: f32 = chunk.iter().flatten().sum();
+            Some(sum / chunk.len() as f32)
+        })
+        .collect()
+}
+
+/// Paint a series whose values are already normalised into 0.0 to 1.0.
+#[allow(clippy::too_many_arguments)]
+fn paint_sparkline(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    values: &[Option<f32>],
+    segments: &[(usize, usize)],
+    line_color: Hsla,
+    gap_color: Hsla,
+    baseline_color: Hsla,
+) {
+    stroke_line(
+        window,
+        Point {
+            x: bounds.origin.x,
+            y: bounds.origin.y + bounds.size.height,
+        },
+        Point {
+            x: bounds.origin.x + bounds.size.width,
+            y: bounds.origin.y + bounds.size.height,
+        },
+        px(1.0),
+        baseline_color,
+    );
+
+    if values.len() < 2 {
+        return;
+    }
+
+    let last = (values.len() - 1) as f32;
+    let position = |index: usize, fraction: f32| Point {
+        x: bounds.origin.x + bounds.size.width * (index as f32 / last),
+        y: bounds.origin.y + bounds.size.height * (1.0 - fraction.clamp(0.0, 1.0)),
+    };
+
+    for (first, last_index) in segments {
+        if last_index == first {
+            continue;
+        }
+        let mut builder = PathBuilder::stroke(px(2.0));
+        for (offset, value) in values[*first..=*last_index].iter().enumerate() {
+            let Some(value) = value else { continue };
+            let index = first + offset;
+            let point = position(index, *value);
+            if offset == 0 {
+                builder.move_to(point);
+            } else {
+                builder.line_to(point);
+            }
+        }
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, line_color);
+        }
+    }
+
+    // A tick at the baseline under every hole: the break in the line is the
+    // primary cue, and this makes it legible even for a single missing sample.
+    for (index, value) in values.iter().enumerate() {
+        if value.is_some() {
+            continue;
+        }
+        let x = bounds.origin.x + bounds.size.width * (index as f32 / last);
+        stroke_line(
+            window,
+            Point {
+                x,
+                y: bounds.origin.y + bounds.size.height,
+            },
+            Point {
+                x,
+                y: bounds.origin.y + bounds.size.height - px(6.0),
+            },
+            px(1.5),
+            gap_color,
+        );
+    }
 }
 
 /// The liquid-temperature curve editor.
@@ -878,18 +1230,30 @@ pub struct CurveNode {
 /// Editing here changes nothing on the device: the surface is a pure view of
 /// the pending curve, and applying it is a separate, explicit action.
 pub struct CurveEditor {
-    nodes: Vec<CurveNode>,
+    nodes: CurveNodes,
+    selected: usize,
     state: ControlState,
     height: Pixels,
+    tab_index: isize,
+    /// Filled during paint so pointer events can be mapped back onto a node.
+    bounds_sink: Option<Rc<Cell<Bounds<Pixels>>>>,
 }
 
 impl CurveEditor {
-    pub fn new(nodes: Vec<CurveNode>) -> Self {
+    pub fn new(nodes: CurveNodes) -> Self {
         Self {
             nodes,
+            selected: 0,
             state: ControlState::Enabled,
             height: px(200.0),
+            tab_index: 0,
+            bounds_sink: None,
         }
+    }
+
+    pub fn selected(mut self, index: usize) -> Self {
+        self.selected = index.min(CURVE_NODE_COUNT - 1);
+        self
     }
 
     pub fn state(mut self, state: ControlState) -> Self {
@@ -897,95 +1261,130 @@ impl CurveEditor {
         self
     }
 
-    pub fn render(self) -> Div {
-        let nodes = self.nodes.clone();
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = index;
+        self
+    }
+
+    /// Where the plot area is published for hit testing.
+    pub fn bounds_sink(mut self, sink: Rc<Cell<Bounds<Pixels>>>) -> Self {
+        self.bounds_sink = Some(sink);
+        self
+    }
+
+    pub fn render(self) -> Stateful<Div> {
+        let nodes = self.nodes;
+        let selected = self.selected;
         let enabled = self.state.is_enabled();
         let line_color = if enabled {
             color::ACCENT.hsla()
         } else {
             color::TEXT_DISABLED.hsla()
         };
+        let marker_color = if enabled {
+            color::FOCUS.hsla()
+        } else {
+            color::TEXT_DISABLED.hsla()
+        };
         let grid_color = color::SEPARATOR.alpha(0.6);
-        let message = self.state.message().map(str::to_string);
+        let sink = self.bounds_sink.clone();
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(space::SM)
+        let mut plot = div()
+            .id("curve-plot")
+            .w_full()
+            .h(self.height)
+            .rounded(RADIUS)
+            .bg(color::SURFACE.hsla())
+            .border_1()
+            .border_color(color::SEPARATOR.hsla())
             .child(
-                div()
-                    .w_full()
-                    .h(self.height)
-                    .rounded(RADIUS)
-                    .bg(color::SURFACE.hsla())
-                    .border_1()
-                    .border_color(color::SEPARATOR.hsla())
-                    .child(
-                        canvas(
-                            move |_, _, _| {},
-                            move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
-                                paint_curve(window, bounds, &nodes, line_color, grid_color);
-                            },
-                        )
-                        .size_full(),
-                    ),
-            )
-            .children(message.map(|message| {
-                div()
-                    .text_sm()
-                    .text_color(if enabled {
-                        color::TEXT_MUTED.hsla()
-                    } else {
-                        color::WARNING.hsla()
-                    })
-                    .child(message)
-            }))
+                canvas(
+                    move |_, _, _| {},
+                    move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
+                        if let Some(sink) = &sink {
+                            sink.set(bounds);
+                        }
+                        paint_curve(
+                            window,
+                            bounds,
+                            &nodes,
+                            selected,
+                            line_color,
+                            marker_color,
+                            grid_color,
+                        );
+                    },
+                )
+                .size_full(),
+            );
+
+        if enabled {
+            plot = plot
+                .tab_index(self.tab_index)
+                .tab_stop(true)
+                .cursor_pointer()
+                .focus(|this| this.border_color(color::FOCUS.hsla()).border(FOCUS_RING));
+        }
+
+        plot
     }
 }
 
-/// Normalise a node onto the editor's plot area.
+/// Position of one curve node inside the plot area.
 ///
 /// Temperature runs left to right over the kernel's 20-59 C range, duty runs
-/// bottom to top over 0-100%.
-pub fn plot_point(node: CurveNode, bounds: Bounds<Pixels>) -> Point<Pixels> {
-    let temperature = ((node.temperature_c - 20.0) / 39.0).clamp(0.0, 1.0);
-    let duty = (node.duty_percent / 100.0).clamp(0.0, 1.0);
+/// bottom to top over the full 0-255 PWM scale.
+pub fn plot_node(index: usize, duty: u8, bounds: Bounds<Pixels>) -> Point<Pixels> {
+    let across = index.min(CURVE_NODE_COUNT - 1) as f32 / (CURVE_NODE_COUNT - 1) as f32;
+    let up = duty as f32 / 255.0;
     Point {
-        x: bounds.origin.x + bounds.size.width * temperature,
-        y: bounds.origin.y + bounds.size.height * (1.0 - duty),
+        x: bounds.origin.x + bounds.size.width * across,
+        y: bounds.origin.y + bounds.size.height * (1.0 - up),
     }
 }
 
+/// The node a pointer position selects, and the duty that height represents.
+pub fn node_at(bounds: Bounds<Pixels>, position: Point<Pixels>) -> (usize, u8) {
+    let width = f32::from(bounds.size.width).max(1.0);
+    let height = f32::from(bounds.size.height).max(1.0);
+    let across = ((f32::from(position.x) - f32::from(bounds.origin.x)) / width).clamp(0.0, 1.0);
+    let up = 1.0 - ((f32::from(position.y) - f32::from(bounds.origin.y)) / height).clamp(0.0, 1.0);
+
+    let index = (across * (CURVE_NODE_COUNT - 1) as f32).round() as usize;
+    let duty = (up * 255.0).round().clamp(0.0, 255.0) as u8;
+    (index.min(CURVE_NODE_COUNT - 1), duty)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn paint_curve(
     window: &mut Window,
     bounds: Bounds<Pixels>,
-    nodes: &[CurveNode],
+    nodes: &CurveNodes,
+    selected: usize,
     line_color: Hsla,
+    marker_color: Hsla,
     grid_color: Hsla,
 ) {
     for step in 1..4 {
         let y = bounds.origin.y + bounds.size.height * (step as f32 / 4.0);
-        let mut builder = PathBuilder::stroke(px(1.0));
-        builder.move_to(Point {
-            x: bounds.origin.x,
-            y,
-        });
-        builder.line_to(Point {
-            x: bounds.origin.x + bounds.size.width,
-            y,
-        });
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, grid_color);
-        }
-    }
-
-    if nodes.len() < 2 {
-        return;
+        stroke_line(
+            window,
+            Point {
+                x: bounds.origin.x,
+                y,
+            },
+            Point {
+                x: bounds.origin.x + bounds.size.width,
+                y,
+            },
+            px(1.0),
+            grid_color,
+        );
     }
 
     let mut builder = PathBuilder::stroke(px(2.0));
-    for (index, node) in nodes.iter().enumerate() {
-        let point = plot_point(*node, bounds);
+    for (index, duty) in nodes.duty.iter().enumerate() {
+        let point = plot_node(index, *duty, bounds);
         if index == 0 {
             builder.move_to(point);
         } else {
@@ -996,21 +1395,114 @@ fn paint_curve(
         window.paint_path(path, line_color);
     }
 
-    // Node markers, so each control point is visible without hovering.
-    for node in nodes {
-        let centre = plot_point(*node, bounds);
-        let mut marker = PathBuilder::stroke(px(4.0));
-        marker.move_to(Point {
-            x: centre.x - px(2.0),
-            y: centre.y,
-        });
-        marker.line_to(Point {
-            x: centre.x + px(2.0),
-            y: centre.y,
-        });
-        if let Ok(path) = marker.build() {
-            window.paint_path(path, line_color);
+    // Node markers, so each control point is visible without hovering, and the
+    // selected one is drawn wider so keyboard focus is legible without colour.
+    for (index, duty) in nodes.duty.iter().enumerate() {
+        let centre = plot_node(index, *duty, bounds);
+        let half = if index == selected { px(7.0) } else { px(3.0) };
+        let thickness = if index == selected { px(6.0) } else { px(4.0) };
+        stroke_line(
+            window,
+            Point {
+                x: centre.x - half,
+                y: centre.y,
+            },
+            Point {
+                x: centre.x + half,
+                y: centre.y,
+            },
+            thickness,
+            if index == selected {
+                marker_color
+            } else {
+                line_color
+            },
+        );
+    }
+}
+
+fn stroke_line(
+    window: &mut Window,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+    thickness: Pixels,
+    color: Hsla,
+) {
+    let mut builder = PathBuilder::stroke(thickness);
+    builder.move_to(from);
+    builder.line_to(to);
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// How urgent a [`Note`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteLevel {
+    Info,
+    Warning,
+    Critical,
+}
+
+impl NoteLevel {
+    fn color(self) -> Color {
+        match self {
+            Self::Info => color::TEXT_MUTED,
+            Self::Warning => color::WARNING,
+            Self::Critical => color::DANGER,
         }
+    }
+
+    /// A word, so urgency is never carried by colour alone.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Info => "Note",
+            Self::Warning => "Warning",
+            Self::Critical => "Critical",
+        }
+    }
+}
+
+/// One state message with its severity spelled out.
+pub struct Note {
+    level: NoteLevel,
+    message: SharedString,
+}
+
+impl Note {
+    pub fn new(level: NoteLevel, message: impl Into<SharedString>) -> Self {
+        Self {
+            level,
+            message: message.into(),
+        }
+    }
+
+    pub fn render(self) -> Div {
+        let accent = self.level.color();
+        div()
+            .flex()
+            .w_full()
+            .min_w_0()
+            .gap(space::SM)
+            .p(space::MD)
+            .rounded(RADIUS)
+            .bg(accent.alpha(0.12))
+            .border_1()
+            .border_color(accent.alpha(0.5))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(accent.hsla())
+                    .child(self.level.label()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(color::TEXT.hsla())
+                    .child(self.message),
+            )
     }
 }
 
@@ -1147,55 +1639,181 @@ mod tests {
         );
     }
 
-    #[test]
-    fn curve_nodes_map_onto_the_plot_area() {
-        let bounds = Bounds {
+    fn plot() -> Bounds<Pixels> {
+        Bounds {
             origin: Point {
                 x: px(0.0),
                 y: px(0.0),
             },
             size: size(px(400.0), px(200.0)),
-        };
-
-        let bottom_left = plot_point(
-            CurveNode {
-                temperature_c: 20.0,
-                duty_percent: 0.0,
-            },
-            bounds,
-        );
-        assert_eq!(bottom_left.x, px(0.0));
-        assert_eq!(bottom_left.y, px(200.0));
-
-        let top_right = plot_point(
-            CurveNode {
-                temperature_c: 59.0,
-                duty_percent: 100.0,
-            },
-            bounds,
-        );
-        assert_eq!(top_right.x, px(400.0));
-        assert_eq!(top_right.y, px(0.0));
+        }
     }
 
     #[test]
-    fn curve_nodes_outside_the_abi_range_are_clamped_into_the_plot() {
-        let bounds = Bounds {
-            origin: Point {
-                x: px(0.0),
-                y: px(0.0),
-            },
-            size: size(px(400.0), px(200.0)),
-        };
+    fn curve_nodes_map_onto_the_plot_area() {
+        let bounds = plot();
 
-        let point = plot_point(
-            CurveNode {
-                temperature_c: 90.0,
-                duty_percent: 300.0,
-            },
-            bounds,
+        let bottom_left = plot_node(0, 0, bounds);
+        assert_eq!(bottom_left.x, px(0.0));
+        assert_eq!(bottom_left.y, px(200.0));
+
+        let top_right = plot_node(CURVE_NODE_COUNT - 1, 255, bounds);
+        assert_eq!(top_right.x, px(400.0));
+        assert_eq!(top_right.y, px(0.0));
+
+        // An index past the last node is clamped into the plot rather than
+        // painted outside it.
+        assert_eq!(plot_node(99, 255, bounds).x, px(400.0));
+    }
+
+    #[test]
+    fn a_pointer_position_resolves_to_a_node_and_a_duty() {
+        let bounds = plot();
+
+        assert_eq!(
+            node_at(
+                bounds,
+                Point {
+                    x: px(0.0),
+                    y: px(200.0)
+                }
+            ),
+            (0, 0)
         );
-        assert_eq!(point.x, px(400.0));
-        assert_eq!(point.y, px(0.0));
+        assert_eq!(
+            node_at(
+                bounds,
+                Point {
+                    x: px(400.0),
+                    y: px(0.0)
+                }
+            ),
+            (CURVE_NODE_COUNT - 1, 255)
+        );
+
+        // Halfway across selects the middle node; halfway up is half duty.
+        let (index, duty) = node_at(
+            bounds,
+            Point {
+                x: px(200.0),
+                y: px(100.0),
+            },
+        );
+        assert!((4..=5).contains(&index), "index {index}");
+        assert!((126..=129).contains(&duty), "duty {duty}");
+
+        // A position outside the plot is clamped, never wrapped.
+        assert_eq!(
+            node_at(
+                bounds,
+                Point {
+                    x: px(-40.0),
+                    y: px(900.0)
+                }
+            ),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn a_metric_without_a_value_reads_as_unavailable_not_as_zero() {
+        let unavailable = Metric::new("GPU", None).unit(" C");
+        assert_eq!(unavailable.readout(), "--");
+
+        let present = Metric::new("GPU", Some("51.0".to_string())).unit(" C");
+        assert_eq!(present.readout(), "51.0 C");
+    }
+
+    #[test]
+    fn a_metric_takes_its_qualifier_from_the_view_it_was_built_from() {
+        let stale = MetricView::Stale {
+            value: 46.8,
+            age_ms: 3_000,
+        };
+        let metric = Metric::from_view("CPU", &stale, |value| format!("{value:.1}"));
+        assert_eq!(metric.qualifier, Some("Stale"));
+        assert_eq!(metric.readout(), "46.8");
+
+        let missing: MetricView<f32> = MetricView::Unavailable { cause: None };
+        let metric = Metric::from_view("CPU", &missing, |value| format!("{value:.1}"));
+        assert_eq!(metric.qualifier, Some("N/A"));
+        assert_eq!(metric.readout(), "--");
+    }
+
+    #[test]
+    fn a_sparkline_breaks_its_line_at_every_gap() {
+        let mut history = History::new(60_000);
+        for (step, value) in [Some(1.0), Some(2.0), None, Some(4.0), Some(5.0)]
+            .into_iter()
+            .enumerate()
+        {
+            history.push(step as u64 * 1_000, value);
+        }
+
+        let sparkline = Sparkline::new(&history, 0.0, 10.0);
+        assert_eq!(sparkline.segments(), vec![(0, 1), (3, 4)]);
+        assert!((sparkline.fraction(5.0) - 0.5).abs() < 0.001);
+        assert_eq!(sparkline.fraction(-4.0), 0.0);
+        assert_eq!(sparkline.fraction(40.0), 1.0);
+    }
+
+    #[test]
+    fn a_full_window_is_reduced_to_a_bounded_number_of_plotted_points() {
+        let mut history = History::new(nzxt_core::telemetry::HISTORY_WINDOW_MS);
+        for step in 0..900u64 {
+            history.push(step * 1_000, Some(step as f32 % 100.0));
+        }
+        assert_eq!(history.len(), 900);
+
+        let sparkline = Sparkline::new(&history, 0.0, 100.0);
+        assert!(
+            sparkline.history.len() <= MAX_PLOTTED_POINTS,
+            "{} points plotted",
+            sparkline.history.len()
+        );
+        assert!(sparkline.history.iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn downsampling_never_hides_a_gap() {
+        let mut history = History::new(nzxt_core::telemetry::HISTORY_WINDOW_MS);
+        for step in 0..900u64 {
+            history.push(step * 1_000, if step == 500 { None } else { Some(1.0) });
+        }
+
+        let sparkline = Sparkline::new(&history, 0.0, 10.0);
+        assert_eq!(
+            sparkline.history.iter().filter(|v| v.is_none()).count(),
+            1,
+            "the single missing sample must survive as a hole"
+        );
+        // Two runs remain, which is what makes the break visible.
+        assert_eq!(sparkline.segments().len(), 2);
+    }
+
+    #[test]
+    fn a_short_window_is_plotted_sample_for_sample() {
+        let mut history = History::new(60_000);
+        for step in 0..20u64 {
+            history.push(step * 1_000, Some(step as f32));
+        }
+        assert_eq!(Sparkline::new(&history, 0.0, 20.0).history.len(), 20);
+    }
+
+    #[test]
+    fn a_sparkline_of_only_gaps_draws_no_segment() {
+        let mut history = History::new(60_000);
+        for step in 0..4u64 {
+            history.push(step * 1_000, None);
+        }
+        assert!(Sparkline::new(&history, 0.0, 10.0).segments().is_empty());
+    }
+
+    #[test]
+    fn a_note_states_its_severity_in_words() {
+        for level in [NoteLevel::Info, NoteLevel::Warning, NoteLevel::Critical] {
+            assert!(!level.label().is_empty());
+        }
+        assert_ne!(NoteLevel::Warning.label(), NoteLevel::Critical.label());
     }
 }

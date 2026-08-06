@@ -12,7 +12,7 @@
 use std::process::ExitCode;
 
 use gpui::{AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
-use nzxt_app::link::LinkState;
+use nzxt_app::feed::Feed;
 use nzxt_app::offline::NoNetwork;
 use nzxt_app::shell::{Shell, key_bindings};
 use nzxt_app::startup::{
@@ -48,8 +48,13 @@ fn main() -> ExitCode {
         default_hook(info);
     }));
 
+    // The worker polls at the daemon's own cadence and wakes the window when a
+    // new sample lands, so the interface never repaints on a timer of its own.
     let socket = socket_path_from_env();
-    let link = LinkState::connect(&socket);
+    let (feed, notifications) = Feed::spawn(
+        socket,
+        std::time::Duration::from_millis(nzxt_core::telemetry::SAMPLE_INTERVAL_MS),
+    );
     let exit_after_first_frame = is_enabled(EXIT_AFTER_FIRST_FRAME_ENV);
 
     // GPUI ships an HTTP client whether or not an application wants one.
@@ -73,7 +78,7 @@ fn main() -> ExitCode {
                     window_min_size: Some(size(px(760.0), px(520.0))),
                     ..Default::default()
                 },
-                |window, cx| cx.new(|cx| Shell::new(link, window, cx)),
+                |window, cx| cx.new(|cx| Shell::new(feed, notifications, window, cx)),
             );
 
             match window {

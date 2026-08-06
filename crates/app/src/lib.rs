@@ -10,7 +10,10 @@
 //! request.
 
 pub mod components;
+pub mod cooling;
+pub mod feed;
 pub mod link;
+pub mod metrics;
 pub mod offline;
 pub mod preview;
 pub mod shell;
