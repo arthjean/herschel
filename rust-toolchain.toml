@@ -1,0 +1,8 @@
+# The toolchain this project builds and validates with.
+#
+# Distinct from `rust-version` in Cargo.toml: that field declares the oldest
+# toolchain the code supports, this file pins the one rustup installs and uses.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

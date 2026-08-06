@@ -1,0 +1,10 @@
+# Rust build artefacts
+/target/
+
+# Agent tooling, local to this machine
+.claude/
+.codex/
+
+# Editor and OS noise
+*.swp
+.DS_Store
