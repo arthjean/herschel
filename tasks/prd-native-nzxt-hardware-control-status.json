@@ -1,0 +1,363 @@
+{
+  "prd": {
+    "file": "tasks/prd-native-nzxt-hardware-control.md",
+    "title": "Native NZXT Hardware Control for Linux",
+    "created_at": "2026-07-30",
+    "status": "IN_PROGRESS"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Validated Native Foundation",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 5,
+      "stories_done": 5,
+      "stories_in_review": 0,
+      "started_at": "2026-08-06",
+      "updated_at": "2026-08-06",
+      "completed_at": "2026-08-06",
+      "reviewed_at": "2026-08-06"
+    },
+    {
+      "id": "EP-002",
+      "title": "Monitoring and Thermal Control",
+      "status": "TODO",
+      "priority": "P0",
+      "stories_total": 7,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-003",
+      "title": "Validated RGB Controller",
+      "status": "TODO",
+      "priority": "P0",
+      "stories_total": 3,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-004",
+      "title": "Native Kraken LCD",
+      "status": "TODO",
+      "priority": "P0",
+      "stories_total": 3,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-005",
+      "title": "Reliability and Fedora Distribution",
+      "status": "TODO",
+      "priority": "P1",
+      "stories_total": 2,
+      "stories_done": 0
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Validate GPUI on the target Linux desktop",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-08-06",
+      "completed_at": "2026-08-06",
+      "reviewed_at": "2026-08-06"
+    },
+    {
+      "id": "US-002",
+      "title": "Validate the exact hardware capability matrix",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-08-06",
+      "completed_at": "2026-08-06",
+      "reviewed_at": "2026-08-06"
+    },
+    {
+      "id": "US-003",
+      "title": "Enforce one unprivileged hardware writer",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-001",
+        "US-002"
+      ],
+      "started_at": "2026-08-06",
+      "completed_at": "2026-08-06",
+      "reviewed_at": "2026-08-06"
+    },
+    {
+      "id": "US-004",
+      "title": "Build the native shell and component contract",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-08-06",
+      "completed_at": "2026-08-06",
+      "reviewed_at": "2026-08-06"
+    },
+    {
+      "id": "US-005",
+      "title": "Persist configuration and diagnostics locally",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-08-06",
+      "completed_at": "2026-08-06",
+      "reviewed_at": "2026-08-06"
+    },
+    {
+      "id": "US-006",
+      "title": "Stream Kraken telemetry from hwmon",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-002",
+        "US-003"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-007",
+      "title": "Stream CPU, GPU and RAM telemetry",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-001",
+        "US-003"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-008",
+      "title": "Render the monitoring dashboard",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-004",
+        "US-006",
+        "US-007"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-009",
+      "title": "Apply validated fixed pump and fan duty",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-002",
+        "US-003",
+        "US-006"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-010",
+      "title": "Edit and apply a safe liquid-temperature curve",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-002",
+        "US-003",
+        "US-009"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-011",
+      "title": "Save, activate and recover named profiles",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-005",
+        "US-009",
+        "US-010"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-012",
+      "title": "Complete the Cooling control surface and safety states",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-004",
+        "US-006",
+        "US-009",
+        "US-010",
+        "US-011"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-013",
+      "title": "Validate the RGB Controller protocol and topology",
+      "epic": "EP-003",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-002",
+        "US-003"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-014",
+      "title": "Control fixed RGB color and off state",
+      "epic": "EP-003",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-004",
+        "US-005",
+        "US-013"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-015",
+      "title": "Add only validated RGB effects",
+      "epic": "EP-003",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-013",
+        "US-014"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-016",
+      "title": "Validate the LCD transport on 1e71:300e",
+      "epic": "EP-004",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-002",
+        "US-003"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-017",
+      "title": "Build the LCD editor, preview and static output",
+      "epic": "EP-004",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-004",
+        "US-005",
+        "US-016"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-018",
+      "title": "Render and stream the dual CPU/GPU infographic",
+      "epic": "EP-004",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-007",
+        "US-016",
+        "US-017"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-019",
+      "title": "Harden hotplug, suspend and failure recovery",
+      "epic": "EP-005",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-011",
+        "US-014",
+        "US-018"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-020",
+      "title": "Package and install the Fedora release",
+      "epic": "EP-005",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-003",
+        "US-005",
+        "US-019"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    }
+  ]
+}
