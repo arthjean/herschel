@@ -14,6 +14,7 @@ pub mod client;
 pub mod diagnostics;
 pub mod ipc;
 pub mod profile;
+pub mod telemetry;
 
 /// Vendor and product identifiers of a USB device.
 ///

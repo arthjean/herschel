@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 use crate::capability::{CapabilityId, CapabilityRecord};
-use crate::profile::{Incompatibility, Profile, ValidationError};
+use crate::profile::{Channel, CoolingProgram, Incompatibility, Profile, ValidationError};
+use crate::telemetry::{PwmMode, TelemetrySnapshot};
 
 /// Incremented on any breaking change to [`Request`] or [`Response`].
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -113,12 +114,23 @@ pub enum Request {
     /// Remove a stored profile. The safe profile is activated first when the
     /// deleted profile is the active one.
     DeleteProfile { name: String },
+    /// The most recent sampling pass.
+    Telemetry,
+    /// Apply a cooling program directly, without saving it as a profile.
+    ///
+    /// This is what the Cooling screen's Apply activates. The daemon
+    /// revalidates every value before the first write.
+    ApplyProgram { program: CoolingProgram },
     /// Redacted diagnostics for an issue report.
     Diagnostics,
 }
 
 /// A response from the daemon.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: a telemetry snapshot carries floating-point readings, and an
+/// equality that silently compared them would invite exactly the wrong kind of
+/// assertion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum Response {
     Hello {
@@ -139,6 +151,8 @@ pub enum Response {
         name: String,
         activated_instead: Option<String>,
     },
+    Telemetry(Box<TelemetrySnapshot>),
+    Applied(Box<ApplyOutcome>),
     Diagnostics(crate::diagnostics::DiagnosticsExport),
     Error(IpcError),
 }
@@ -148,6 +162,70 @@ pub enum Response {
 pub struct ActivationOutcome {
     pub name: String,
     pub hardware: HardwareState,
+    /// The write the activation performed, when it performed one.
+    pub applied: Option<ApplyOutcome>,
+}
+
+/// The result of one cooling write, with the evidence behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyOutcome {
+    pub hardware: HardwareState,
+    /// Number of kernel attributes actually written.
+    ///
+    /// Zero means the request matched the confirmed state and was
+    /// deduplicated, which is what US-009 requires of a repeated Apply.
+    pub writes: u32,
+    /// True when nothing was written because the state already matched.
+    pub deduplicated: bool,
+    /// What the kernel reported after the write, per channel.
+    pub readback: Vec<ChannelReadback>,
+}
+
+impl ApplyOutcome {
+    /// The outcome of a program that touches no hardware.
+    pub fn untouched(hardware: HardwareState) -> Self {
+        Self {
+            hardware,
+            writes: 0,
+            deduplicated: false,
+            readback: Vec::new(),
+        }
+    }
+
+    pub fn readback_for(&self, channel: Channel) -> Option<&ChannelReadback> {
+        self.readback.iter().find(|entry| entry.channel == channel)
+    }
+}
+
+/// What one channel reported after a write.
+///
+/// Every field is optional because a readback the kernel does not provide is
+/// recorded as missing rather than assumed to match what was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelReadback {
+    pub channel: Channel,
+    pub mode: Option<PwmMode>,
+    pub duty: Option<u8>,
+    /// Curve points that read back identical to what was written.
+    pub curve_points_confirmed: Option<u16>,
+    /// Set when the readback contradicts the value that was written.
+    pub mismatch: Option<String>,
+}
+
+impl ChannelReadback {
+    pub fn new(channel: Channel) -> Self {
+        Self {
+            channel,
+            mode: None,
+            duty: None,
+            curve_points_confirmed: None,
+            mismatch: None,
+        }
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        self.mismatch.is_none() && (self.mode.is_some() || self.duty.is_some())
+    }
 }
 
 /// How much of the hardware state the daemon can vouch for.

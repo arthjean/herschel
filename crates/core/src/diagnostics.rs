@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::DeviceId;
 use crate::capability::{CapabilityId, CapabilityRecord};
 use crate::ipc::{HardwareState, IpcError};
+use crate::telemetry::Collector;
 
 /// Bumped whenever [`DiagnosticsExport`] changes shape.
 pub const DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
@@ -100,6 +101,20 @@ pub enum EventKind {
         detail: String,
         preserved_path: String,
     },
+    /// A cooling program reached the hardware, or was refused before it did.
+    ProgramApplied {
+        hardware: HardwareState,
+        /// Kernel attributes actually written. Zero means deduplicated.
+        writes: u32,
+    },
+    /// A telemetry collector panicked or stopped answering.
+    CollectorFailed {
+        collector: Collector,
+        detail: String,
+    },
+    CollectorRecovered {
+        collector: Collector,
+    },
 }
 
 impl EventKind {
@@ -109,7 +124,13 @@ impl EventKind {
             | Self::OwnershipConflict { .. }
             | Self::ClientRejected { .. }
             | Self::RequestRejected { .. }
+            | Self::CollectorFailed { .. }
             | Self::ConfigRecovered { .. } => Severity::Warning,
+            Self::ProgramApplied { hardware, .. } => match hardware {
+                HardwareState::Uncertain { .. } => Severity::Error,
+                HardwareState::NotApplied { .. } => Severity::Warning,
+                HardwareState::Confirmed | HardwareState::Onboard => Severity::Info,
+            },
             Self::AccessModeChanged { read_only, .. } => {
                 if *read_only {
                     Severity::Warning

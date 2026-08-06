@@ -129,4 +129,43 @@ impl Client {
             }),
         }
     }
+
+    /// The most recent sampling pass.
+    pub fn telemetry(&mut self) -> Result<crate::telemetry::TelemetrySnapshot, ClientError> {
+        match self.request(Request::Telemetry)? {
+            Response::Telemetry(snapshot) => Ok(*snapshot),
+            Response::Error(error) => Err(ClientError::Refused(error)),
+            _ => Err(ClientError::Unexpected {
+                expected: "telemetry",
+                actual: "other response",
+            }),
+        }
+    }
+
+    /// Apply a cooling program and read what the hardware confirmed.
+    pub fn apply(
+        &mut self,
+        program: crate::profile::CoolingProgram,
+    ) -> Result<crate::ipc::ApplyOutcome, ClientError> {
+        match self.request(Request::ApplyProgram { program })? {
+            Response::Applied(outcome) => Ok(*outcome),
+            Response::Error(error) => Err(ClientError::Refused(error)),
+            _ => Err(ClientError::Unexpected {
+                expected: "applied",
+                actual: "other response",
+            }),
+        }
+    }
+
+    /// Every stored profile plus the active one.
+    pub fn profiles(&mut self) -> Result<(String, Vec<crate::profile::Profile>), ClientError> {
+        match self.request(Request::Profiles)? {
+            Response::Profiles { active, profiles } => Ok((active, profiles)),
+            Response::Error(error) => Err(ClientError::Refused(error)),
+            _ => Err(ClientError::Unexpected {
+                expected: "profiles",
+                actual: "other response",
+            }),
+        }
+    }
 }
