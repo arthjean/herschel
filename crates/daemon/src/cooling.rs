@@ -25,11 +25,32 @@
 use std::time::{Duration, Instant};
 
 use nzxt_core::ipc::{ApplyOutcome, ChannelReadback, HardwareState};
-use nzxt_core::profile::{Channel, CoolingProgram, MIN_PROGRAM_INTERVAL_MS, TemperatureCurve};
-use nzxt_core::telemetry::PwmMode;
+use nzxt_core::profile::{
+    CURVE_POINT_COUNT, Channel, CoolingProgram, MIN_PROGRAM_INTERVAL_MS, TemperatureCurve,
+};
+use nzxt_core::telemetry::{KrakenTelemetry, PwmMode};
 use nzxt_hardware_linux::SysfsRoot;
 use nzxt_hardware_linux::control::{Applied, ChannelSnapshot, CoolingControl, WriteFailure};
 use nzxt_hardware_linux::hwmon::KrakenHwmon;
+
+/// How long a curve is left alone before its committed shape is checked against
+/// what the device reports it is running.
+///
+/// The duty in `pwmN` is the firmware's own reported value, refreshed from its
+/// periodic status report rather than echoed from the last write, so it lags a
+/// write by up to one report. Checking sooner would read the previous program
+/// and call a correct write a divergence.
+const CURVE_SETTLE_MS: u64 = 5_000;
+
+/// How far the reported duty may sit from the committed curve before the curve
+/// is treated as not actually running.
+///
+/// The driver stores duty as a percentage and converts both ways, so a value
+/// written as 0-255 comes back up to two steps away. The liquid temperature the
+/// daemon reads and the one the firmware interpolated against are also a moment
+/// apart, so the neighboring points are accepted too; this covers the rounding
+/// on top of that.
+const CURVE_DUTY_TOLERANCE: u8 = 3;
 
 /// What one channel was last told to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,12 +68,32 @@ impl Target {
     }
 }
 
+/// A committed program, and when it was committed.
+///
+/// The timestamp is what makes the curve check meaningful: a curve is only
+/// contradicted by a reported duty once the device has had a report to publish
+/// it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Commit {
+    target: Target,
+    at_unix_ms: u64,
+}
+
+/// A committed curve the device turned out not to be running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurveDivergence {
+    pub channel: Channel,
+    pub liquid_temperature_mc: i32,
+    pub expected: u8,
+    pub reported: u8,
+}
+
 /// The sole writer of the thermal path.
 pub struct CoolingExecutor {
     sysfs: SysfsRoot,
     control: Option<CoolingControl>,
     /// The last program this process confirmed on each channel.
-    committed: Vec<(Channel, Target)>,
+    committed: Vec<(Channel, Commit)>,
     /// When an attribute was last written, whatever channel it belonged to.
     ///
     /// One stamp for the device rather than one per channel: a curve
@@ -102,24 +143,29 @@ impl CoolingExecutor {
     }
 
     fn committed_curve(&self, channel: Channel) -> Option<TemperatureCurve> {
-        self.committed
-            .iter()
-            .find_map(|(entry, target)| match (entry == &channel, target) {
+        self.committed.iter().find_map(|(entry, commit)| {
+            match (entry == &channel, &commit.target) {
                 (true, Target::Curve(curve)) => Some(curve.clone()),
                 _ => None,
-            })
+            }
+        })
     }
 
     fn committed_target(&self, channel: Channel) -> Option<&Target> {
         self.committed
             .iter()
             .find(|(entry, _)| entry == &channel)
-            .map(|(_, target)| target)
+            .map(|(_, commit)| &commit.target)
     }
 
     fn commit(&mut self, channel: Channel, target: Target) {
+        self.commit_at(channel, target, crate::now_unix_ms());
+    }
+
+    fn commit_at(&mut self, channel: Channel, target: Target, at_unix_ms: u64) {
         self.committed.retain(|(entry, _)| entry != &channel);
-        self.committed.push((channel, target));
+        self.committed
+            .push((channel, Commit { target, at_unix_ms }));
     }
 
     fn uncommit(&mut self, channel: Channel) {
@@ -259,6 +305,67 @@ impl CoolingExecutor {
         }
     }
 
+    /// Check every committed curve against the duty the device reports.
+    ///
+    /// This exists because `apply_curve` cannot prove anything on its own. The
+    /// curve attributes are write-only on this driver, so a curve write returns
+    /// `Confirmed` on the strength of the mode alone, and a curve the firmware
+    /// silently discarded is indistinguishable from one it is running. The duty
+    /// in `pwmN` is the firmware's own answer, so at a known liquid temperature
+    /// it says which curve is actually in force.
+    ///
+    /// A channel that disagrees is uncommitted, which is what makes the next
+    /// Apply write instead of deduplicating against a program the device never
+    /// took. Reporting is left to the caller.
+    ///
+    /// The comparison accepts the points on either side of the measured
+    /// temperature: the reading and the firmware's own interpolation are a
+    /// moment apart, and a curve that climbs steeply would otherwise look wrong
+    /// while both are merely disagreeing about a fraction of a degree.
+    pub fn verify_curves(
+        &mut self,
+        kraken: &KrakenTelemetry,
+        now_unix_ms: u64,
+    ) -> Vec<CurveDivergence> {
+        let Some(liquid_c) = kraken.liquid_temperature_c.copied() else {
+            return Vec::new();
+        };
+
+        let mut diverged = Vec::new();
+        for (channel, commit) in &self.committed {
+            let Target::Curve(curve) = &commit.target else {
+                continue;
+            };
+            if now_unix_ms.saturating_sub(commit.at_unix_ms) < CURVE_SETTLE_MS {
+                continue;
+            }
+            let entry = kraken.channel(*channel);
+            if entry.mode.copied() != Some(PwmMode::Curve) {
+                // Not in curve mode at all. `already_applied` catches that on
+                // its own and rewrites, so it is not this check's business.
+                continue;
+            }
+            let (Some(reported), Some(expected)) = (entry.duty.copied(), curve.duty_at(liquid_c))
+            else {
+                continue;
+            };
+            if accepts_duty(curve, liquid_c, reported) {
+                continue;
+            }
+            diverged.push(CurveDivergence {
+                channel: *channel,
+                liquid_temperature_mc: (liquid_c * 1_000.0).round() as i32,
+                expected,
+                reported,
+            });
+        }
+
+        for divergence in &diverged {
+            self.uncommit(divergence.channel);
+        }
+        diverged
+    }
+
     /// The current readback when the channel already holds the target, or
     /// `None` when a write is needed.
     ///
@@ -373,10 +480,26 @@ impl CoolingExecutor {
     }
 }
 
+/// Whether `reported` is consistent with `curve` around `liquid_c`.
+///
+/// The window spans the point the temperature names and its two neighbors,
+/// widened by the driver's percentage rounding in both directions.
+fn accepts_duty(curve: &TemperatureCurve, liquid_c: f32, reported: u8) -> bool {
+    let center = TemperatureCurve::point_index_for(liquid_c);
+    let first = center.saturating_sub(1);
+    let last = (center + 1).min(CURVE_POINT_COUNT - 1);
+    let window = &curve.points[first..=last];
+    let (Some(low), Some(high)) = (window.iter().min(), window.iter().max()) else {
+        return true;
+    };
+    reported >= low.saturating_sub(CURVE_DUTY_TOLERANCE)
+        && reported <= high.saturating_add(CURVE_DUTY_TOLERANCE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::profile::{CURVE_POINT_COUNT, CurveNodes};
+    use nzxt_core::profile::CurveNodes;
     use nzxt_hardware_linux::testing::{FakeSysfs, running_as_root};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -502,6 +625,102 @@ mod tests {
         );
         assert_eq!(repeat.writes, 0);
         assert!(repeat.deduplicated);
+    }
+
+    fn kraken_running(liquid_c: f32, pump_duty: u8, fan_duty: u8) -> KrakenTelemetry {
+        use nzxt_core::telemetry::{ChannelTelemetry, Reading};
+        let channel = |channel, duty| ChannelTelemetry {
+            channel,
+            rpm: Reading::valid(1_800),
+            duty: Reading::valid(duty),
+            mode: Reading::valid(PwmMode::Curve),
+        };
+        KrakenTelemetry {
+            at_unix_ms: 1_000,
+            present: true,
+            liquid_temperature_c: Reading::valid(liquid_c),
+            pump: channel(Channel::Pump, pump_duty),
+            fan: channel(Channel::Fan, fan_duty),
+        }
+    }
+
+    /// The failure this check exists for, as it presented on real hardware: a
+    /// curve committed and reported `Confirmed`, while the device kept running
+    /// the previous one. At 30 C the starting ramp commands 140, so a device
+    /// reporting 140 under a committed flat-255 curve is running neither the
+    /// curve it was told to nor anything close to it.
+    #[test]
+    fn a_curve_the_device_never_took_is_caught_and_uncommitted() {
+        let mut clock = Clock::new();
+        let (_fake, _hwmon, mut executor) = executor("cooling-verify", true);
+        let curve = CurveNodes::flat(255).interpolate();
+        let program = CoolingProgram::Curve {
+            pump: curve.clone(),
+            fan: curve,
+        };
+        assert_eq!(
+            executor.apply(clock.tick(), &program).hardware,
+            HardwareState::Confirmed
+        );
+
+        let running = kraken_running(30.0, 140, 140);
+        let settled = crate::now_unix_ms() + CURVE_SETTLE_MS + 1_000;
+
+        // Nothing is concluded before the device has had a report to answer in.
+        assert!(
+            executor
+                .verify_curves(&running, crate::now_unix_ms())
+                .is_empty(),
+            "a curve is not contradicted before it has settled"
+        );
+
+        let diverged = executor.verify_curves(&running, settled);
+        assert_eq!(diverged.len(), 2, "both channels disagree");
+        let pump = diverged
+            .iter()
+            .find(|entry| entry.channel == Channel::Pump)
+            .expect("the pump diverged");
+        assert_eq!(pump.expected, 255);
+        assert_eq!(pump.reported, 140);
+        assert_eq!(pump.liquid_temperature_mc, 30_000);
+
+        // Uncommitted, so the next Apply writes instead of deduplicating
+        // against a program the device never took. That is the whole point:
+        // without it the operator can never get the curve applied at all.
+        assert!(executor.committed_target(Channel::Pump).is_none());
+        assert!(executor.apply(clock.tick(), &program).writes > 0);
+    }
+
+    #[test]
+    fn a_curve_the_device_is_running_is_left_committed() {
+        let mut clock = Clock::new();
+        let (_fake, _hwmon, mut executor) = executor("cooling-verify-ok", true);
+        let curve = CurveNodes::starting_ramp().interpolate();
+        executor.apply(
+            clock.tick(),
+            &CoolingProgram::Curve {
+                pump: curve.clone(),
+                fan: curve.clone(),
+            },
+        );
+
+        let settled = crate::now_unix_ms() + CURVE_SETTLE_MS + 1_000;
+        // 140 is exactly what this curve commands at 30 C.
+        assert_eq!(curve.duty_at(30.0), Some(140));
+        assert!(
+            executor
+                .verify_curves(&kraken_running(30.0, 140, 140), settled)
+                .is_empty()
+        );
+
+        // The driver stores duty as a percentage, so a value comes back up to
+        // two steps away. That is rounding, not a divergence.
+        assert!(
+            executor
+                .verify_curves(&kraken_running(30.0, 138, 142), settled)
+                .is_empty()
+        );
+        assert!(executor.committed_target(Channel::Pump).is_some());
     }
 
     #[test]

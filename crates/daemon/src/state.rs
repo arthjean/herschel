@@ -512,6 +512,24 @@ impl Daemon {
         // silently write nothing.
         if !snapshot.kraken.present {
             self.cooling.forget();
+        } else {
+            // A curve write is accepted on the mode alone, because the points
+            // cannot be read back. This is the only place the device gets to
+            // contradict it, so a divergence is recorded and the channel is
+            // uncommitted, which makes the next Apply write rather than
+            // deduplicate against a program the device never took.
+            let now = crate::now_unix_ms();
+            for divergence in self.cooling.verify_curves(&snapshot.kraken, now) {
+                self.diagnostics.record(
+                    now,
+                    EventKind::CurveDiverged {
+                        channel: divergence.channel,
+                        liquid_temperature_mc: divergence.liquid_temperature_mc,
+                        expected: divergence.expected,
+                        reported: divergence.reported,
+                    },
+                );
+            }
         }
 
         for failure in &snapshot.failed {

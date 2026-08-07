@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::DeviceId;
 use crate::capability::{CapabilityId, CapabilityRecord};
 use crate::ipc::{HardwareState, IpcError};
+use crate::profile::Channel;
 use crate::telemetry::Collector;
 
 /// Bumped whenever [`DiagnosticsExport`] changes shape.
@@ -127,6 +128,23 @@ pub enum EventKind {
         /// Frames actually sent. Zero means deduplicated or refused.
         frames: u32,
     },
+    /// A committed curve is not what the device turned out to be running.
+    ///
+    /// Curve points are write-only on this driver, so a curve write is accepted
+    /// with nothing to compare it against. The duty the device reports at the
+    /// measured liquid temperature is the one thing that can contradict it
+    /// afterwards, and this is that contradiction.
+    CurveDiverged {
+        channel: Channel,
+        /// Liquid temperature in millidegrees Celsius, as `temp1_input` reports
+        /// it. An integer because this event is compared and hashed, and
+        /// because it is the unit the attribute already carries.
+        liquid_temperature_mc: i32,
+        /// Duty the committed curve commands at that temperature.
+        expected: u8,
+        /// Duty the device reports it is running.
+        reported: u8,
+    },
     /// A telemetry collector panicked or stopped answering.
     CollectorFailed {
         collector: Collector,
@@ -145,7 +163,10 @@ impl EventKind {
             | Self::ClientRejected { .. }
             | Self::RequestRejected { .. }
             | Self::CollectorFailed { .. }
-            | Self::ConfigRecovered { .. } => Severity::Warning,
+            | Self::ConfigRecovered { .. }
+            // The device is not running the program this process believes it
+            // committed. That is a control failure, not a notice.
+            | Self::CurveDiverged { .. } => Severity::Warning,
             Self::ProgramApplied { hardware, .. }
             | Self::LightingApplied { hardware, .. }
             | Self::DisplayApplied { hardware, .. } => match hardware {
