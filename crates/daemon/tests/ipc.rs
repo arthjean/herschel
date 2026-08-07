@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime};
 
 use nzxt_core::capability::CapabilityId;
 use nzxt_core::client::Client;
+use nzxt_core::display::{DisplayMode, DisplayPreset};
 use nzxt_core::ipc::{
     AccessMode, ConfigState, HardwareState, IpcError, MAX_FRAME_BYTES, PROTOCOL_VERSION, Request,
     Response, read_frame, write_frame,
@@ -29,10 +30,10 @@ use nzxt_core::profile::{
 use nzxt_core::telemetry::{Collector, PwmMode, SafetyAlert, TelemetrySnapshot};
 use nzxt_core::{KRAKEN_BASE, RGB_CONTROLLER};
 use nzxt_daemon::server::ShutdownHandle;
-use nzxt_daemon::state::{Daemon, RgbBackend};
+use nzxt_daemon::state::{Daemon, LcdBackend, RgbBackend};
 use nzxt_daemon::{Paths, Server};
 use nzxt_hardware_linux::SysfsRoot;
-use nzxt_hardware_linux::testing::{FakeController, FakeSysfs};
+use nzxt_hardware_linux::testing::{FakeController, FakeKraken, FakeSysfs};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -72,6 +73,24 @@ impl Harness {
             FAST_INTERVAL,
             |_, _| {},
             RgbBackend::Transport(Box::new(FakeController::new(firmware, channels))),
+            LcdBackend::None,
+        )
+    }
+
+    /// A daemon serving a Kraken whose panel answers its display report.
+    ///
+    /// Every other case runs with `LcdBackend::None`, for the same reason the
+    /// lighting cases do: the fixture's sysfs tree resolves to the machine's
+    /// real `/dev/hidraw*` and `/dev/bus/usb` nodes, and a test must never
+    /// open either.
+    fn start_lcd(name: &str, firmware: &str) -> Self {
+        Self::start_full(
+            name,
+            true,
+            FAST_INTERVAL,
+            |_, _| {},
+            RgbBackend::None,
+            LcdBackend::Link(Box::new(FakeKraken::new(firmware).link())),
         )
     }
 
@@ -85,7 +104,14 @@ impl Harness {
         interval: Duration,
         prepare: impl FnOnce(&FakeSysfs, &Path),
     ) -> Self {
-        Self::start_full(name, grant_write, interval, prepare, RgbBackend::None)
+        Self::start_full(
+            name,
+            grant_write,
+            interval,
+            prepare,
+            RgbBackend::None,
+            LcdBackend::None,
+        )
     }
 
     fn start_full(
@@ -94,6 +120,7 @@ impl Harness {
         interval: Duration,
         prepare: impl FnOnce(&FakeSysfs, &Path),
         rgb: RgbBackend,
+        lcd: LcdBackend,
     ) -> Self {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let base =
@@ -127,6 +154,7 @@ impl Harness {
             &proc_root,
             interval,
             rgb,
+            lcd,
         )
         .unwrap();
         let server = Server::bind(&paths.socket, daemon).unwrap();
@@ -224,6 +252,7 @@ fn fixed(name: &str, pump: u8, fan: u8) -> Profile {
         program: CoolingProgram::Fixed { pump, fan },
         device: None,
         lighting: Vec::new(),
+        display: None,
     }
 }
 
@@ -287,6 +316,7 @@ fn one_lock_is_held_per_supported_device() {
         &harness.proc_root,
         FAST_INTERVAL,
         RgbBackend::None,
+        LcdBackend::None,
     )
     .unwrap();
     assert!(second.locked_devices().is_empty());
@@ -434,6 +464,7 @@ fn out_of_range_values_are_rejected_with_their_accepted_range() {
                 },
                 device: None,
                 lighting: Vec::new(),
+                display: None,
             },
         })
         .unwrap();
@@ -549,6 +580,7 @@ fn the_active_profile_survives_a_daemon_restart() {
         &harness.proc_root,
         FAST_INTERVAL,
         RgbBackend::None,
+        LcdBackend::None,
     )
     .unwrap();
     assert_eq!(restarted.status().active_profile, "Silent");
@@ -581,6 +613,7 @@ fn a_corrupt_configuration_recovers_to_the_safe_profile() {
         &harness.proc_root,
         FAST_INTERVAL,
         RgbBackend::None,
+        LcdBackend::None,
     )
     .unwrap();
 
@@ -646,6 +679,7 @@ fn a_profile_bound_to_an_absent_device_is_refused() {
         program: CoolingProgram::Fixed { pump: 120, fan: 80 },
         device: Some(nzxt_core::DeviceId::new(0x1e71, 0x2007)),
         lighting: Vec::new(),
+        display: None,
     };
     client
         .request(Request::SaveProfile {
@@ -1516,6 +1550,7 @@ fn a_saved_effect_round_trips_without_protocol_bytes_reaching_the_file() {
                 program: LightingProgram::Off,
             },
         ],
+        display: None,
     };
 
     {
@@ -1548,6 +1583,7 @@ fn a_saved_effect_round_trips_without_protocol_bytes_reaching_the_file() {
         &harness.proc_root,
         FAST_INTERVAL,
         RgbBackend::Transport(Box::new(FakeController::new("9.9.9", 3))),
+        LcdBackend::None,
     )
     .unwrap();
 
@@ -1570,4 +1606,216 @@ fn now_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A preset the panel tests drive.
+fn preset(mode: DisplayMode) -> DisplayPreset {
+    DisplayPreset {
+        mode,
+        ..DisplayPreset::default_infographic()
+    }
+}
+
+#[test]
+fn a_machine_with_no_reachable_panel_reports_no_geometry_and_refuses_frames() {
+    let harness = Harness::start("lcd-absent");
+    let mut client = harness.client();
+
+    let status = client.status().unwrap();
+    assert!(
+        status.display.panel.is_none(),
+        "a panel nothing answered for must not be given a resolution"
+    );
+    assert!(status.display.committed.is_none());
+    assert!(!status.display.streaming);
+
+    let error = client
+        .apply_display(preset(DisplayMode::DualInfographic))
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            nzxt_core::client::ClientError::Refused(IpcError::Incompatible { .. })
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_panel_that_answered_is_recorded_with_its_geometry_and_its_settings() {
+    let harness = Harness::start_lcd("lcd-topology", "2.0.4");
+    let mut client = harness.client();
+
+    let record = client.capabilities().unwrap();
+    let lcd = record.device(KRAKEN_BASE).unwrap().lcd.as_ref().unwrap();
+    assert_eq!(lcd.firmware.value().map(String::as_str), Some("2.0.4"));
+    assert!(lcd.answered(), "the display report was answered");
+
+    let panel = lcd.panel.value().unwrap();
+    assert_eq!((panel.width, panel.height), (240, 240));
+    assert_eq!(panel.frame_bytes, 240 * 240 * 2);
+    assert_eq!(panel.bulk_endpoint, 0x02);
+    assert_eq!(panel.bulk_interface, 0);
+
+    // The geometry is a candidate this product carries, and the record says so
+    // rather than implying the device reported it.
+    match &lcd.panel {
+        nzxt_core::capability::Evidenced::Known { source, .. } => {
+            assert!(source.contains("candidate"), "{source}");
+            assert!(source.contains("reports no"), "{source}");
+        }
+        other => panic!("expected a recorded candidate, got {other:?}"),
+    }
+
+    // And the daemon serves that same geometry in its status, so the client
+    // can size a preview without asking for the whole capability record.
+    let status = client.status().unwrap();
+    assert_eq!(status.display.panel.map(|panel| panel.width), Some(240));
+}
+
+#[test]
+fn an_unvalidated_firmware_refuses_every_frame_and_names_the_missing_evidence() {
+    let harness = Harness::start_lcd("lcd-unvalidated", "2.9.9");
+    let mut client = harness.client();
+
+    let error = client
+        .apply_display(preset(DisplayMode::DualInfographic))
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            nzxt_core::client::ClientError::Refused(IpcError::Incompatible { .. })
+        ),
+        "{error:?}"
+    );
+
+    let record = client.capabilities().unwrap();
+    let reason = record
+        .device(KRAKEN_BASE)
+        .unwrap()
+        .capability(CapabilityId::LcdFrame)
+        .unwrap()
+        .state
+        .blocked_reason()
+        .unwrap();
+    assert!(reason.contains("2.9.9"), "{reason}");
+    assert!(reason.contains("US-016"), "{reason}");
+
+    // Nothing was sent, so the daemon claims nothing about the panel.
+    let status = client.status().unwrap();
+    assert!(status.display.committed.is_none());
+    assert!(!status.display.streaming);
+}
+
+#[test]
+fn an_invalid_preset_is_refused_before_the_capability_gate_is_even_reached() {
+    // Image mode with no file is wrong whatever the panel reports, so it is
+    // refused as a validation error rather than as an incompatibility.
+    let harness = Harness::start_lcd("lcd-invalid", "2.0.4");
+    let mut client = harness.client();
+
+    let error = client
+        .apply_display(preset(DisplayMode::Image))
+        .unwrap_err();
+    match &error {
+        nzxt_core::client::ClientError::Refused(IpcError::Display(display)) => {
+            assert_eq!(display.field(), Some("image"));
+        }
+        other => panic!("expected a typed display refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn every_validated_firmware_completes_the_whole_frame_path_from_the_client() {
+    // Vacuous until a `--lcd-write-probe` an operator watched fills the list,
+    // which is the correct failure direction: nothing is claimed to work on a
+    // firmware nobody has driven. Once filled, this proves the round trip from
+    // the client's own entry point.
+    for firmware in nzxt_hardware_linux::lcd::VALIDATED_FIRMWARE {
+        let harness = Harness::start_lcd("lcd-validated", firmware);
+        let mut client = harness.client();
+
+        let wanted = preset(DisplayMode::DualInfographic);
+        let outcome = client.apply_display(wanted.clone()).unwrap();
+        assert_eq!(outcome.frames, 1, "{firmware} sent no frame");
+        assert!(!outcome.deduplicated);
+        assert_eq!(outcome.hardware, HardwareState::Confirmed);
+
+        // The daemon now knows what the panel holds, and says it is streaming
+        // because the preset reads telemetry.
+        let status = client.status().unwrap();
+        assert_eq!(status.display.committed.as_ref(), Some(&wanted));
+        assert!(status.display.streaming);
+
+        // A solid field is not streamed: nothing in it changes with a sample.
+        let solid = preset(DisplayMode::Solid);
+        assert_eq!(client.apply_display(solid).unwrap().frames, 1);
+        assert!(!client.status().unwrap().display.streaming);
+    }
+}
+
+#[test]
+fn a_saved_profile_round_trips_its_panel_preset_without_pixels_reaching_the_file() {
+    let harness = Harness::start_lcd("lcd-profile", "2.0.4");
+    let mut wanted = preset(DisplayMode::DualInfographic);
+    wanted.readings[0].metric = nzxt_core::display::LcdMetric::LiquidTemperature;
+    wanted.orientation = nzxt_core::display::Orientation::Deg180;
+
+    let profile = Profile {
+        name: "Panel".into(),
+        program: CoolingProgram::Onboard,
+        device: None,
+        lighting: Vec::new(),
+        display: Some(wanted.clone()),
+    };
+
+    {
+        let mut client = harness.client();
+        client
+            .request(Request::SaveProfile {
+                profile: profile.clone(),
+            })
+            .unwrap();
+    }
+
+    // The stored file carries a description, not a picture.
+    let stored = std::fs::read_to_string(harness.paths.config_file()).unwrap();
+    assert!(stored.contains("dual_infographic"), "{stored}");
+    assert!(stored.contains("liquid_temperature"), "{stored}");
+    assert!(stored.contains("deg180"), "{stored}");
+    for leaked in ["rgb565", "0x36", "framebuffer", "pixels", "115200"] {
+        assert!(
+            !stored.to_ascii_lowercase().contains(leaked),
+            "{leaked:?} leaked into the configuration file:\n{stored}"
+        );
+    }
+
+    // A fresh daemon over the same directory reads the same preset back.
+    let restarted = Daemon::start_with(
+        Paths::new(
+            harness.paths.runtime_dir.join("second"),
+            harness.paths.config_dir.clone(),
+        ),
+        &SysfsRoot::new(harness.fake.root_path()),
+        &harness.proc_root,
+        FAST_INTERVAL,
+        RgbBackend::None,
+        LcdBackend::Link(Box::new(FakeKraken::new("2.0.4").link())),
+    )
+    .unwrap();
+    let reloaded = restarted
+        .status()
+        .devices
+        .iter()
+        .map(|device| device.id)
+        .collect::<Vec<_>>();
+    assert!(reloaded.contains(&KRAKEN_BASE));
+
+    let mut client = harness.client();
+    let (_, profiles) = client.profiles().unwrap();
+    let stored_profile = profiles
+        .iter()
+        .find(|candidate| candidate.name == "Panel")
+        .unwrap();
+    assert_eq!(stored_profile.display.as_ref(), Some(&wanted));
 }

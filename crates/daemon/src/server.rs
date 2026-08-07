@@ -14,7 +14,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use nzxt_core::display::FRAME_INTERVAL_MS;
 use nzxt_core::ipc::{IpcError, PROTOCOL_VERSION, Request, Response, read_frame, write_frame};
 
 use crate::state::Daemon;
@@ -24,6 +26,7 @@ pub struct Server {
     listener: UnixListener,
     daemon: Arc<Mutex<Daemon>>,
     shutdown: Arc<AtomicBool>,
+    frame_interval: Duration,
 }
 
 impl Server {
@@ -52,7 +55,17 @@ impl Server {
             listener,
             daemon: Arc::new(Mutex::new(daemon)),
             shutdown: Arc::new(AtomicBool::new(false)),
+            frame_interval: Duration::from_millis(FRAME_INTERVAL_MS),
         })
+    }
+
+    /// Redraw the panel at `interval` instead of once a second.
+    ///
+    /// Only the cadence changes. A test exercises the same streaming code
+    /// without spending a real second per frame.
+    pub fn with_frame_interval(mut self, interval: Duration) -> Self {
+        self.frame_interval = interval;
+        self
     }
 
     pub fn daemon(&self) -> Arc<Mutex<Daemon>> {
@@ -74,8 +87,51 @@ impl Server {
             .and_then(|addr| addr.as_pathname().map(Path::to_path_buf))
     }
 
+    /// Redraw the panel forever, on its own cadence.
+    ///
+    /// The panel belongs to the daemon, not to a client: a preset keeps its
+    /// readings current with the window closed, which is the whole reason the
+    /// rendering lives on this side of the socket.
+    ///
+    /// A tick that runs late does not catch up. The missed frames are counted
+    /// and discarded, because the next tick draws the current reading and a
+    /// backlog of old ones has nothing to offer a panel.
+    fn spawn_display_ticker(&self) -> std::thread::JoinHandle<()> {
+        let daemon = Arc::clone(&self.daemon);
+        let shutdown = Arc::clone(&self.shutdown);
+        let interval = self.frame_interval;
+        std::thread::spawn(move || {
+            let mut next = Instant::now() + interval;
+            while !shutdown.load(Ordering::SeqCst) {
+                // Woken often enough that shutdown is prompt even at one frame
+                // per second.
+                std::thread::sleep(interval.min(Duration::from_millis(50)));
+                let now = Instant::now();
+                if now < next {
+                    continue;
+                }
+
+                let mut missed = 0u32;
+                while next + interval <= now {
+                    next += interval;
+                    missed += 1;
+                }
+                next += interval;
+
+                if let Ok(mut daemon) = daemon.lock() {
+                    for _ in 0..missed {
+                        daemon.drop_display_frame();
+                    }
+                    daemon.tick_display();
+                }
+            }
+        })
+    }
+
     /// Serve connections until the shutdown handle fires.
     pub fn run(self) {
+        let ticker = self.spawn_display_ticker();
+
         for stream in self.listener.incoming() {
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
@@ -87,6 +143,12 @@ impl Server {
             // is what serializes commands.
             std::thread::spawn(move || serve(stream, daemon));
         }
+
+        // The ticker holds the same lock the request handlers do, so it is
+        // joined before the socket is removed: a frame half written while the
+        // daemon is being torn down is exactly the state this product refuses
+        // to leave the hardware in.
+        let _ = ticker.join();
 
         if let Some(path) = self.local_path() {
             let _ = std::fs::remove_file(path);

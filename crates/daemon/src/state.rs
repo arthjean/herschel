@@ -9,12 +9,13 @@
 
 use std::time::{Duration, Instant};
 
-use nzxt_core::capability::{CapabilityRecord, DeviceRecord};
+use nzxt_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord, LcdTopology};
 use nzxt_core::diagnostics::{DiagnosticsLog, EventKind};
+use nzxt_core::display::DisplayPreset;
 use nzxt_core::ipc::{
     AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, ConfigState, DaemonStatus,
-    DeviceStatus, HardwareState, IpcError, LightingOutcome, OwnershipConflict, PROTOCOL_VERSION,
-    Request, Response,
+    DeviceStatus, DisplayOutcome, HardwareState, IpcError, LightingOutcome, OwnershipConflict,
+    PROTOCOL_VERSION, Request, Response,
 };
 use nzxt_core::lighting::{LightingCommand, validate_command};
 use nzxt_core::profile::{
@@ -28,6 +29,7 @@ use nzxt_hardware_linux::probe::probe;
 
 use crate::config::{ConfigError, Configuration};
 use crate::cooling::CoolingExecutor;
+use crate::display::DisplayExecutor;
 use crate::lighting::LightingExecutor;
 use crate::ownership::{self, DeviceLock};
 use crate::paths::Paths;
@@ -51,6 +53,21 @@ pub enum RgbBackend {
     None,
 }
 
+/// Where the daemon's frames go.
+///
+/// Mirrors [`RgbBackend`] and exists for the same reason: the panel is reached
+/// through a character device and a `usbfs` node, so an integration test drives
+/// the real render, deduplication and transfer code against a Kraken that
+/// answers the same reports without opening `/dev`.
+pub enum LcdBackend {
+    /// Open the `hidraw` node and claim the bulk interface sysfs resolved.
+    Nodes,
+    /// Talk to a supplied link instead.
+    Link(Box<nzxt_hardware_linux::lcd::LcdLink>),
+    /// Do not talk to the panel at all.
+    None,
+}
+
 /// Everything one daemon instance owns.
 pub struct Daemon {
     paths: Paths,
@@ -66,6 +83,8 @@ pub struct Daemon {
     cooling: CoolingExecutor,
     /// The sole writer of the lighting path.
     lighting: LightingExecutor,
+    /// The sole writer of the panel.
+    display: DisplayExecutor,
     /// Collector failures already recorded, so one fault is logged once.
     reported_failures: Vec<CollectorFailure>,
 }
@@ -82,6 +101,7 @@ impl Daemon {
             &nzxt_hardware_linux::sensors::proc_root_from_env(),
             default_interval(),
             RgbBackend::Hidraw,
+            LcdBackend::Nodes,
         )
     }
 
@@ -96,6 +116,7 @@ impl Daemon {
         proc_root: &std::path::Path,
         interval: Duration,
         rgb: RgbBackend,
+        lcd: LcdBackend,
     ) -> std::io::Result<Self> {
         paths.ensure()?;
 
@@ -114,6 +135,9 @@ impl Daemon {
         // reads is the final one. The two requests carry no color and no mode,
         // so asking changes nothing the operator can see.
         let lighting = connect_lighting(&mut capabilities, rgb);
+        // The panel is asked the same way and for the same reason: two query
+        // reports that carry no picture, no brightness and no orientation.
+        let display = connect_display(&mut capabilities, lcd);
 
         let mut locks = Vec::new();
         let mut conflicts = Vec::new();
@@ -230,6 +254,7 @@ impl Daemon {
             sampler: Sampler::start(sysfs, proc_root, interval),
             cooling: CoolingExecutor::open(sysfs),
             lighting,
+            display,
             reported_failures: Vec::new(),
         };
 
@@ -257,6 +282,7 @@ impl Daemon {
     fn restore_active_profile(&mut self) {
         let profile = self.config.active_profile();
         self.apply_profile_lighting(&profile);
+        self.apply_profile_display(&profile);
 
         if profile.program == CoolingProgram::Onboard {
             return;
@@ -281,6 +307,28 @@ impl Daemon {
     /// A refusal is recorded and the next channel is still attempted: a
     /// controller that is read-only must not keep a cooling profile from being
     /// restored, and a channel that is gone must not hide the ones that remain.
+    /// Put the panel where the profile wants it, when the profile sets it.
+    ///
+    /// A refusal is recorded and the daemon carries on, for the same reason a
+    /// refused lighting channel does not stop a cooling profile.
+    fn apply_profile_display(&mut self, profile: &Profile) {
+        let Some(preset) = profile.display.clone() else {
+            return;
+        };
+        if let Err(error) = self.show(&preset) {
+            self.diagnostics.record(
+                crate::now_unix_ms(),
+                EventKind::DisplayApplied {
+                    mode: preset.mode.key().to_string(),
+                    hardware: HardwareState::NotApplied {
+                        reason: error.to_string(),
+                    },
+                    frames: 0,
+                },
+            );
+        }
+    }
+
     fn apply_profile_lighting(&mut self, profile: &Profile) {
         for command in profile.lighting.clone() {
             if let Err(error) = self.illuminate(&command) {
@@ -388,6 +436,7 @@ impl Daemon {
             active_profile: self.config.active_profile_name().to_string(),
             config: self.config.state().clone(),
             lighting: self.lighting.state(),
+            display: self.display.state(),
             socket_path: self.paths.socket.display().to_string(),
         }
     }
@@ -439,6 +488,10 @@ impl Daemon {
             },
             Request::ApplyLighting { command } => match self.illuminate(&command) {
                 Ok(outcome) => Response::Lit(outcome),
+                Err(error) => Response::Error(error),
+            },
+            Request::ApplyDisplay { preset } => match self.show(&preset) {
+                Ok(outcome) => Response::Shown(Box::new(outcome)),
                 Err(error) => Response::Error(error),
             },
             Request::Diagnostics => Response::Diagnostics(self.diagnostics.export(
@@ -599,6 +652,98 @@ impl Daemon {
         Ok(outcome)
     }
 
+    /// Gate a panel preset, then render and send it.
+    ///
+    /// The order mirrors [`Daemon::illuminate`] and matters for the same
+    /// reason. The preset is validated first because a mode with no file is
+    /// wrong whatever the panel reports. Then the capability record, which is
+    /// what carries the "this firmware was never validated" refusal and the
+    /// "there may be no panel behind this cap" one. Then ownership. The
+    /// executor is reached last, so a rejected request renders nothing and
+    /// sends nothing.
+    fn show(&mut self, preset: &DisplayPreset) -> Result<DisplayOutcome, IpcError> {
+        preset.validate()?;
+
+        {
+            let device = self
+                .capabilities
+                .device(KRAKEN_BASE)
+                .filter(|device| device.is_supported())
+                .ok_or(IpcError::NoDevice)?;
+            for capability in [CapabilityId::LcdFrame, CapabilityId::LcdDisplayControl] {
+                if !device.can_write(capability) {
+                    return Err(IpcError::Incompatible {
+                        details: vec![Incompatibility {
+                            capability,
+                            reason: device
+                                .capability(capability)
+                                .and_then(|entry| entry.state.blocked_reason())
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "{} is absent from the capability record.",
+                                        capability.label()
+                                    )
+                                }),
+                        }],
+                    });
+                }
+            }
+        }
+
+        if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
+            return Err(IpcError::ReadOnly {
+                reason: conflicts
+                    .iter()
+                    .map(|conflict| conflict.detail.clone())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            });
+        }
+
+        let samples = preset.samples(&self.sampler.snapshot());
+        let outcome = self.display.apply(preset, &samples)?;
+        self.diagnostics.record(
+            crate::now_unix_ms(),
+            EventKind::DisplayApplied {
+                mode: preset.mode.key().to_string(),
+                hardware: outcome.hardware.clone(),
+                frames: outcome.frames,
+            },
+        );
+        Ok(outcome)
+    }
+
+    /// Redraw the panel from the latest sample.
+    ///
+    /// Called once a second by the server's own ticker, never by a client, so
+    /// the panel keeps its readings current with the window closed. A tick that
+    /// finds nothing to do costs one render and no transfer, because the
+    /// executor compares the picture it produced against the one the panel
+    /// already holds.
+    pub fn tick_display(&mut self) {
+        let Some(preset) = self.display.active().cloned() else {
+            return;
+        };
+        let samples = preset.samples(&self.sampler.snapshot());
+        if let Some(outcome) = self.display.refresh(&samples)
+            && outcome.frames > 0
+        {
+            self.diagnostics.record(
+                crate::now_unix_ms(),
+                EventKind::DisplayApplied {
+                    mode: preset.mode.key().to_string(),
+                    hardware: outcome.hardware,
+                    frames: outcome.frames,
+                },
+            );
+        }
+    }
+
+    /// Record a sample that arrived while a frame was still being written.
+    pub fn drop_display_frame(&mut self) {
+        self.display.drop_frame();
+    }
+
     fn save_profile(&mut self, profile: Profile) -> Response {
         let name = profile.name.clone();
         match self.config.save_profile(profile) {
@@ -670,6 +815,7 @@ impl Daemon {
         match self.config.activate(name) {
             Ok(profile) => {
                 self.apply_profile_lighting(&profile);
+                self.apply_profile_display(&profile);
                 // The selection is persisted first, then written. A write that
                 // fails leaves the profile selected and its hardware state
                 // reported honestly, rather than silently reverting a choice
@@ -778,6 +924,43 @@ fn connect_lighting(capabilities: &mut CapabilityRecord, backend: RgbBackend) ->
             LightingExecutor::connected(transport, &channels)
         }
         _ => LightingExecutor::absent(),
+    }
+}
+
+/// Ask the Kraken what its panel is, fold the answer into the record, and keep
+/// the handle only when a panel answered *and* the bulk interface was claimed.
+///
+/// Half a transport is worse than none: a link that could send a display
+/// command but not a frame would let the daemon dim a panel it cannot draw on.
+fn connect_display(capabilities: &mut CapabilityRecord, backend: LcdBackend) -> DisplayExecutor {
+    use nzxt_hardware_linux::lcd;
+
+    let (topology, link): (LcdTopology, _) = match backend {
+        LcdBackend::None => return DisplayExecutor::absent(),
+        LcdBackend::Nodes => {
+            let device = capabilities
+                .device(KRAKEN_BASE)
+                .filter(|device| device.is_supported())
+                .map(|device| std::path::PathBuf::from(&device.usb.sysfs_path));
+            let node = device
+                .as_deref()
+                .and_then(nzxt_hardware_linux::usb::hidraw_node);
+            lcd::connect(device.as_deref(), node)
+        }
+        LcdBackend::Link(mut link) => {
+            let inventory = link.inventory().ok().unwrap_or_default();
+            let topology = lcd::topology_from(&inventory, &link.source(), Some(&link.source()));
+            let answered = topology.answered();
+            (topology, answered.then_some(*link))
+        }
+    };
+
+    let panel = topology.panel.value().cloned();
+    nzxt_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
+
+    match (link, panel) {
+        (Some(link), Some(panel)) => DisplayExecutor::connected(link, panel),
+        _ => DisplayExecutor::absent(),
     }
 }
 

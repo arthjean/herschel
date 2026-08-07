@@ -354,6 +354,7 @@ mod tests {
             program: CoolingProgram::Fixed { pump: 128, fan: 90 },
             device: None,
             lighting: Vec::new(),
+            display: None,
         }
     }
 
@@ -411,6 +412,7 @@ mod tests {
             },
             device: Some(nzxt_core::KRAKEN_BASE),
             lighting: Vec::new(),
+            display: None,
         };
 
         for _ in 0..100 {
@@ -497,6 +499,7 @@ mod tests {
                 },
                 device: None,
                 lighting: Vec::new(),
+                display: None,
             })
             .unwrap();
         let rewritten = std::fs::read_to_string(temp.file()).unwrap();
@@ -569,6 +572,7 @@ fan = 90
                 program: CoolingProgram::Onboard,
                 device: None,
                 lighting: Vec::new(),
+                display: None,
             })
             .unwrap_err();
 
