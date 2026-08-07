@@ -28,36 +28,30 @@
 //! is safe on *this* firmware. That is what US-013's write probe is for, and
 //! why [`VALIDATED_FIRMWARE`] gates every production write.
 
-use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use nzxt_core::capability::{Evidenced, RgbAccessory, RgbChannel, RgbTopology};
 use nzxt_core::lighting::{
     Brightness, EffectDirection, LightingEffect, LightingProgram, MIN_COMMAND_INTERVAL_MS, Rgb,
 };
 
-/// Every report on this device carries 63 payload bytes behind its identifier.
-pub const REPORT_BYTES: usize = 64;
+use crate::hid::{ANSWER_TIMEOUT, MAX_QUERY_READS, silence};
+
+/// The transport this module moves its reports over.
+///
+/// Re-exported rather than owned: the Kraken speaks the same 64-byte reports
+/// over its own node, so the implementation lives in [`crate::hid`] and both
+/// devices share it. `RgbError` is that transport's error under the name every
+/// lighting caller already uses.
+pub use crate::hid::{HidTransport, Hidraw, REPORT_BYTES};
+pub type RgbError = crate::hid::HidError;
 
 /// Channels the controller can address, and therefore the widest bitmask.
 pub const MAX_CHANNELS: usize = 3;
 
 /// Accessories the controller reports per channel.
 pub const MAX_ACCESSORIES_PER_CHANNEL: usize = 6;
-
-/// How long a query waits for one answer before giving up.
-///
-/// Measured on the owned controller, five runs: the firmware answer lands in
-/// 2 ms, the topology answer in 518 to 699 ms. Enumerating three channels is
-/// simply slow on this firmware. The ceiling is set well above the slowest
-/// observation rather than at it, because a probe that times out reports "the
-/// controller said nothing" for a controller that was merely still answering.
-const ANSWER_TIMEOUT: Duration = Duration::from_millis(2_000);
-
-/// How long the transport waits on a single read attempt.
-const READ_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Firmware revisions whose command set was exercised on real hardware.
 ///
@@ -77,151 +71,20 @@ pub fn is_validated_firmware(firmware: &str) -> bool {
     VALIDATED_FIRMWARE.contains(&firmware)
 }
 
-/// Why a lighting operation could not complete.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RgbError {
-    #[error("no hidraw node exists for the controller: {reason}")]
-    NodeAbsent { reason: String },
-    #[error("permission denied on {path}. Check the installed udev rule.")]
-    PermissionDenied { path: String },
-    #[error("{path}: {detail}")]
-    Io { path: String, detail: String },
-    #[error("the controller sent no {expected} answer within {waited_ms} ms")]
-    NoAnswer { expected: String, waited_ms: u64 },
-    #[error("the controller accepted {wrote} of {expected} bytes")]
-    ShortWrite { wrote: usize, expected: usize },
-}
-
-impl RgbError {
-    fn io(path: &Path, error: &std::io::Error) -> Self {
-        match error.kind() {
-            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied {
-                path: path.display().to_string(),
-            },
-            std::io::ErrorKind::NotFound => Self::NodeAbsent {
-                reason: format!("{} does not exist", path.display()),
-            },
-            _ => Self::Io {
-                path: path.display().to_string(),
-                detail: error.to_string(),
-            },
-        }
-    }
-}
-
-/// Moving 64-byte reports to and from the controller.
-///
-/// A trait rather than a concrete file so the daemon, its integration tests and
-/// the write probe all drive the same command code. A test controller answers
-/// the same reports the hardware does, which is what lets the encoding and the
-/// serialization be proven without the device.
-pub trait HidTransport: Send {
-    /// Send one report. The first byte is its identifier.
-    fn write_report(&mut self, report: &[u8; REPORT_BYTES]) -> Result<(), RgbError>;
-
-    /// Read one report, or `None` when none arrived within `timeout`.
-    fn read_report(&mut self, timeout: Duration) -> Result<Option<[u8; REPORT_BYTES]>, RgbError>;
-
-    /// Where the reports go, for the capability record's evidence.
-    fn source(&self) -> String;
-}
-
-/// The `hidraw` node, opened read-write and never blocking indefinitely.
-#[derive(Debug)]
-pub struct Hidraw {
-    file: std::fs::File,
-    path: PathBuf,
-}
-
-impl Hidraw {
-    /// Open the node for reports in both directions.
-    ///
-    /// `O_NONBLOCK` is deliberate: a controller that answers nothing must time
-    /// out, not park the daemon's startup thread forever.
-    pub fn open(path: &Path) -> Result<Self, RgbError> {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
-            .open(path)
-            .map_err(|error| RgbError::io(path, &error))?;
-        Ok(Self {
-            file,
-            path: path.to_path_buf(),
-        })
-    }
-
-    /// Discard input reports the controller queued before this run.
-    ///
-    /// Without it, the first answer read after a write could be a stale report
-    /// from a previous session and the topology would be parsed out of it.
-    pub fn drain(&mut self) {
-        let mut buffer = [0u8; REPORT_BYTES];
-        // Bounded: a controller streaming reports faster than they are read
-        // must not turn a drain into an unbounded loop.
-        for _ in 0..MAX_DRAINED_REPORTS {
-            match self.file.read(&mut buffer) {
-                Ok(0) => return,
-                Ok(_) => continue,
-                Err(_) => return,
-            }
-        }
-    }
-}
-
-/// Ceiling on how many stale reports one drain discards.
-const MAX_DRAINED_REPORTS: usize = 64;
-
-impl HidTransport for Hidraw {
-    fn write_report(&mut self, report: &[u8; REPORT_BYTES]) -> Result<(), RgbError> {
-        let wrote = self
-            .file
-            .write(report)
-            .map_err(|error| RgbError::io(&self.path, &error))?;
-        if wrote != REPORT_BYTES {
-            return Err(RgbError::ShortWrite {
-                wrote,
-                expected: REPORT_BYTES,
-            });
-        }
-        Ok(())
-    }
-
-    fn read_report(&mut self, timeout: Duration) -> Result<Option<[u8; REPORT_BYTES]>, RgbError> {
-        let deadline = Instant::now() + timeout;
-        let mut buffer = [0u8; REPORT_BYTES];
-        loop {
-            match self.file.read(&mut buffer) {
-                Ok(0) => {}
-                Ok(_) => return Ok(Some(buffer)),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(RgbError::io(&self.path, &error)),
-            }
-            if Instant::now() >= deadline {
-                return Ok(None);
-            }
-            std::thread::sleep(READ_POLL_INTERVAL);
-        }
-    }
-
-    fn source(&self) -> String {
-        self.path.display().to_string()
-    }
-}
-
 /// The wire format, as pure functions over a 64-byte buffer.
 pub mod packet {
     use super::*;
 
     /// Report identifiers the controller publishes, all 63 payload bytes wide.
-    pub const FIRMWARE_REQUEST: [u8; 2] = [0x10, 0x01];
-    pub const FIRMWARE_ANSWER: [u8; 2] = [0x11, 0x01];
+    ///
+    /// The firmware pair is the one both devices share, so it comes from the
+    /// transport module rather than being restated here.
+    pub use crate::hid::{FIRMWARE_ANSWER, FIRMWARE_REQUEST, answers, firmware, query};
+
     pub const LIGHTING_REQUEST: [u8; 2] = [0x20, 0x03];
     pub const LIGHTING_ANSWER: [u8; 2] = [0x21, 0x03];
     pub const COLOR_COMMAND: [u8; 2] = [0x2a, 0x04];
 
-    /// Offset of the first of the three firmware bytes in a `0x11 0x01` answer.
-    const FIRMWARE_OFFSET: usize = 0x11;
     /// Offset of the channel count in a `0x21 0x03` answer.
     const CHANNEL_COUNT_OFFSET: usize = 14;
     /// Offset of the first accessory identifier in a `0x21 0x03` answer.
@@ -238,29 +101,6 @@ pub mod packet {
     /// this, and [`color_command`] refuses anything above it rather than
     /// truncating a color the operator chose.
     pub const MAX_COLORS: usize = (FOOTER_OFFSET - 7) / 3;
-
-    /// A request carrying nothing but its identifier.
-    pub fn query(identifier: [u8; 2]) -> [u8; REPORT_BYTES] {
-        let mut report = [0u8; REPORT_BYTES];
-        report[0] = identifier[0];
-        report[1] = identifier[1];
-        report
-    }
-
-    /// True when `report` is the answer identified by `identifier`.
-    pub fn answers(report: &[u8; REPORT_BYTES], identifier: [u8; 2]) -> bool {
-        report[0] == identifier[0] && report[1] == identifier[1]
-    }
-
-    /// The firmware revision carried by a `0x11 0x01` answer.
-    pub fn firmware(report: &[u8; REPORT_BYTES]) -> String {
-        format!(
-            "{}.{}.{}",
-            report[FIRMWARE_OFFSET],
-            report[FIRMWARE_OFFSET + 1],
-            report[FIRMWARE_OFFSET + 2]
-        )
-    }
 
     /// The channels a `0x21 0x03` answer describes.
     ///
@@ -507,18 +347,6 @@ pub fn query<T: HidTransport + ?Sized>(transport: &mut T) -> Result<RgbInventory
 
     Ok(inventory)
 }
-
-/// The reason one unanswered field carries in the record.
-fn silence(what: &str) -> String {
-    RgbError::NoAnswer {
-        expected: what.to_string(),
-        waited_ms: ANSWER_TIMEOUT.as_millis() as u64,
-    }
-    .to_string()
-}
-
-/// Reports one query reads before it gives up matching answers.
-const MAX_QUERY_READS: usize = 12;
 
 /// Send one program to one channel.
 ///
