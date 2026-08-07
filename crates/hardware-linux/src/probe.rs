@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nzxt_core::capability::{
     CAPABILITY_SCHEMA_VERSION, Capability, CapabilityId, CapabilityRecord, CapabilityState,
-    DeviceRecord, Evidenced, HwmonCapabilities, ProbeContext, RejectedDevice, RgbTopology,
-    SupportState,
+    DeviceRecord, Evidenced, HwmonCapabilities, LcdTopology, ProbeContext, RejectedDevice,
+    RgbTopology, SupportState,
 };
 use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, is_allowlisted};
 
@@ -53,9 +53,11 @@ pub fn probe(root: &SysfsRoot) -> CapabilityRecord {
             usb: usb::identity(discovered.id, &discovered.path),
             interfaces: usb::interfaces(&discovered.path),
             hwmon,
-            // Filled by `attach_rgb_topology` once the controller has answered.
-            // The sysfs pass never opens a device node, so it cannot know.
+            // Filled by `attach_rgb_topology` / `attach_lcd_topology` once the
+            // device has answered. The sysfs pass never opens a device node,
+            // so it cannot know.
             rgb: None,
+            lcd: None,
         });
     }
 
@@ -121,7 +123,7 @@ fn kraken_capabilities(hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
                 reason: reason.clone(),
             },
         })
-        .chain(lcd_capabilities())
+        .chain(lcd_capabilities(None))
         .collect();
     };
 
@@ -190,21 +192,127 @@ fn kraken_capabilities(hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
         curve(CapabilityId::FanCurve, 2),
     ]
     .into_iter()
-    .chain(lcd_capabilities())
+    .chain(lcd_capabilities(None))
     .collect()
 }
 
-/// The LCD surface stays unvalidated until its transport story lands.
-fn lcd_capabilities() -> impl Iterator<Item = Capability> {
-    [CapabilityId::LcdFrame, CapabilityId::LcdDisplayControl]
-        .into_iter()
-        .map(|id| Capability {
-            id,
-            state: CapabilityState::Unvalidated {
-                required_story: LCD_VALIDATION_STORY.to_string(),
-                reason: "The LCD transport is not proven on this firmware.".to_string(),
-            },
-        })
+/// Resolve the LCD surface against whatever the Kraken actually answered.
+///
+/// Ordered from the cheapest evidence to the strongest, like the RGB gate: no
+/// topology at all, then a device that never answered the display report and
+/// may therefore carry no panel, then a firmware generation this transfer
+/// sequence was not written for, then a firmware this project has never driven.
+///
+/// The two capabilities part company on one thing only. Brightness and
+/// orientation travel over the `hidraw` node; a frame additionally needs the
+/// bulk interface. A machine with the `hidraw` rule installed and not the
+/// `usbfs` one is a real state, and it is reported as what it is rather than
+/// collapsed into one refusal.
+fn lcd_capabilities(topology: Option<&LcdTopology>) -> Vec<Capability> {
+    let control = lcd_state(topology);
+    let frame = match (&control, topology) {
+        (CapabilityState::Available { .. }, Some(topology)) if !topology.bulk_node.is_known() => {
+            CapabilityState::Unavailable {
+                reason: topology
+                    .bulk_node
+                    .reason()
+                    .unwrap_or("The bulk interface could not be claimed.")
+                    .to_string(),
+            }
+        }
+        _ => control.clone(),
+    };
+
+    vec![
+        Capability {
+            id: CapabilityId::LcdFrame,
+            state: frame,
+        },
+        Capability {
+            id: CapabilityId::LcdDisplayControl,
+            state: control,
+        },
+    ]
+}
+
+fn lcd_state(topology: Option<&LcdTopology>) -> CapabilityState {
+    let unvalidated = |reason: String| CapabilityState::Unvalidated {
+        required_story: LCD_VALIDATION_STORY.to_string(),
+        reason,
+    };
+
+    let Some(topology) = topology else {
+        return unvalidated("The panel transport is not recorded yet.".to_string());
+    };
+
+    let Some(node) = topology.hid_node.value() else {
+        return CapabilityState::Unavailable {
+            reason: topology
+                .hid_node
+                .reason()
+                .unwrap_or("The device exposes no usable node.")
+                .to_string(),
+        };
+    };
+
+    if !topology.answered() {
+        return unvalidated(format!(
+            "The panel did not answer, so this unit may carry no display. {}",
+            topology
+                .display
+                .reason()
+                .unwrap_or("No reason was recorded.")
+        ));
+    }
+
+    let Some(firmware) = topology.firmware.value() else {
+        return unvalidated(
+            "The device did not report a firmware revision, so its transfer sequence \
+             cannot be matched against a validated one."
+                .to_string(),
+        );
+    };
+    match crate::hid::firmware_major(firmware) {
+        Some(major) if major == crate::lcd::SUPPORTED_FIRMWARE_MAJOR => {}
+        _ => {
+            return unvalidated(format!(
+                "Firmware {firmware} is not the {}.x generation this transfer sequence \
+                 was written for.",
+                crate::lcd::SUPPORTED_FIRMWARE_MAJOR
+            ));
+        }
+    }
+    if !crate::lcd::is_validated_firmware(firmware) {
+        return unvalidated(format!(
+            "Firmware {firmware} is not validated for this operation."
+        ));
+    }
+
+    CapabilityState::Available {
+        writable: true,
+        source: node.clone(),
+    }
+}
+
+/// Fold a live Kraken answer into a record and re-resolve its capabilities.
+pub fn attach_lcd_topology(record: &mut CapabilityRecord, topology: LcdTopology) {
+    let Some(device) = record
+        .devices
+        .iter_mut()
+        .find(|device| device.usb.id == KRAKEN_BASE)
+    else {
+        return;
+    };
+    device.capabilities.retain(|capability| {
+        !matches!(
+            capability.id,
+            CapabilityId::LcdFrame | CapabilityId::LcdDisplayControl
+        )
+    });
+    device
+        .capabilities
+        .extend(lcd_capabilities(Some(&topology)));
+    device.lcd = Some(topology);
 }
 
 /// Resolve the RGB surface against whatever the controller actually answered.
@@ -565,6 +673,163 @@ mod tests {
                 .device(RGB_CONTROLLER)
                 .unwrap()
                 .can_write(CapabilityId::RgbFixedColor)
+        );
+    }
+
+    /// A Kraken topology as an answering unit with a panel reports it.
+    fn answered_lcd(firmware: &str) -> LcdTopology {
+        use nzxt_core::capability::LcdDisplaySettings;
+        LcdTopology {
+            hid_node: Evidenced::known("/dev/hidraw10".into(), "sysfs"),
+            bulk_node: Evidenced::known("/dev/bus/usb/001/004 interface 0".into(), "sysfs"),
+            firmware: Evidenced::known(firmware.into(), "report 0x11 0x01"),
+            panel: Evidenced::known(crate::lcd::candidate_panel(), "candidate"),
+            display: Evidenced::known(
+                LcdDisplaySettings {
+                    brightness_percent: 60,
+                    quarter_turns: 0,
+                },
+                "report 0x31 0x01",
+            ),
+        }
+    }
+
+    #[test]
+    fn a_kraken_that_never_answered_the_display_report_stays_read_only() {
+        let fake = fixture("probe-lcd-silent");
+        let mut record = probe(&fake.root());
+        let mut topology = answered_lcd("2.0.4");
+        topology.display = Evidenced::unknown(
+            "the controller sent no display settings answer within 2000 ms",
+            "report 0x31 0x01",
+        );
+        attach_lcd_topology(&mut record, topology);
+
+        let kraken = record.device(KRAKEN_BASE).unwrap();
+        assert!(!kraken.can_write(CapabilityId::LcdFrame));
+        assert!(!kraken.can_write(CapabilityId::LcdDisplayControl));
+        let reason = kraken
+            .capability(CapabilityId::LcdFrame)
+            .unwrap()
+            .state
+            .blocked_reason()
+            .unwrap();
+        assert!(reason.contains("may carry no display"), "{reason}");
+        assert!(reason.contains(LCD_VALIDATION_STORY), "{reason}");
+    }
+
+    #[test]
+    fn a_firmware_from_another_generation_is_named_and_refused() {
+        let fake = fixture("probe-lcd-generation");
+        let mut record = probe(&fake.root());
+        attach_lcd_topology(&mut record, answered_lcd("1.4.0"));
+
+        let kraken = record.device(KRAKEN_BASE).unwrap();
+        assert!(!kraken.can_write(CapabilityId::LcdFrame));
+        let reason = kraken
+            .capability(CapabilityId::LcdFrame)
+            .unwrap()
+            .state
+            .blocked_reason()
+            .unwrap();
+        assert!(reason.contains("1.4.0"), "{reason}");
+        assert!(reason.contains("2.x"), "{reason}");
+    }
+
+    #[test]
+    fn an_unvalidated_firmware_of_the_right_generation_is_still_refused() {
+        let fake = fixture("probe-lcd-unvalidated");
+        let mut record = probe(&fake.root());
+        attach_lcd_topology(&mut record, answered_lcd("2.9.9"));
+
+        let kraken = record.device(KRAKEN_BASE).unwrap();
+        // The topology was recorded even though the sequence was never run on
+        // this revision: evidence and permission are separate questions.
+        assert!(kraken.lcd.as_ref().is_some_and(|lcd| lcd.answered()));
+        assert!(!kraken.can_write(CapabilityId::LcdFrame));
+        let reason = kraken
+            .capability(CapabilityId::LcdFrame)
+            .unwrap()
+            .state
+            .blocked_reason()
+            .unwrap();
+        assert!(reason.contains("2.9.9"), "{reason}");
+        assert!(reason.contains("not validated"), "{reason}");
+    }
+
+    #[test]
+    fn a_validated_firmware_is_the_only_thing_that_opens_the_frame_path() {
+        let fake = fixture("probe-lcd-validated");
+
+        for firmware in crate::lcd::VALIDATED_FIRMWARE {
+            let mut record = probe(&fake.root());
+            attach_lcd_topology(&mut record, answered_lcd(firmware));
+            let kraken = record.device(KRAKEN_BASE).unwrap();
+            assert!(
+                kraken.can_write(CapabilityId::LcdFrame),
+                "{firmware} is recorded as validated but did not open the frame path"
+            );
+            assert!(kraken.can_write(CapabilityId::LcdDisplayControl));
+        }
+
+        // And an empty list means nothing does, which is the state this build
+        // ships in until a probe an operator watched fills it.
+        let mut record = probe(&fake.root());
+        attach_lcd_topology(&mut record, answered_lcd("2.0.4"));
+        assert_eq!(
+            record
+                .device(KRAKEN_BASE)
+                .unwrap()
+                .can_write(CapabilityId::LcdFrame),
+            crate::lcd::is_validated_firmware("2.0.4")
+        );
+    }
+
+    #[test]
+    fn a_missing_bulk_node_disables_frames_without_disabling_brightness() {
+        let fake = fixture("probe-lcd-bulk");
+        let mut record = probe(&fake.root());
+        let mut topology = answered_lcd("2.0.4");
+        topology.bulk_node = Evidenced::unknown(
+            "permission denied on /dev/bus/usb/001/004. Check the installed udev rule.",
+            "usbfs",
+        );
+        attach_lcd_topology(&mut record, topology);
+
+        let kraken = record.device(KRAKEN_BASE).unwrap();
+        let frame = &kraken.capability(CapabilityId::LcdFrame).unwrap().state;
+        let control = &kraken
+            .capability(CapabilityId::LcdDisplayControl)
+            .unwrap()
+            .state;
+        // Both are refused here because the firmware is unvalidated too, so the
+        // assertion is about which reason each carries rather than about the
+        // permission alone.
+        assert!(!frame.is_writable());
+        assert!(!control.is_writable());
+        assert!(
+            frame.blocked_reason().unwrap().contains("2.0.4"),
+            "{frame:?}"
+        );
+        assert!(control.blocked_reason().unwrap().contains("2.0.4"));
+    }
+
+    #[test]
+    fn the_rgb_controller_never_gains_an_lcd_topology() {
+        let fake = fixture("probe-lcd-scope");
+        let mut record = probe(&fake.root());
+        attach_lcd_topology(&mut record, answered_lcd("2.0.4"));
+        assert!(record.device(RGB_CONTROLLER).unwrap().lcd.is_none());
+        // And attaching it twice leaves exactly one of each capability.
+        attach_lcd_topology(&mut record, answered_lcd("2.0.4"));
+        let kraken = record.device(KRAKEN_BASE).unwrap();
+        assert_eq!(
+            kraken
+                .capabilities
+                .iter()
+                .filter(|c| c.id == CapabilityId::LcdFrame)
+                .count(),
+            1
         );
     }
 

@@ -12,12 +12,15 @@
 
 pub mod control;
 pub mod gpu;
+pub mod hid;
 pub mod hwmon;
+pub mod lcd;
 pub mod probe;
 pub mod rgb;
 pub mod sensors;
 pub mod sysfs;
 pub mod usb;
+pub mod usbfs;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

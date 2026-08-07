@@ -246,14 +246,21 @@ mod tests {
 
         assert_eq!(hidraw_node(&device), Some(PathBuf::from("/dev/hidraw12")));
 
-        // The Kraken's HID interface publishes no hidraw node in the fixture,
-        // and a device without one resolves to nothing rather than to the
-        // first node it can find.
+        // Both devices publish one. `kraken2023` starts with
+        // `HID_CONNECT_HIDRAW`, so the Kraken's thermal interface carries a
+        // node beside the driver, and each device resolves to its own rather
+        // than to the first node the walk finds.
         let kraken = fake.add_kraken();
-        assert_eq!(hidraw_node(&kraken), None);
+        assert_eq!(hidraw_node(&kraken), Some(PathBuf::from("/dev/hidraw10")));
 
+        // A device whose kernel created no node resolves to nothing rather
+        // than borrowing another device's.
         fake.remove_rgb_hidraw();
         assert_eq!(hidraw_node(&device), None);
+        assert_eq!(hidraw_node(&kraken), Some(PathBuf::from("/dev/hidraw10")));
+
+        fake.remove_kraken_hidraw();
+        assert_eq!(hidraw_node(&kraken), None);
     }
 
     #[test]

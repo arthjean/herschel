@@ -103,7 +103,14 @@ impl FakeSysfs {
     }
 
     /// One endpoint directory, in the layout and formats sysfs uses.
-    pub fn add_endpoint(&self, interface: &Path, address: u8, direction: &str, max_packet: u16) {
+    pub fn add_endpoint(
+        &self,
+        interface: &Path,
+        address: u8,
+        direction: &str,
+        transfer: &str,
+        max_packet: u16,
+    ) {
         let endpoint = interface.join(format!("ep_{address:02x}"));
         fs::create_dir_all(&endpoint).unwrap();
         Self::write(
@@ -111,7 +118,7 @@ impl FakeSysfs {
             &format!("{address:02x}"),
         );
         Self::write(&endpoint.join("direction"), direction);
-        Self::write(&endpoint.join("type"), "Interrupt");
+        Self::write(&endpoint.join("type"), transfer);
         Self::write(
             &endpoint.join("wMaxPacketSize"),
             &format!("{max_packet:04x}"),
@@ -119,8 +126,14 @@ impl FakeSysfs {
         Self::write(&endpoint.join("bInterval"), "01");
     }
 
-    /// The Kraken Base: a vendor interface with no driver plus a HID interface
-    /// bound to `usbhid`.
+    /// The Kraken Base, exactly as the development machine publishes it.
+    ///
+    /// Interface 0 is vendor class with no driver and one bulk OUT endpoint of
+    /// 512 bytes, which is the LCD framebuffer path. Interface 1 is HID, bound
+    /// to `usbhid`, carries the interrupt pair `kraken2023` drives and
+    /// publishes a `hidraw` node beside it: the kernel driver starts with
+    /// `HID_CONNECT_HIDRAW`, so user space and the thermal driver share that
+    /// interface by design.
     pub fn add_kraken(&self) -> PathBuf {
         let device = self.devices().join(KRAKEN_BUS_ID);
         fs::create_dir_all(&device).unwrap();
@@ -130,10 +143,24 @@ impl FakeSysfs {
         Self::write(&device.join("product"), "NZXT Kraken Base");
         Self::write(&device.join("serial"), KRAKEN_FIXTURE_SERIAL);
         Self::write(&device.join("bcdDevice"), "0200");
-        self.add_interface(&device, 0, 0xff, None);
+        Self::write(&device.join("busnum"), "1");
+        Self::write(&device.join("devnum"), "4");
+        let vendor = self.add_interface(&device, 0, 0xff, None);
+        self.add_endpoint(&vendor, 0x02, "out", "Bulk", 512);
         let hid = self.add_interface(&device, 1, 0x03, Some("usbhid"));
-        self.add_endpoint(&hid, 0x81, "in", 64);
+        self.add_endpoint(&hid, 0x01, "out", "Interrupt", 64);
+        self.add_endpoint(&hid, 0x81, "in", "Interrupt", 64);
+        fs::create_dir_all(hid.join(KRAKEN_HID_ID).join("hidraw/hidraw10")).unwrap();
         device
+    }
+
+    /// Remove the Kraken's `hidraw` node, as if the kernel had not created one.
+    pub fn remove_kraken_hidraw(&self) {
+        let interface = self
+            .devices()
+            .join(KRAKEN_BUS_ID)
+            .join(format!("{KRAKEN_BUS_ID}:1.1"));
+        let _ = fs::remove_dir_all(interface.join(KRAKEN_HID_ID).join("hidraw"));
     }
 
     /// The RGB Controller: one HID interface, an interrupt pair and a `hidraw`
@@ -152,8 +179,8 @@ impl FakeSysfs {
         Self::write(&device.join("serial"), RGB_FIXTURE_SERIAL);
         Self::write(&device.join("bcdDevice"), "0105");
         let interface = self.add_interface(&device, 0, 0x03, Some("usbhid"));
-        self.add_endpoint(&interface, 0x02, "out", 64);
-        self.add_endpoint(&interface, 0x81, "in", 64);
+        self.add_endpoint(&interface, 0x02, "out", "Interrupt", 64);
+        self.add_endpoint(&interface, 0x81, "in", "Interrupt", 64);
         fs::create_dir_all(interface.join(RGB_HID_ID).join("hidraw/hidraw12")).unwrap();
         device
     }
@@ -502,5 +529,202 @@ impl crate::rgb::HidTransport for FakeController {
 
     fn source(&self) -> String {
         "fake:hidraw".to_string()
+    }
+}
+
+/// Every bulk transfer a fake device received, shared with the test.
+///
+/// Behind a mutex because the transport is boxed into the link under test, so
+/// the assertions reach it through a handle rather than through the box.
+#[derive(Default)]
+pub struct BulkRecorder {
+    transfers: std::sync::Mutex<Vec<(u8, Vec<u8>)>>,
+    failure: std::sync::Mutex<Option<crate::usbfs::UsbfsError>>,
+}
+
+impl BulkRecorder {
+    /// Payloads received, in order, without their endpoint.
+    pub fn transfers(&self) -> Vec<Vec<u8>> {
+        self.transfers
+            .lock()
+            .map(|t| t.iter().map(|(_, payload)| payload.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Endpoint each transfer was addressed to, in the same order.
+    pub fn endpoints(&self) -> Vec<u8> {
+        self.transfers
+            .lock()
+            .map(|t| t.iter().map(|(endpoint, _)| *endpoint).collect())
+            .unwrap_or_default()
+    }
+
+    /// Total bytes that reached the endpoint.
+    pub fn bytes(&self) -> usize {
+        self.transfers
+            .lock()
+            .map(|t| t.iter().map(|(_, payload)| payload.len()).sum())
+            .unwrap_or(0)
+    }
+
+    /// Make every later transfer fail, as an unplugged device would.
+    pub fn fail_with(&self, error: crate::usbfs::UsbfsError) {
+        if let Ok(mut failure) = self.failure.lock() {
+            *failure = Some(error);
+        }
+    }
+}
+
+/// The [`crate::usbfs::BulkTransport`] half of a fake device.
+struct RecordingBulk(std::sync::Arc<BulkRecorder>);
+
+impl crate::usbfs::BulkTransport for RecordingBulk {
+    fn write_bulk(&mut self, endpoint: u8, payload: &[u8]) -> Result<(), crate::usbfs::UsbfsError> {
+        if let Some(failure) = self.0.failure.lock().ok().and_then(|f| f.clone()) {
+            return Err(failure);
+        }
+        if let Ok(mut transfers) = self.0.transfers.lock() {
+            transfers.push((endpoint, payload.to_vec()));
+        }
+        Ok(())
+    }
+
+    fn source(&self) -> String {
+        "fake:usbfs interface 0".to_string()
+    }
+}
+
+/// A Kraken that answers the reports the real one answers.
+///
+/// Built for the LCD path: it responds to the firmware request and to the
+/// display report only a device carrying a panel responds to, and it records
+/// every report it was sent. [`FakeKraken::without_panel`] is the same device
+/// with no screen behind it, which is the case US-016 must keep read-only.
+pub struct FakeKraken {
+    firmware: String,
+    /// `None` for a Kraken whose cap carries no display.
+    panel: Option<nzxt_core::capability::LcdDisplaySettings>,
+    pending: std::collections::VecDeque<[u8; crate::hid::REPORT_BYTES]>,
+    /// Every report the device received, in order.
+    pub reports: Vec<[u8; crate::hid::REPORT_BYTES]>,
+    /// When set, every write fails with this error instead of landing.
+    pub write_failure: Option<crate::hid::HidError>,
+    bulk: std::sync::Arc<BulkRecorder>,
+}
+
+impl FakeKraken {
+    /// A Kraken reporting `firmware`, with a panel at 60% and no rotation.
+    pub fn new(firmware: &str) -> Self {
+        Self {
+            firmware: firmware.to_string(),
+            panel: Some(nzxt_core::capability::LcdDisplaySettings {
+                brightness_percent: 60,
+                quarter_turns: 0,
+            }),
+            pending: std::collections::VecDeque::new(),
+            reports: Vec::new(),
+            write_failure: None,
+            bulk: std::sync::Arc::new(BulkRecorder::default()),
+        }
+    }
+
+    /// The same device with no display behind its cap.
+    ///
+    /// It answers its firmware, like every Kraken, and stays silent on the
+    /// display report. That is the one observation separating a unit with a
+    /// screen from a unit without one.
+    pub fn without_panel(firmware: &str) -> Self {
+        Self {
+            panel: None,
+            ..Self::new(firmware)
+        }
+    }
+
+    /// The panel's reported settings, for a fixture that needs them changed.
+    pub fn with_display(mut self, brightness_percent: u8, quarter_turns: u8) -> Self {
+        self.panel = Some(nzxt_core::capability::LcdDisplaySettings {
+            brightness_percent,
+            quarter_turns,
+        });
+        self
+    }
+
+    /// Handle on the bulk endpoint, taken before the device is boxed away.
+    pub fn bulk_recorder(&self) -> std::sync::Arc<BulkRecorder> {
+        std::sync::Arc::clone(&self.bulk)
+    }
+
+    /// Consume the device into the link the LCD code drives.
+    pub fn link(self) -> crate::lcd::LcdLink {
+        let bulk = RecordingBulk(std::sync::Arc::clone(&self.bulk));
+        crate::lcd::LcdLink::new(Box::new(self), Box::new(bulk))
+    }
+
+    /// Reports received whose identifier matches `identifier`.
+    pub fn reports_matching(&self, identifier: [u8; 2]) -> Vec<[u8; crate::hid::REPORT_BYTES]> {
+        self.reports
+            .iter()
+            .filter(|report| report[0] == identifier[0] && report[1] == identifier[1])
+            .copied()
+            .collect()
+    }
+
+    fn firmware_answer(&self) -> [u8; crate::hid::REPORT_BYTES] {
+        let mut report = [0u8; crate::hid::REPORT_BYTES];
+        report[0] = 0x11;
+        report[1] = 0x01;
+        for (index, part) in self.firmware.split('.').take(3).enumerate() {
+            report[0x11 + index] = part.parse().unwrap_or(0);
+        }
+        report
+    }
+
+    fn display_answer(
+        &self,
+        settings: nzxt_core::capability::LcdDisplaySettings,
+    ) -> [u8; crate::hid::REPORT_BYTES] {
+        let mut report = [0u8; crate::hid::REPORT_BYTES];
+        report[0] = 0x31;
+        report[1] = 0x01;
+        report[0x18] = settings.brightness_percent;
+        report[0x1a] = settings.quarter_turns;
+        report
+    }
+}
+
+impl crate::hid::HidTransport for FakeKraken {
+    fn write_report(
+        &mut self,
+        report: &[u8; crate::hid::REPORT_BYTES],
+    ) -> Result<(), crate::hid::HidError> {
+        if let Some(failure) = &self.write_failure {
+            return Err(failure.clone());
+        }
+        self.reports.push(*report);
+        match [report[0], report[1]] {
+            crate::hid::FIRMWARE_REQUEST => {
+                let answer = self.firmware_answer();
+                self.pending.push_back(answer);
+            }
+            crate::lcd::packet::DISPLAY_INFO_REQUEST => {
+                if let Some(settings) = self.panel {
+                    let answer = self.display_answer(settings);
+                    self.pending.push_back(answer);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn read_report(
+        &mut self,
+        _timeout: std::time::Duration,
+    ) -> Result<Option<[u8; crate::hid::REPORT_BYTES]>, crate::hid::HidError> {
+        Ok(self.pending.pop_front())
+    }
+
+    fn source(&self) -> String {
+        "fake:hidraw10".to_string()
     }
 }
