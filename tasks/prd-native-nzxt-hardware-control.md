@@ -450,7 +450,7 @@ Prove the LCD transport and deliver the specific native editor and dual-infograp
 
 **Acceptance Criteria:**
 
-- [ ] Given the LCD destination, when it opens, then it contains display-mode and metric selects, Reading 1/2 colors, Text 1/2 colors, Background, Logo color, Rotate Display and a circular or square preview matching the validated panel.
+- [ ] Given the panel row on the Lighting destination, when it opens, then it contains display-mode and metric selects, Reading 1/2 colors, Text 1/2 colors, Background, Logo color, Rotate Display and a circular or square preview matching the validated panel.
 - [ ] Given any editor change, when state updates, then the GPUI preview repaints within 16.7 ms at P95 without writing to hardware.
 - [ ] Given Apply, when rendering completes, then the same typed `DisplayPreset` produces both the preview and the exact-resolution offscreen framebuffer sent to the daemon.
 - [ ] Given a six-digit hexadecimal field, when input is invalid, incomplete or out of gamut, then Apply remains disabled, the prior valid preview remains visible and no frame is sent.

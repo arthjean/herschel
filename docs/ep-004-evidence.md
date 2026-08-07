@@ -192,7 +192,7 @@ and the `hidraw` one silently does not, which looks exactly like a wrong rule.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| Display-mode and metric selects, Reading 1/2, Text 1/2, Background and Logo colors, Rotate Display, and a preview matching the panel | `app/src/display.rs` (`DisplayEditor`, `DisplayColorField`), `app/src/shell.rs` (`lcd`, `metric_select`, `color_field`) | `the_editor_exposes_the_six_color_controls_the_story_names`, `every_color_field_is_separately_addressable`, `the_six_fields_are_ordered_so_each_pair_sits_together`, `every_lcd_control_has_its_own_tab_stop_inside_the_screen_range`; captures [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) and [`ep-004-lcd-writable.png`](./screenshots/ep-004-lcd-writable.png), both against the answering panel |
+| Display-mode and metric selects, Reading 1/2, Text 1/2, Background and Logo colors, Rotate Display, and a preview matching the panel | `app/src/display.rs` (`DisplayEditor`, `DisplayColorField`), `app/src/shell.rs` (`lcd_row`, `lcd_detail`, `metric_select`, `color_field`) | `the_editor_exposes_the_six_color_controls_the_story_names`, `every_color_field_is_separately_addressable`, `the_six_fields_are_ordered_so_each_pair_sits_together`, `every_lighting_control_keeps_traversal_order_equal_to_visual_order`, `the_panel_row_follows_whatever_the_controller_reported`; captures [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) and [`ep-004-lcd-writable.png`](./screenshots/ep-004-lcd-writable.png), both against the answering panel, and [`lighting-panel-open.png`](./screenshots/lighting-panel-open.png) for the arrangement those controls are in now |
 | Any editor change repaints the preview within 16.7 ms at P95, writing no hardware | `app/src/display.rs` (`DisplayScreen::edit`), `lcd-renderer` (`render`, `Framebuffer::to_png`), `app/src/preview.rs` (`panel_preview`) | `every_editor_change_moves_the_preview_with_it` covers *which* changes reach the preview, and `a_preview_repaint_stays_inside_the_frame_budget` covers how long one takes. Measured on this machine, release build, 300 repaints with a moving reading: render alone **1.12 ms** at P95, render plus PNG encode **1.50 ms** at P95, against a 16.7 ms budget. Nothing in the path opens a device |
 | Apply renders one typed `DisplayPreset` into both the preview and the exact-resolution framebuffer | `crates/lcd-renderer` called by `app/src/preview.rs` and by `daemon/src/display.rs` | `the_preview_renders_the_same_frame_the_daemon_would_send`, `a_frame_encodes_to_a_png_the_toolkit_can_decode` (asserts every preview pixel equals the frame pixel), `a_frame_is_exactly_the_panels_size_in_the_panels_format`, `rgb565_packs_five_six_five_most_significant_byte_first` |
 | An invalid, incomplete or out-of-gamut hex leaves Apply disabled, the prior valid preview visible, and sends no frame | `app/src/display.rs` (`parsed_color`, `PreviewState`), `app/src/shell.rs` (`apply` state) | `an_incomplete_color_names_its_own_field_and_blocks_apply`, `the_preview_keeps_the_last_valid_picture_while_a_field_is_mid_edit`, `a_preset_the_renderer_refuses_never_reaches_the_endpoint`, `an_invalid_preset_is_refused_before_the_capability_gate_is_even_reached` |
@@ -223,6 +223,19 @@ The mode stays in the vocabulary, in the renderer and in the daemon, and a saved
 profile can select it. US-017 AC-1 lists the controls the screen must contain
 and an image picker is not among them; AC-5 asks only that a user-provided image
 be rejected safely, which the three tests above prove.
+
+### Where the editor lives now
+
+These controls were measured on a destination of their own, reached by `ctrl-4`
+from the rail. They have since moved onto Lighting as the Kraken card's one row,
+next to the controller's channels: the panel is one device's appearance, and
+keeping it a separate destination put the two halves of the same question two
+clicks apart. Every control in the table above is the same control with the same
+gate; what changed is the line it opens from and the tab block it occupies
+(`lcd_row_tab`, derived from the channel count so the panel's stops always clear
+the channels'). The rail now holds three primary destinations, `ctrl-1` through
+`ctrl-3`, plus Settings. Capture:
+[`lighting-panel-open.png`](./screenshots/lighting-panel-open.png).
 
 ## US-018: Render and stream the dual CPU/GPU infographic
 
@@ -431,8 +444,8 @@ scale, completed by keyboard alone. Four captures are committed and the 920x640
 clipping defect above was found by running at that size, so the screen has been
 exercised; what this document does not record is which display server, which
 scale and whether the keyboard walkthrough was performed end to end.
-`every_lcd_control_has_its_own_tab_stop_inside_the_screen_range` proves the tab
-stops are distinct and inside the screen's range, which is a necessary
+`every_lighting_control_keeps_traversal_order_equal_to_visual_order` proves
+the tab stops are distinct and inside the screen's range, which is a necessary
 condition and not the walkthrough itself. EP-003 recorded "920x640 under X11"
 for the Lighting screen; the same line is missing here, and it is a gap in the
 record rather than a known failure.

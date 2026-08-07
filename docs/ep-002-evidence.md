@@ -146,11 +146,11 @@ same reason `config::delete_profile` refuses it.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| Pump and fan rows show RPM, PWM, active mode, temperature source and the profile selector above the curve | `Shell::channel_row`, `Shell::cooling` | Live run below |
+| Pump and fan rows show RPM, PWM, active mode, temperature source and the profile selector above the curve | `Shell::channel_row`, `Shell::channel_detail`, `Shell::cooling` | Live run below |
 | A pending selection is visually distinct from confirmed hardware state until Apply succeeds | `CoolingEditor::pending` compares the edit against the readback for a fixed duty, and against both this client's confirmed record and the reported mode for a curve | `a_fixed_edit_stays_pending_until_the_readback_agrees`, `a_curve_edit_needs_both_the_record_and_the_reported_mode`, `the_onboard_program_is_never_pending` |
 | Liquid >=60 C, or zero RPM for three consecutive samples while a duty is commanded, raises a critical state within 2 s naming the channel and readback | `telemetry::AlertTracker`, sampled at 1 Hz so three samples land in three seconds and the alert reaches the client on the next poll | `a_single_zero_rpm_sample_is_not_yet_a_stall`, `the_failsafe_mode_counts_as_a_full_duty_command`, `an_unreadable_sample_neither_raises_nor_clears_a_stall`, `a_stalled_channel_raises_an_alert_after_three_samples`, `a_coolant_at_the_failsafe_threshold_raises_a_critical_alert` |
 | A read-only conflict, lost permission, unplug or stale telemetry disables every write control within 2 s, keeping the diagnostic context | `LinkState::cooling_state` adds staleness and device presence to the capability gate; `STALE_AFTER_MS` is 2000 | `stale_cooling_telemetry_disables_write_controls_and_says_how_old_it_is`, `an_absent_kraken_disables_cooling_controls_even_when_the_capability_is_writable`, `cooling_controls_stay_disabled_until_the_first_sample_arrives`, `a_read_only_conflict_disables_controls_and_shows_the_conflict` |
-| Every edit, Apply and Cancel is possible without a pointer | Every control is a tab stop, and GPUI activates `on_click` listeners on Enter and Space for the focused element; the curve plot additionally handles the arrow keys | `rail_tab_order_is_stable_and_precedes_screen_controls`; live keyboard walkthrough below. Tab indices run `SCREEN_TAB_BASE` to `+17` in visual order, with the Delete control at `+11` between Save and the curve panel |
+| Every edit, Apply and Cancel is possible without a pointer | Every control is a tab stop, and GPUI activates `on_click` listeners on Enter and Space for the focused element; the curve plot additionally handles the arrow keys | `rail_tab_order_is_stable_and_precedes_screen_controls`, `every_cooling_control_keeps_traversal_order_equal_to_visual_order`; live keyboard walkthrough below. Each channel row reserves a block of `COOLING_ROW_STRIDE` stops covering the row header and every control its open detail can render, so traversal stays in visual order whichever row is open |
 
 The stall detector deliberately ignores an unreadable sample rather than
 treating it as evidence either way: a dropped tachometer reading is not proof
@@ -253,6 +253,13 @@ devices:
   their accepted ranges; and the Program panel reporting that the selection
   matches what the hardware reports.
 
+The Cooling captures above show the layout as it was measured: one panel per
+concern, with every control expanded at once. The screen has since been rebuilt
+around one line per channel that opens its own controls, and the two selects
+moved under the heading. What each control is gated on did not change, so the
+capability evidence in this table still holds; the pictures are the previous
+arrangement of it and a capture of the current one is still owed.
+
 Two layout defects were found in those captures and fixed rather than accepted.
 The fan's duty readout wrapped mid-value (`128/255 (50%` then `)`), because a
 96-pixel minimum was narrower than the longest value the field can hold; it is
@@ -261,7 +268,9 @@ which left the section's dominant bar shorter than the word above it; tiles now
 share their row so the bar spans the width it is given.
 
 Every destination was exercised by keyboard under X11 (`ctrl-1` through
-`ctrl-4`, `ctrl-,`), then the Cooling screen was walked with 22 `Tab` presses
+`ctrl-4`, `ctrl-,`; the panel has since moved onto Lighting, so `ctrl-4` is
+gone and the rail now ends at `ctrl-3` plus Settings), then the Cooling screen
+was walked with 22 `Tab` presses
 followed by `Right`, `Up`, `Down`, `Left`, `Return` and `Space`, and finally
 edited with the pointer on the curve plot. The process survived all of it; GPUI
 activates `on_click` listeners on Enter and Space for the focused element, which

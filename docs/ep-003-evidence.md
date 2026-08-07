@@ -152,7 +152,7 @@ speed table, which is `normal`.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| A validated channel shows its name, LED count when known, confirmed mode, brightness and color | `app/src/shell.rs` (`lighting`, `channel_label`, `accessory_summary`), `core/src/ipc.rs` (`ChannelState`) | `a_channel_names_what_the_controller_detected_and_never_an_led_count`, `a_controller_that_answered_is_reported_with_its_channels_and_accessories`, `the_reported_state_carries_the_accessories_the_controller_named` |
+| A validated channel shows its name, LED count when known, confirmed mode, brightness and color | `app/src/shell.rs` (`lighting`, `channel_row_lighting`, `channel_headline`, `accessory_summary`), `core/src/ipc.rs` (`ChannelState`) | `a_channel_names_what_the_controller_detected_and_never_an_led_count`, `a_controller_that_answered_is_reported_with_its_channels_and_accessories`, `the_reported_state_carries_the_accessories_the_controller_named` |
 | A valid six-digit hex and 0-100% brightness update the preview immediately, then one rate-limited command follows | `app/src/lighting.rs` (`ChannelEditor::program`), `daemon/src/lighting.rs` (`LightingExecutor::apply`) | `a_command_sends_exactly_one_report_and_becomes_the_committed_state`, `brightness_dims_the_triplet_that_reaches_the_controller`, `a_fixed_color_is_encoded_green_red_blue_at_full_brightness` |
 | Off emits zero light and the prior fixed color stays available | `core/src/lighting.rs` (`LightingProgram::Off`), `app/src/lighting.rs` | `off_sends_one_black_step_rather_than_no_step`, `switching_to_off_and_back_keeps_the_color_the_operator_chose` |
 | Invalid hex, an unsupported channel or a cadence above the limit produce no write and identify the field | `core/src/lighting.rs` (`validate_command`), `daemon/src/lighting.rs` (cadence), `daemon/src/state.rs` (`illuminate`) | `an_invalid_color_names_the_exact_problem`, `a_channel_outside_the_reported_topology_is_refused_before_any_write`, `a_command_faster_than_the_floor_is_refused_before_the_write`, `an_out_of_range_brightness_cannot_even_be_decoded`, `a_fixed_color_becomes_a_program_and_an_invalid_one_does_not` |
@@ -250,10 +250,31 @@ and `ownership_still_outranks_a_capability_record_that_looks_fine` pin both
 directions.
 
 **A brightness control that could not act.** The first Lighting screen rendered
-a `Slider`, which in this codebase paints a value and receives no input, so an
-enabled-looking control did nothing. It is now the same stepper the Cooling
-screen uses for fixed duty, operable by pointer and keyboard alike. Stepping it
-from 100% to 60% and applying is what produced the live capture above.
+a `Slider`, which at the time painted a value and received no input, so an
+enabled-looking control did nothing. It became the same stepper the Cooling
+screen uses for fixed duty, and stepping it from 100% to 60% and applying is
+what produced the live capture above. `Slider` has since been given the input it
+lacked, and the first attempt at that was wrong in a way worth recording.
+
+The track publishes the rectangle it was painted at, a press captures that
+rectangle, and every later move is converted against it
+(`a_pointer_on_the_track_selects_the_value_that_position_marks`). What did not
+work was hanging the press on the control itself: every GPUI mouse listener is
+gated on `hitbox.is_hovered`, and the slider's own interactive surface sits
+between the press and a listener on the field around it, so the handler never
+ran and the drag did nothing at all. The press is decided in the window's
+capture handler instead, from a map of where each operable track was painted
+(`a_press_finds_the_track_it_landed_on_and_no_other`,
+`a_row_that_went_away_takes_its_track_with_it`) That handler is the one this
+shell already relied on for dropping the focus ring, so it is the one path
+whose delivery was not in question.
+
+Measured end to end in a nested X server, where synthetic input actually
+reaches the process: a press at the middle of channel 1's track reported
+`Some(Channel(1))` and set 50%, a drag to the left and back set 20%, 2% and
+75%, including a move that left the track vertically; releasing stopped it, and
+further moves changed nothing. From the keyboard, Left stepped 95% then 90% and
+Home reached 0%. The row carries that slider now; the stepper is gone.
 
 **A query window set below the measured latency.** See the section below.
 
@@ -336,8 +357,9 @@ fixed here.
 
 - **Two lighting controls shared a tab stop.** The brightness stepper renders
   two buttons from one index, so the speed select counted after it landed on
-  the stepper's second button. Every Lighting stop is now a named constant and
-  `every_lighting_control_has_its_own_tab_stop_inside_the_screen_range` asserts
+  the stepper's second button. Every Lighting stop is now a named offset inside
+  a per-row block, and
+  `every_lighting_control_keeps_traversal_order_equal_to_visual_order` asserts
   the values the screen actually passes instead of a hand-written range.
 - **`--rgb-write-probe --with-effects` understated itself.** The prompt that
   asks for authorization named only the dim white and off, then sent Breathing
