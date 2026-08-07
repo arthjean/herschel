@@ -556,7 +556,7 @@ impl Daemon {
         if *program == CoolingProgram::Onboard {
             // Nothing is written, so no capability is required. This is the
             // program the daemon falls back to, and it must never be refusable.
-            return Ok(self.cooling.apply(program));
+            return Ok(self.cooling.apply(Instant::now(), program));
         }
 
         {
@@ -581,7 +581,7 @@ impl Daemon {
             });
         }
 
-        let outcome = self.cooling.apply(program);
+        let outcome = self.cooling.apply(Instant::now(), program);
         self.diagnostics.record(
             crate::now_unix_ms(),
             EventKind::ProgramApplied {

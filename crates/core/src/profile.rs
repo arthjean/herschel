@@ -43,6 +43,22 @@ pub const CURVE_FIRST_TEMP_C: u8 = 20;
 /// Temperature of the last curve point, in degrees Celsius.
 pub const CURVE_LAST_TEMP_C: u8 = CURVE_FIRST_TEMP_C + CURVE_POINT_COUNT as u8 - 1;
 
+/// Shortest interval the daemon leaves between two writes to the thermal path.
+///
+/// Same reasoning as [`crate::lighting::MIN_COMMAND_INTERVAL_MS`], and the
+/// kernel documents the failure it prevents: these devices "can lock up or
+/// discard the changes if they are too numerous at once"
+/// (`Documentation/hwmon/nzxt-kraken3.rst`). liquidctl reaches the same
+/// conclusion from the other side, spacing its own hwmon writes on the comment
+/// that "the device can get confused when hammered with HID reports".
+///
+/// Deduplication is not backpressure: a client alternating between two
+/// different programs is never deduplicated, and nothing else in the write path
+/// bounds how fast it can arrive. Set well above the per-write cost, and above
+/// the lighting floor because one curve transaction is forty-three attributes
+/// rather than one report.
+pub const MIN_PROGRAM_INTERVAL_MS: u64 = 200;
+
 /// A controllable cooling channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

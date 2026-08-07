@@ -13,9 +13,19 @@
 //! that restoration could be confirmed is what separates a reported
 //! `NotApplied` from a reported `Uncertain`, and the difference matters: an
 //! uncertain state stops further writes until a readback succeeds.
+//!
+//! Two rules bound what reaches the device, and they mirror
+//! [`crate::lighting`] because the argument is the same. A request identical to
+//! the committed state is deduplicated and writes nothing. A request that would
+//! write, arriving sooner than [`MIN_PROGRAM_INTERVAL_MS`] after the last
+//! write, is refused: the kernel documents that this firmware can lock up or
+//! discard changes that arrive too numerous at once, and deduplication is no
+//! backpressure against a client alternating between two programs.
+
+use std::time::{Duration, Instant};
 
 use nzxt_core::ipc::{ApplyOutcome, ChannelReadback, HardwareState};
-use nzxt_core::profile::{Channel, CoolingProgram, TemperatureCurve};
+use nzxt_core::profile::{Channel, CoolingProgram, MIN_PROGRAM_INTERVAL_MS, TemperatureCurve};
 use nzxt_core::telemetry::PwmMode;
 use nzxt_hardware_linux::SysfsRoot;
 use nzxt_hardware_linux::control::{Applied, ChannelSnapshot, CoolingControl, WriteFailure};
@@ -43,6 +53,12 @@ pub struct CoolingExecutor {
     control: Option<CoolingControl>,
     /// The last program this process confirmed on each channel.
     committed: Vec<(Channel, Target)>,
+    /// When an attribute was last written, whatever channel it belonged to.
+    ///
+    /// One stamp for the device rather than one per channel: a curve
+    /// transaction writes both channels back to back, and it is the device that
+    /// the cadence floor protects.
+    last_write: Option<Instant>,
 }
 
 impl std::fmt::Debug for CoolingExecutor {
@@ -60,6 +76,7 @@ impl CoolingExecutor {
             control: KrakenHwmon::locate(sysfs).map(CoolingControl::new),
             sysfs: sysfs.clone(),
             committed: Vec::new(),
+            last_write: None,
         }
     }
 
@@ -110,7 +127,10 @@ impl CoolingExecutor {
     }
 
     /// Apply one program, writing only what is not already in place.
-    pub fn apply(&mut self, program: &CoolingProgram) -> ApplyOutcome {
+    ///
+    /// `now` is passed in rather than read here so the cadence floor can be
+    /// exercised without a test sleeping through the interval it checks.
+    pub fn apply(&mut self, now: Instant, program: &CoolingProgram) -> ApplyOutcome {
         let targets = match program {
             // The safe program leaves the device on whatever it is running.
             CoolingProgram::Onboard => {
@@ -153,15 +173,46 @@ impl CoolingExecutor {
             })
             .collect();
 
+        // Which channels already hold their target is decided before anything
+        // is written, because the cadence floor below must only see a
+        // transaction that would actually reach the device.
+        let settled: Vec<Option<ChannelReadback>> = targets
+            .iter()
+            .map(|(channel, target)| self.already_applied(*channel, target))
+            .collect();
+
+        // A request that sends nothing cannot overrun the firmware, so a
+        // fully deduplicated Apply is never refused. Same ordering as
+        // `LightingExecutor::apply`, for the same reason.
+        if settled.iter().any(Option::is_none)
+            && let Some(previous) = self.last_write
+        {
+            let elapsed = now.saturating_duration_since(previous);
+            let minimum = Duration::from_millis(MIN_PROGRAM_INTERVAL_MS);
+            if elapsed < minimum {
+                return ApplyOutcome::untouched(HardwareState::NotApplied {
+                    reason: format!(
+                        "Refused: {} ms since the last write to the cooler, and the firmware is \
+                         given at least {MIN_PROGRAM_INTERVAL_MS} ms between programs. Nothing \
+                         was written. Try again in a moment.",
+                        elapsed.as_millis()
+                    ),
+                });
+            }
+        }
+
         let mut readback = Vec::with_capacity(targets.len());
         let mut writes = 0;
 
-        for (channel, target) in &targets {
-            if let Some(current) = self.already_applied(*channel, target) {
+        for ((channel, target), settled) in targets.iter().zip(settled) {
+            if let Some(current) = settled {
                 readback.push(current);
                 continue;
             }
 
+            // Stamped before the result is known: a write that failed still
+            // reached the device, and the restoration in `abort` writes again.
+            self.last_write = Some(now);
             match self.write(*channel, target) {
                 Ok(applied) => {
                     writes += applied.writes;
@@ -330,6 +381,24 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
+    /// A clock that jumps a full second per read.
+    ///
+    /// Every test that is not about cadence uses it, so the floor never
+    /// interferes with what the test is actually asserting, and no test sleeps
+    /// through a real interval to get past it.
+    struct Clock(Instant);
+
+    impl Clock {
+        fn new() -> Self {
+            Self(Instant::now())
+        }
+
+        fn tick(&mut self) -> Instant {
+            self.0 += Duration::from_secs(1);
+            self.0
+        }
+    }
+
     fn executor(name: &str, grant: bool) -> (FakeSysfs, PathBuf, CoolingExecutor) {
         let fake = FakeSysfs::new(name);
         fake.add_kraken();
@@ -349,9 +418,10 @@ mod tests {
 
     #[test]
     fn a_fixed_program_writes_both_channels_and_confirms_them() {
+        let mut clock = Clock::new();
         let (_fake, _hwmon, mut executor) = executor("cooling-fixed", true);
 
-        let outcome = executor.apply(&CoolingProgram::Fixed { pump: 180, fan: 90 });
+        let outcome = executor.apply(clock.tick(), &CoolingProgram::Fixed { pump: 180, fan: 90 });
         assert_eq!(outcome.hardware, HardwareState::Confirmed);
         assert_eq!(outcome.writes, 4);
         assert!(!outcome.deduplicated);
@@ -364,12 +434,13 @@ mod tests {
 
     #[test]
     fn repeating_the_current_program_performs_zero_writes() {
+        let mut clock = Clock::new();
         let (_fake, _hwmon, mut executor) = executor("cooling-dedup", true);
         let program = CoolingProgram::Fixed { pump: 180, fan: 90 };
 
-        assert_eq!(executor.apply(&program).writes, 4);
+        assert_eq!(executor.apply(clock.tick(), &program).writes, 4);
         for _ in 0..5 {
-            let repeat = executor.apply(&program);
+            let repeat = executor.apply(clock.tick(), &program);
             assert_eq!(repeat.writes, 0, "a repeat must not touch the device");
             assert!(repeat.deduplicated);
             assert_eq!(repeat.hardware, HardwareState::Confirmed);
@@ -379,7 +450,7 @@ mod tests {
         // A different value is not a repeat.
         assert_eq!(
             executor
-                .apply(&CoolingProgram::Fixed { pump: 200, fan: 90 })
+                .apply(clock.tick(), &CoolingProgram::Fixed { pump: 200, fan: 90 })
                 .writes,
             2,
             "only the channel that changed is written"
@@ -388,28 +459,33 @@ mod tests {
 
     #[test]
     fn a_channel_moved_behind_our_back_is_rewritten_rather_than_deduplicated() {
+        let mut clock = Clock::new();
         let (_fake, _hwmon, mut executor) = executor("cooling-drift", true);
         let program = CoolingProgram::Fixed { pump: 180, fan: 90 };
-        executor.apply(&program);
+        executor.apply(clock.tick(), &program);
 
         // Something else puts the pump back on the failsafe.
         let control = executor.control.as_ref().unwrap().clone();
         std::fs::write(control.hwmon().attribute("pwm1_enable"), "0").unwrap();
 
-        let outcome = executor.apply(&program);
+        let outcome = executor.apply(clock.tick(), &program);
         assert_eq!(outcome.writes, 2, "the drifted channel is written again");
         assert_eq!(outcome.hardware, HardwareState::Confirmed);
     }
 
     #[test]
     fn a_curve_program_writes_forty_one_attributes_per_channel() {
+        let mut clock = Clock::new();
         let (fake, hwmon, mut executor) = executor("cooling-curve", true);
         let curve = CurveNodes::starting_ramp().interpolate();
 
-        let outcome = executor.apply(&CoolingProgram::Curve {
-            pump: curve.clone(),
-            fan: curve.clone(),
-        });
+        let outcome = executor.apply(
+            clock.tick(),
+            &CoolingProgram::Curve {
+                pump: curve.clone(),
+                fan: curve.clone(),
+            },
+        );
         assert_eq!(outcome.hardware, HardwareState::Confirmed);
         assert_eq!(outcome.writes, 82);
         assert_eq!(fake.written_curve(&hwmon, 1), curve.points);
@@ -417,18 +493,94 @@ mod tests {
 
         // The same curve again is deduplicated even though the device cannot
         // read its points back: the record is what makes that safe.
-        let repeat = executor.apply(&CoolingProgram::Curve {
-            pump: curve.clone(),
-            fan: curve,
-        });
+        let repeat = executor.apply(
+            clock.tick(),
+            &CoolingProgram::Curve {
+                pump: curve.clone(),
+                fan: curve,
+            },
+        );
         assert_eq!(repeat.writes, 0);
         assert!(repeat.deduplicated);
     }
 
     #[test]
+    fn a_program_arriving_too_soon_after_a_write_is_refused_without_touching_the_device() {
+        let (_fake, _hwmon, mut executor) = executor("cooling-cadence", true);
+        let start = Instant::now();
+        assert_eq!(
+            executor
+                .apply(start, &CoolingProgram::Fixed { pump: 180, fan: 90 })
+                .writes,
+            4
+        );
+
+        // A different program, one millisecond under the floor. The firmware is
+        // documented to discard changes that arrive too numerous at once, so
+        // this is refused rather than sent.
+        let too_soon = start + Duration::from_millis(MIN_PROGRAM_INTERVAL_MS - 1);
+        let outcome = executor.apply(too_soon, &CoolingProgram::Fixed { pump: 200, fan: 90 });
+        assert_eq!(outcome.writes, 0);
+        let HardwareState::NotApplied { reason } = &outcome.hardware else {
+            panic!("expected a refusal, got {:?}", outcome.hardware);
+        };
+        assert!(reason.contains("Refused"), "{reason}");
+        assert!(reason.contains("Nothing was written"), "{reason}");
+
+        // Nothing moved, and the earlier program is still committed, so the
+        // refusal left no trace on the hardware or on the record.
+        let control = executor.control.as_ref().unwrap();
+        assert_eq!(control.hwmon().duty(Channel::Pump).copied(), Some(180));
+        assert_eq!(
+            executor.committed_target(Channel::Pump),
+            Some(&Target::Fixed(180))
+        );
+
+        // On the floor exactly, it goes through.
+        let allowed = start + Duration::from_millis(MIN_PROGRAM_INTERVAL_MS);
+        assert_eq!(
+            executor
+                .apply(allowed, &CoolingProgram::Fixed { pump: 200, fan: 90 })
+                .writes,
+            2
+        );
+    }
+
+    #[test]
+    fn a_repeat_is_never_refused_by_cadence_because_it_sends_nothing() {
+        let (_fake, _hwmon, mut executor) = executor("cooling-cadence-repeat", true);
+        let start = Instant::now();
+        let program = CoolingProgram::Fixed { pump: 180, fan: 90 };
+        executor.apply(start, &program);
+
+        // Hammered far below the floor, and every one of them is answered from
+        // the record. A request that writes nothing cannot overrun anything.
+        for step in 1..20 {
+            let repeat = executor.apply(start + Duration::from_millis(step), &program);
+            assert_eq!(repeat.writes, 0);
+            assert!(repeat.deduplicated);
+            assert_eq!(repeat.hardware, HardwareState::Confirmed);
+        }
+    }
+
+    #[test]
+    fn the_safe_program_is_never_refused_by_cadence() {
+        let (_fake, _hwmon, mut executor) = executor("cooling-cadence-onboard", true);
+        let start = Instant::now();
+        executor.apply(start, &CoolingProgram::Fixed { pump: 180, fan: 90 });
+
+        // Onboard writes nothing by construction and is the program the daemon
+        // falls back to, so it must never be refusable.
+        let outcome = executor.apply(start + Duration::from_millis(1), &CoolingProgram::Onboard);
+        assert_eq!(outcome.hardware, HardwareState::Onboard);
+        assert_eq!(outcome.writes, 0);
+    }
+
+    #[test]
     fn the_onboard_program_writes_nothing_at_all() {
+        let mut clock = Clock::new();
         let (fake, hwmon, mut executor) = executor("cooling-onboard", true);
-        let outcome = executor.apply(&CoolingProgram::Onboard);
+        let outcome = executor.apply(clock.tick(), &CoolingProgram::Onboard);
         assert_eq!(outcome.hardware, HardwareState::Onboard);
         assert_eq!(outcome.writes, 0);
         assert!(outcome.readback.is_empty());
@@ -437,6 +589,7 @@ mod tests {
 
     #[test]
     fn a_partial_failure_restores_the_previous_program_and_reports_it() {
+        let mut clock = Clock::new();
         if running_as_root() {
             return; // Root writes through the permission bits this test sets.
         }
@@ -444,7 +597,7 @@ mod tests {
         // The pump is left on a confirmed fixed duty.
         assert_eq!(
             executor
-                .apply(&CoolingProgram::Fixed { pump: 180, fan: 90 })
+                .apply(clock.tick(), &CoolingProgram::Fixed { pump: 180, fan: 90 })
                 .hardware,
             HardwareState::Confirmed
         );
@@ -457,10 +610,13 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = executor.apply(&CoolingProgram::Fixed {
-            pump: 200,
-            fan: 120,
-        });
+        let outcome = executor.apply(
+            clock.tick(),
+            &CoolingProgram::Fixed {
+                pump: 200,
+                fan: 120,
+            },
+        );
         let HardwareState::NotApplied { reason } = &outcome.hardware else {
             panic!(
                 "expected a confirmed restoration, got {:?}",
@@ -481,6 +637,7 @@ mod tests {
 
     #[test]
     fn a_failure_the_restoration_cannot_undo_reports_an_uncertain_state() {
+        let mut clock = Clock::new();
         let (fake, hwmon, mut executor) = executor("cooling-uncertain", true);
 
         // The fan's mode attribute vanishes, which is how a device that
@@ -489,10 +646,13 @@ mod tests {
         // cannot put back.
         fake.remove_attribute(&hwmon, "pwm2_enable");
 
-        let outcome = executor.apply(&CoolingProgram::Fixed {
-            pump: 200,
-            fan: 120,
-        });
+        let outcome = executor.apply(
+            clock.tick(),
+            &CoolingProgram::Fixed {
+                pump: 200,
+                fan: 120,
+            },
+        );
         let HardwareState::Uncertain { reason } = &outcome.hardware else {
             panic!("expected uncertain, got {:?}", outcome.hardware);
         };
@@ -508,12 +668,13 @@ mod tests {
 
     #[test]
     fn a_machine_without_a_bound_driver_reports_that_nothing_was_written() {
+        let mut clock = Clock::new();
         let fake = FakeSysfs::new("cooling-absent");
         fake.add_kraken();
         let mut executor = CoolingExecutor::open(&SysfsRoot::new(fake.root_path()));
 
         assert!(!executor.is_available());
-        let outcome = executor.apply(&CoolingProgram::Fixed { pump: 180, fan: 90 });
+        let outcome = executor.apply(clock.tick(), &CoolingProgram::Fixed { pump: 180, fan: 90 });
         assert_eq!(outcome.writes, 0);
         let HardwareState::NotApplied { reason } = &outcome.hardware else {
             panic!("expected NotApplied, got {:?}", outcome.hardware);
@@ -523,14 +684,15 @@ mod tests {
 
     #[test]
     fn forgetting_the_record_forces_the_next_apply_to_write_again() {
+        let mut clock = Clock::new();
         let (_fake, _hwmon, mut executor) = executor("cooling-forget", true);
         let program = CoolingProgram::Fixed { pump: 180, fan: 90 };
-        executor.apply(&program);
-        assert_eq!(executor.apply(&program).writes, 0);
+        executor.apply(clock.tick(), &program);
+        assert_eq!(executor.apply(clock.tick(), &program).writes, 0);
 
         executor.forget();
         assert_eq!(
-            executor.apply(&program).writes,
+            executor.apply(clock.tick(), &program).writes,
             4,
             "a reconnect must not deduplicate against a stale record"
         );
