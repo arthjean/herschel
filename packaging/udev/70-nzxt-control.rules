@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# nzxt-control-linux grants access to exactly two devices, 1e71:300e (Kraken
+# Base) and 1e71:2021 (RGB Controller), and to nothing else. Every rule below
+# names one of those two identifiers.
+
+# US-013 lighting: the RGB controller's hidraw node.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2021", TAG+="uaccess"
+
+# US-016 panel: the Kraken's hidraw node carries the display commands, and its
+# usbfs node the framebuffer's bulk endpoint.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300e", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="300e", TAG+="uaccess"
+
+# US-012 cooling: the kraken2023 hwmon attributes.
+#
+# uaccess cannot serve these. It works by having systemd-logind place an ACL on
+# a device node under /dev, and a hwmon device has none: its control surface is
+# a set of sysfs attribute files. sysfs carries no POSIX ACLs either, so the
+# access has to come from group ownership, reapplied every time the driver
+# republishes the attributes, which is what ACTION=="add|change" covers across
+# bind, replug and resume.
+#
+# Only what crates/hardware-linux/src/control.rs writes is granted: both duties,
+# both mode selectors and the eighty curve points. Every other attribute is left
+# exactly as the kernel created it; fanN_input and tempN_input are already
+# world-readable, so reading needs no rule at all.
+#
+# chgrp and chmod are chained rather than listed separately, so a missing group
+# leaves the attributes root-owned instead of world-writable, and systemd-udevd
+# logs the failure rather than swallowing it.
+ACTION=="add|change", SUBSYSTEM=="hwmon", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300e", \
+  RUN+="/bin/sh -c 'cd %S%p && chgrp nzxt-control pwm[12] pwm[12]_enable temp[12]_auto_point*_pwm && chmod g+w pwm[12] pwm[12]_enable temp[12]_auto_point*_pwm'"

@@ -70,6 +70,22 @@ The thermal path goes entirely through the `kraken2023` driver: no kernel driver
 
 The daemon stays independent from the window in order to serialize commands, detect concurrent writers and restore a compatible profile after reconnection or resume from sleep.
 
+## Access
+
+Neither binary ever runs as root, so writing needs the kernel files to be reachable as your own user. `packaging/udev/70-nzxt-control.rules` grants exactly that, on the two allowlisted devices and nothing else:
+
+```bash
+sudo groupadd --system nzxt-control
+sudo usermod --append --groups nzxt-control "$USER"
+sudo install -m 0644 packaging/udev/70-nzxt-control.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger --action=change --subsystem-match=hwmon
+```
+
+Log out and back in, because group membership is read when the session starts. Then restart the daemon: capabilities are resolved when it opens the device, so a daemon that started before the rule keeps reporting read only.
+
+The two `hidraw` nodes and the Kraken's `usbfs` node are handed to the logged-in user through `uaccess`, which is a session ACL and needs no group. The `hwmon` attributes cannot use it, because `uaccess` places its ACL on a device node under `/dev` and a `hwmon` device has none; `sysfs` carries no POSIX ACLs either, so the group is what the write permission hangs on. Only the four PWM attributes and the eighty curve points change ownership. Every reading attribute is world-readable already and is left untouched.
+
 ## Usage
 
 ```bash
@@ -83,7 +99,7 @@ cargo build --release
 ./target/release/nzxt-control
 ```
 
-The daemon refuses to start as root. Without a udev rule, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
+The daemon refuses to start as root. Without the udev rule above, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
 
 Environment variables read:
 
