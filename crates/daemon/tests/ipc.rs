@@ -1263,8 +1263,12 @@ fn a_coolant_at_the_failsafe_threshold_raises_a_critical_alert() {
     let message = critical.message();
     assert!(message.contains("61.4"), "{message}");
     assert!(
-        message.contains("does not override"),
+        message.contains("overrides neither"),
         "the application must not claim to alter the failsafe: {message}"
+    );
+    assert!(
+        !message.contains("both channels"),
+        "the fan failsafe is undocumented and must not be asserted: {message}"
     );
 }
 

@@ -40,6 +40,13 @@ pub const HISTORY_WINDOW_MS: u64 = 15 * 60 * 1_000;
 /// The kernel curve ABI stops at 59 C by construction, so nothing this product
 /// writes can alter behavior at or above this temperature. The threshold is
 /// here so the interface can say so, not so it can intervene.
+///
+/// What the firmware does from here up is only documented for the pump: the
+/// liquidctl Kraken X3/Z3 guide records that pump speed is forcibly programmed
+/// to 100% at 60 C and above. No primary source says the fan is treated the
+/// same way, so [`SafetyAlert::LiquidCritical`] does not claim it is. An
+/// unproven failsafe stated as a fact is worse than none, because it is the
+/// sentence that tells an operator not to intervene.
 pub const LIQUID_CRITICAL_C: f32 = 60.0;
 
 /// Consecutive zero-RPM samples that turn a commanded channel into an alert.
@@ -387,8 +394,9 @@ impl SafetyAlert {
                 threshold_c,
             } => format!(
                 "Liquid temperature is {} C, at or above the {threshold_c:.0} C failsafe \
-                 threshold. The firmware runs both channels at 100% and this application does \
-                 not override it.",
+                 threshold. The firmware forces the pump to 100% from here up. Whether it does \
+                 the same for the fan is not established, so treat the fan as still running the \
+                 curve. This application overrides neither.",
                 format_temperature(*temperature_c)
             ),
             Self::ChannelStalled {
@@ -910,8 +918,30 @@ mod tests {
         };
         let message = alert.message();
         assert!(message.contains("61.4"), "{message}");
-        assert!(message.contains("does not override"), "{message}");
+        assert!(message.contains("overrides neither"), "{message}");
         assert_eq!(alert.channel(), None);
+    }
+
+    /// The failsafe above 60 C is documented for the pump only. Claiming it
+    /// covers the fan would be a fabricated capability in the one sentence that
+    /// tells an operator they do not need to act.
+    #[test]
+    fn the_critical_alert_claims_the_failsafe_only_where_it_is_evidenced() {
+        let message = SafetyAlert::LiquidCritical {
+            temperature_c: 62.0,
+            threshold_c: LIQUID_CRITICAL_C,
+        }
+        .message();
+
+        assert!(message.contains("pump to 100%"), "{message}");
+        assert!(
+            !message.contains("both channels"),
+            "the fan failsafe is not evidenced and must not be stated: {message}"
+        );
+        assert!(
+            message.contains("not established"),
+            "the gap has to be named, not left out: {message}"
+        );
     }
 
     #[test]
