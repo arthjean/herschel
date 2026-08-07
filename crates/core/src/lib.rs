@@ -12,10 +12,18 @@
 pub mod capability;
 pub mod client;
 pub mod diagnostics;
+pub mod display;
 pub mod ipc;
 pub mod lighting;
 pub mod profile;
 pub mod telemetry;
+
+/// The product's own name.
+///
+/// FR-20: original branding, never NZXT's. It lives here rather than in the
+/// client's theme because the daemon draws it onto the panel too, and the
+/// wordmark on the hardware and the wordmark in the window must be one string.
+pub const PRODUCT_NAME: &str = "Kraken Control";
 
 /// Vendor and product identifiers of a USB device.
 ///

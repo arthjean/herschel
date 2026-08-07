@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
-use crate::capability::{CapabilityId, CapabilityRecord};
+use crate::capability::{CapabilityId, CapabilityRecord, LcdPanel};
+use crate::display::{DisplayError, DisplayPreset};
 use crate::lighting::{LightingCommand, LightingError, LightingProgram};
 use crate::profile::{Channel, CoolingProgram, Incompatibility, Profile, ValidationError};
 use crate::telemetry::{PwmMode, TelemetrySnapshot};
@@ -21,7 +22,9 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 /// Incremented on any breaking change to [`Request`] or [`Response`].
 ///
 /// Version 2 added the lighting command and the per-channel lighting state.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// Version 3 added the panel preset and the state the daemon reports for it.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Largest frame either side will read.
 ///
@@ -130,6 +133,12 @@ pub enum Request {
     /// controller reported, and enforces the command cadence before any byte
     /// is sent.
     ApplyLighting { command: LightingCommand },
+    /// Show a preset on the Kraken's panel.
+    ///
+    /// The preset travels, never the pixels: the daemon renders it with the
+    /// same crate the client previews it with, so the two cannot drift, and a
+    /// panel keeps updating after the window closes.
+    ApplyDisplay { preset: DisplayPreset },
     /// Redacted diagnostics for an issue report.
     Diagnostics,
 }
@@ -163,6 +172,7 @@ pub enum Response {
     Telemetry(Box<TelemetrySnapshot>),
     Applied(Box<ApplyOutcome>),
     Lit(LightingOutcome),
+    Shown(Box<DisplayOutcome>),
     Diagnostics(crate::diagnostics::DiagnosticsExport),
     Error(IpcError),
 }
@@ -184,6 +194,37 @@ pub struct LightingOutcome {
     /// state and was deduplicated.
     pub writes: u32,
     pub deduplicated: bool,
+}
+
+/// The result of one panel command.
+///
+/// The panel acknowledges no picture: there is no report that reads back what
+/// it is showing. The daemon is the sole writer, so its record of the last
+/// preset it committed is the only evidence, exactly as for lighting.
+/// `Confirmed` means the transfer completed, and nothing stronger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayOutcome {
+    pub preset: DisplayPreset,
+    pub hardware: HardwareState,
+    /// Frames actually sent. Zero means the request matched what the panel is
+    /// already showing and was deduplicated.
+    pub frames: u32,
+    pub deduplicated: bool,
+}
+
+/// What the panel is currently showing, as far as the daemon knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayState {
+    /// Geometry a frame must match, when the panel answered at all.
+    pub panel: Option<LcdPanel>,
+    /// The last preset the daemon committed, when it has committed one.
+    pub committed: Option<DisplayPreset>,
+    /// True while a preset that reads telemetry is being streamed.
+    pub streaming: bool,
+    /// Frames dropped because a transfer was still in flight when the next
+    /// sample arrived. US-018 keeps at most one frame pending, so this counts
+    /// what that ceiling discarded.
+    pub dropped_frames: u64,
 }
 
 /// What one lighting channel is currently showing, as far as the daemon knows.
@@ -372,6 +413,8 @@ pub struct DaemonStatus {
     pub config: ConfigState,
     /// Lighting channels the controller reported, empty when it reported none.
     pub lighting: Vec<ChannelState>,
+    /// The panel's geometry and what it was last told to show.
+    pub display: DisplayState,
     /// Path of the Unix socket. The daemon opens no other listening endpoint.
     pub socket_path: String,
 }
@@ -394,6 +437,8 @@ pub enum IpcError {
     Validation(#[from] ValidationError),
     #[error("{0}")]
     Lighting(#[from] LightingError),
+    #[error("{0}")]
+    Display(#[from] DisplayError),
     #[error("Controls are read-only: {reason}")]
     ReadOnly { reason: String },
     #[error("Profile is incompatible with the connected hardware.")]

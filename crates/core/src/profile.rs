@@ -16,7 +16,10 @@ use crate::capability::{CapabilityId, DeviceRecord};
 /// Bumped whenever the on-disk configuration shape changes.
 ///
 /// Version 2 added the per-channel lighting a profile carries.
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+///
+/// Version 3 added the panel preset. Both fields are optional, so a file at an
+/// earlier version parses exactly as it stands and the next save rewrites it.
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 /// Name of the built-in profile that is always available and always safe.
 pub const SAFE_PROFILE_NAME: &str = "Onboard safe";
@@ -281,6 +284,13 @@ pub struct Profile {
     /// Defaulted so a profile written before lighting existed still loads.
     #[serde(default)]
     pub lighting: Vec<crate::lighting::LightingCommand>,
+    /// What the panel should show, when the profile sets anything.
+    ///
+    /// A description only: no resolution, no pixel and no protocol byte, for
+    /// the same reason the lighting field stores named colors rather than
+    /// packets. Defaulted so a profile written before the panel existed loads.
+    #[serde(default)]
+    pub display: Option<crate::display::DisplayPreset>,
 }
 
 impl Profile {
@@ -291,6 +301,7 @@ impl Profile {
             program: CoolingProgram::Onboard,
             device: None,
             lighting: Vec::new(),
+            display: None,
         }
     }
 
@@ -298,6 +309,7 @@ impl Profile {
         self.name == SAFE_PROFILE_NAME
             && self.program == CoolingProgram::Onboard
             && self.lighting.is_empty()
+            && self.display.is_none()
     }
 }
 
@@ -555,6 +567,7 @@ mod tests {
             interfaces: vec![],
             hwmon: None,
             rgb: None,
+            lcd: None,
             capabilities,
         }
     }
@@ -680,6 +693,7 @@ mod tests {
             },
             device: None,
             lighting: Vec::new(),
+            display: None,
         };
 
         let found = incompatibilities(&profile, &device);
@@ -696,6 +710,7 @@ mod tests {
             program: CoolingProgram::Onboard,
             device: Some(crate::RGB_CONTROLLER),
             lighting: Vec::new(),
+            display: None,
         };
         let found = incompatibilities(&profile, &device);
         assert_eq!(found.len(), 1);

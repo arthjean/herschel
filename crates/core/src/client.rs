@@ -172,6 +172,21 @@ impl Client {
         }
     }
 
+    /// Show a preset on the Kraken's panel.
+    pub fn apply_display(
+        &mut self,
+        preset: crate::display::DisplayPreset,
+    ) -> Result<crate::ipc::DisplayOutcome, ClientError> {
+        match self.request(Request::ApplyDisplay { preset })? {
+            Response::Shown(outcome) => Ok(*outcome),
+            Response::Error(error) => Err(ClientError::Refused(error)),
+            _ => Err(ClientError::Unexpected {
+                expected: "shown",
+                actual: "other response",
+            }),
+        }
+    }
+
     /// Every stored profile plus the active one.
     pub fn profiles(&mut self) -> Result<(String, Vec<crate::profile::Profile>), ClientError> {
         match self.request(Request::Profiles)? {

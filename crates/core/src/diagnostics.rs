@@ -119,6 +119,14 @@ pub enum EventKind {
         /// Reports actually sent. Zero means deduplicated or refused.
         writes: u32,
     },
+    /// A frame was rendered for the panel, or refused before it was.
+    DisplayApplied {
+        /// Preset mode, as its stable key rather than its label.
+        mode: String,
+        hardware: HardwareState,
+        /// Frames actually sent. Zero means deduplicated or refused.
+        frames: u32,
+    },
     /// A telemetry collector panicked or stopped answering.
     CollectorFailed {
         collector: Collector,
@@ -138,13 +146,13 @@ impl EventKind {
             | Self::RequestRejected { .. }
             | Self::CollectorFailed { .. }
             | Self::ConfigRecovered { .. } => Severity::Warning,
-            Self::ProgramApplied { hardware, .. } | Self::LightingApplied { hardware, .. } => {
-                match hardware {
-                    HardwareState::Uncertain { .. } => Severity::Error,
-                    HardwareState::NotApplied { .. } => Severity::Warning,
-                    HardwareState::Confirmed | HardwareState::Onboard => Severity::Info,
-                }
-            }
+            Self::ProgramApplied { hardware, .. }
+            | Self::LightingApplied { hardware, .. }
+            | Self::DisplayApplied { hardware, .. } => match hardware {
+                HardwareState::Uncertain { .. } => Severity::Error,
+                HardwareState::NotApplied { .. } => Severity::Warning,
+                HardwareState::Confirmed | HardwareState::Onboard => Severity::Info,
+            },
             Self::AccessModeChanged { read_only, .. } => {
                 if *read_only {
                     Severity::Warning
@@ -359,6 +367,7 @@ mod tests {
                 interfaces: vec![],
                 hwmon: None,
                 rgb: None,
+                lcd: None,
                 capabilities: vec![],
             }],
             rejected: vec![],

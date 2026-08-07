@@ -18,7 +18,9 @@ use crate::DeviceId;
 ///
 /// Version 2 added the USB endpoint list on every interface and the RGB
 /// controller's [`RgbTopology`], both required by US-013.
-pub const CAPABILITY_SCHEMA_VERSION: u32 = 2;
+///
+/// Version 3 added the Kraken's [`LcdTopology`], required by US-016.
+pub const CAPABILITY_SCHEMA_VERSION: u32 = 3;
 
 /// A value that is either observed with its evidence, or explicitly unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +316,87 @@ pub struct RgbAccessory {
     pub name: String,
 }
 
+/// What the Kraken answered about its panel, and what this product asserts.
+///
+/// The two are deliberately not mixed. `firmware` and `display` come from the
+/// device: it answers a report carrying its revision, and another carrying the
+/// brightness and orientation it is currently set to. A device with no panel
+/// answers neither, which is what makes them evidence rather than decoration.
+///
+/// `panel` is different. No report on this device reports a resolution, so the
+/// geometry is a candidate carried by this product for this exact product id,
+/// and its `source` says so. Nothing is written on the strength of a candidate:
+/// the capability gate turns on a validated firmware, and a firmware becomes
+/// validated only through a write probe an operator watched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LcdTopology {
+    /// `hidraw` node the display commands travel over.
+    pub hid_node: Evidenced<String>,
+    /// `usbfs` node the framebuffer's bulk endpoint is reached through.
+    pub bulk_node: Evidenced<String>,
+    /// Firmware the Kraken reports, which is not the USB `bcdDevice`.
+    pub firmware: Evidenced<String>,
+    /// Geometry and pixel format a frame must be laid out in.
+    pub panel: Evidenced<LcdPanel>,
+    /// Brightness and orientation the panel reports it is currently using.
+    pub display: Evidenced<LcdDisplaySettings>,
+}
+
+impl LcdTopology {
+    /// A topology nothing could be read from, with the reason on every field.
+    pub fn unavailable(reason: impl Into<String>, source: impl Into<String>) -> Self {
+        let (reason, source) = (reason.into(), source.into());
+        Self {
+            hid_node: Evidenced::unknown(reason.clone(), source.clone()),
+            bulk_node: Evidenced::unknown(reason.clone(), source.clone()),
+            firmware: Evidenced::unknown(reason.clone(), source.clone()),
+            panel: Evidenced::unknown(reason.clone(), source.clone()),
+            display: Evidenced::unknown(reason, source),
+        }
+    }
+
+    /// True when the panel answered the report only a panel can answer.
+    pub fn answered(&self) -> bool {
+        self.display.is_known()
+    }
+}
+
+/// The shape of the physical panel behind the framebuffer.
+///
+/// A circular panel still takes a square framebuffer; the corners simply are
+/// not visible. The renderer needs to know which, so nothing meaningful is laid
+/// out where the glass ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LcdPanelShape {
+    Circular,
+    Square,
+}
+
+/// Geometry and pixel format one frame must match exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LcdPanel {
+    pub width: u16,
+    pub height: u16,
+    pub shape: LcdPanelShape,
+    /// Human-readable pixel format, for example `RGB565 big-endian`.
+    pub pixel_format: String,
+    /// Exact payload size of one frame, in bytes.
+    pub frame_bytes: u32,
+    /// Bulk endpoint address the framebuffer is written to.
+    pub bulk_endpoint: u8,
+    /// USB interface that endpoint belongs to.
+    pub bulk_interface: u8,
+}
+
+/// What the panel says it is currently set to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LcdDisplaySettings {
+    pub brightness_percent: u8,
+    /// Orientation as the device counts it: `0` through `3`, each a quarter turn.
+    pub quarter_turns: u8,
+}
+
 /// Whether the product is allowed to talk to a discovered device at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -334,6 +417,8 @@ pub struct DeviceRecord {
     pub hwmon: Option<HwmonCapabilities>,
     /// Present only on the RGB controller, and only once its probe has run.
     pub rgb: Option<RgbTopology>,
+    /// Present only on the Kraken, and only once its LCD probe has run.
+    pub lcd: Option<LcdTopology>,
     pub capabilities: Vec<Capability>,
 }
 
@@ -428,6 +513,7 @@ mod tests {
                 interfaces: vec![],
                 hwmon: None,
                 rgb: None,
+                lcd: None,
                 capabilities: vec![
                     Capability {
                         id: CapabilityId::PumpDuty,
