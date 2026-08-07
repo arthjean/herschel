@@ -14,12 +14,25 @@
 //! operator asked for rather than whatever the driver was holding. The kernel
 //! documents mode `0` as running the channel at 100%, mode `1` as direct PWM
 //! and mode `2` as the onboard curve.
+//!
+//! A curve is written through direct mode for the same reason, and it is not a
+//! detail. `kraken3_fan_curve_pwm_store` sends the whole 40-point curve to the
+//! device on *every* point written while the channel is already in mode `2`, so
+//! writing forty points into a channel that is already running a curve is forty
+//! HID transfers in a burst. The kernel documents what the firmware does with
+//! that: these devices "can lock up or discard the changes if they are too
+//! numerous at once", and prescribe setting the points in another mode, then
+//! applying them by switching to curve. Below mode `2` a point write only
+//! updates the driver's in-memory array, so the sequence here is one transfer,
+//! not forty-one. This is what [`CoolingControl::apply_curve`] does.
+//!
+//! See `Documentation/hwmon/nzxt-kraken3.rst` and `drivers/hwmon/nzxt-kraken3.c`.
 
 use std::io::Write;
 use std::path::Path;
 
 use nzxt_core::ipc::ChannelReadback;
-use nzxt_core::profile::{CURVE_POINT_COUNT, Channel, TemperatureCurve};
+use nzxt_core::profile::{CURVE_POINT_COUNT, Channel, MAX_DUTY, TemperatureCurve};
 use nzxt_core::telemetry::PwmMode;
 
 use crate::hwmon::{KrakenHwmon, curve_point_attribute, duty_attribute, mode_attribute};
@@ -39,6 +52,19 @@ impl WriteFailure {
             detail: detail.into(),
         }
     }
+}
+
+/// What one channel write produced: the readback, and how many attributes it
+/// actually touched.
+///
+/// The count is measured rather than derived from the program's shape, because
+/// a curve write costs two extra attributes when the channel has to leave curve
+/// mode first. An operator is told how many attributes were written, so that
+/// number has to be the one that was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applied {
+    pub readback: ChannelReadback,
+    pub writes: u32,
 }
 
 /// Everything a transaction on one channel may change.
@@ -118,9 +144,10 @@ impl CoolingControl {
     /// Put one channel on a constant duty.
     ///
     /// Two attributes, in this order, then a readback of both.
-    pub fn apply_fixed(&self, channel: Channel, duty: u8) -> Result<ChannelReadback, WriteFailure> {
+    pub fn apply_fixed(&self, channel: Channel, duty: u8) -> Result<Applied, WriteFailure> {
         self.write(&duty_attribute(channel), duty)?;
         self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
+        let writes = 2;
 
         let mut readback = ChannelReadback::new(channel);
         readback.mode = self.hwmon.mode(channel).copied();
@@ -144,7 +171,7 @@ impl CoolingControl {
         if !mismatches.is_empty() {
             readback.mismatch = Some(mismatches.join("; "));
         }
-        Ok(readback)
+        Ok(Applied { readback, writes })
     }
 
     /// Put one channel on an onboard curve.
@@ -156,7 +183,7 @@ impl CoolingControl {
         &self,
         channel: Channel,
         curve: &TemperatureCurve,
-    ) -> Result<ChannelReadback, WriteFailure> {
+    ) -> Result<Applied, WriteFailure> {
         if curve.points.len() != CURVE_POINT_COUNT {
             return Err(WriteFailure::new(
                 curve_point_attribute(channel, 0),
@@ -167,10 +194,25 @@ impl CoolingControl {
             ));
         }
 
+        // Leave curve mode before touching a point, so the forty writes below
+        // are driver-memory updates rather than forty curve transfers the
+        // firmware is documented to discard. The channel holds the duty it is
+        // already running for the width of this transaction, so the transition
+        // changes no behavior.
+        let mut writes = 0;
+        if self.hwmon.mode(channel).copied() == Some(PwmMode::Curve) {
+            let holding = self.transition_duty(channel, curve);
+            self.write(&duty_attribute(channel), holding)?;
+            self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
+            writes += 2;
+        }
+
         for (index, duty) in curve.points.iter().enumerate() {
             self.write(&curve_point_attribute(channel, index), *duty)?;
         }
+        // The one transfer that actually programs the device.
         self.write(&mode_attribute(channel), PwmMode::Curve.to_kernel())?;
+        writes += CURVE_POINT_COUNT as u32 + 1;
 
         let mut readback = ChannelReadback::new(channel);
         readback.mode = self.hwmon.mode(channel).copied();
@@ -206,7 +248,7 @@ impl CoolingControl {
         if !mismatches.is_empty() {
             readback.mismatch = Some(mismatches.join("; "));
         }
-        Ok(readback)
+        Ok(Applied { readback, writes })
     }
 
     /// Put a channel back to a captured state after a failed transaction.
@@ -228,6 +270,15 @@ impl CoolingControl {
         if snapshot.mode == Some(PwmMode::Curve)
             && let Some(curve) = &snapshot.curve
         {
+            // Same reason as `apply_curve`: points written while the channel is
+            // still in curve mode are a burst the firmware may discard, and the
+            // mode write below is then skipped as unchanged, so the restored
+            // curve would never be transferred at all.
+            if self.hwmon.mode(channel).copied() == Some(PwmMode::Curve) {
+                let holding = self.transition_duty(channel, curve);
+                self.write(&duty_attribute(channel), holding)?;
+                self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
+            }
             for (index, duty) in curve.points.iter().enumerate() {
                 self.write(&curve_point_attribute(channel, index), *duty)?;
             }
@@ -265,6 +316,28 @@ impl CoolingControl {
     }
 
     /// Write one attribute, or say exactly which one refused.
+    /// Duty to hold a channel at while its curve points are being rewritten.
+    ///
+    /// The duty the device reports is what the channel is running right now, so
+    /// holding it changes nothing an operator could hear or measure. When it
+    /// cannot be read, the curve's own value at the current liquid temperature
+    /// says the same thing one step less directly. With neither available the
+    /// last point wins: a curve is validated non-decreasing, so that is its
+    /// highest duty, and a transition that cools too hard is safe where one that
+    /// cools too little is not.
+    fn transition_duty(&self, channel: Channel, curve: &TemperatureCurve) -> u8 {
+        if let Some(duty) = self.hwmon.duty(channel).copied() {
+            return duty.max(channel.min_duty());
+        }
+        let from_curve = self
+            .hwmon
+            .liquid_temperature_c()
+            .copied()
+            .and_then(|temperature_c| curve.duty_at(temperature_c))
+            .or_else(|| curve.points.last().copied());
+        from_curve.unwrap_or(MAX_DUTY).max(channel.min_duty())
+    }
+
     fn write(&self, attribute: &str, value: u8) -> Result<(), WriteFailure> {
         let path = self.hwmon.attribute(attribute);
         write_attribute(&path, value)
@@ -341,7 +414,9 @@ mod tests {
     fn a_fixed_duty_writes_two_attributes_and_reads_both_back() {
         let (_fake, _hwmon, control) = writable("control-fixed");
 
-        let readback = control.apply_fixed(Channel::Pump, 180).unwrap();
+        let applied = control.apply_fixed(Channel::Pump, 180).unwrap();
+        assert_eq!(applied.writes, 2);
+        let readback = applied.readback;
         assert_eq!(readback.channel, Channel::Pump);
         assert_eq!(readback.mode, Some(PwmMode::Fixed));
         assert_eq!(readback.duty, Some(180));
@@ -360,7 +435,13 @@ mod tests {
         let (fake, hwmon, control) = writable("control-curve");
         let curve = CurveNodes::starting_ramp().interpolate();
 
-        let readback = control.apply_curve(Channel::Fan, &curve).unwrap();
+        let applied = control.apply_curve(Channel::Fan, &curve).unwrap();
+        assert_eq!(
+            applied.writes,
+            CURVE_POINT_COUNT as u32 + 1,
+            "a channel not already on a curve needs no transition"
+        );
+        let readback = applied.readback;
         assert_eq!(readback.mode, Some(PwmMode::Curve));
         // Write-only attributes: unconfirmed rather than wrong.
         assert_eq!(readback.curve_points_confirmed, None);
@@ -374,6 +455,60 @@ mod tests {
             Some(PwmMode::FullSpeed)
         );
         assert_eq!(fake.written_curve(&hwmon, 1), vec![0u8; CURVE_POINT_COUNT]);
+    }
+
+    #[test]
+    fn rewriting_a_curve_leaves_curve_mode_before_touching_a_point() {
+        let (fake, hwmon, control) = writable("control-curve-rewrite");
+        let first = CurveNodes::starting_ramp().interpolate();
+        control.apply_curve(Channel::Fan, &first).unwrap();
+        assert_eq!(
+            control.hwmon().mode(Channel::Fan).copied(),
+            Some(PwmMode::Curve)
+        );
+
+        // The second write goes into a channel that is already running a curve.
+        // The driver would send the whole curve on every point written in that
+        // state, so the channel has to leave it first: two extra attributes,
+        // the held duty and the mode.
+        let second = CurveNodes::flat(220).interpolate();
+        let applied = control.apply_curve(Channel::Fan, &second).unwrap();
+        assert_eq!(
+            applied.writes,
+            CURVE_POINT_COUNT as u32 + 3,
+            "the transition through direct mode is two more attributes"
+        );
+        assert_eq!(applied.readback.mode, Some(PwmMode::Curve));
+        assert_eq!(applied.readback.mismatch, None);
+        assert_eq!(fake.written_curve(&hwmon, 2), second.points);
+    }
+
+    #[test]
+    fn the_duty_held_across_a_curve_rewrite_is_the_one_the_channel_reports() {
+        let (_fake, _hwmon, control) = writable("control-curve-hold");
+        control
+            .apply_curve(Channel::Pump, &CurveNodes::flat(200).interpolate())
+            .unwrap();
+        let running = control
+            .hwmon()
+            .duty(Channel::Pump)
+            .copied()
+            .expect("the fixture reports a duty");
+
+        // Whatever the new curve says, the transition holds what the channel
+        // was already doing, so nothing audible happens mid-write.
+        control
+            .apply_curve(Channel::Pump, &CurveNodes::flat(255).interpolate())
+            .unwrap();
+        assert!(
+            running >= Channel::Pump.min_duty(),
+            "the held duty never drops below the pump floor"
+        );
+        assert_eq!(
+            control.hwmon().mode(Channel::Pump).copied(),
+            Some(PwmMode::Curve),
+            "the channel ends on the curve, not on the transition"
+        );
     }
 
     #[test]

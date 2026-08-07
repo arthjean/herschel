@@ -15,16 +15,11 @@
 //! uncertain state stops further writes until a readback succeeds.
 
 use nzxt_core::ipc::{ApplyOutcome, ChannelReadback, HardwareState};
-use nzxt_core::profile::{CURVE_POINT_COUNT, Channel, CoolingProgram, TemperatureCurve};
+use nzxt_core::profile::{Channel, CoolingProgram, TemperatureCurve};
 use nzxt_core::telemetry::PwmMode;
 use nzxt_hardware_linux::SysfsRoot;
-use nzxt_hardware_linux::control::{ChannelSnapshot, CoolingControl, WriteFailure};
+use nzxt_hardware_linux::control::{Applied, ChannelSnapshot, CoolingControl, WriteFailure};
 use nzxt_hardware_linux::hwmon::KrakenHwmon;
-
-/// Attributes one fixed-duty write touches: the duty and the mode.
-const FIXED_WRITE_COUNT: u32 = 2;
-/// Attributes one curve write touches: forty points and the mode.
-const CURVE_WRITE_COUNT: u32 = CURVE_POINT_COUNT as u32 + 1;
 
 /// What one channel was last told to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,13 +29,6 @@ enum Target {
 }
 
 impl Target {
-    fn write_count(&self) -> u32 {
-        match self {
-            Self::Fixed(_) => FIXED_WRITE_COUNT,
-            Self::Curve(_) => CURVE_WRITE_COUNT,
-        }
-    }
-
     fn mode(&self) -> PwmMode {
         match self {
             Self::Fixed(_) => PwmMode::Fixed,
@@ -175,10 +163,10 @@ impl CoolingExecutor {
             }
 
             match self.write(*channel, target) {
-                Ok(entry) => {
-                    writes += target.write_count();
+                Ok(applied) => {
+                    writes += applied.writes;
                     self.commit(*channel, target.clone());
-                    readback.push(entry);
+                    readback.push(applied.readback);
                 }
                 Err(failure) => {
                     return self.abort(&snapshots, &failure, writes, readback);
@@ -250,7 +238,7 @@ impl CoolingExecutor {
         Some(entry)
     }
 
-    fn write(&self, channel: Channel, target: &Target) -> Result<ChannelReadback, WriteFailure> {
+    fn write(&self, channel: Channel, target: &Target) -> Result<Applied, WriteFailure> {
         let Some(control) = self.control.as_ref() else {
             return Err(WriteFailure {
                 attribute: "hwmon".to_string(),
@@ -337,7 +325,7 @@ impl CoolingExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::profile::CurveNodes;
+    use nzxt_core::profile::{CURVE_POINT_COUNT, CurveNodes};
     use nzxt_hardware_linux::testing::{FakeSysfs, running_as_root};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;

@@ -132,6 +132,29 @@ impl TemperatureCurve {
             points: vec![duty; CURVE_POINT_COUNT],
         }
     }
+
+    /// Index of the point that governs `temperature_c`.
+    ///
+    /// Clamped at both ends: the ABI starts at 20 C and the firmware runs the
+    /// last point above 59 C, so a reading outside the range still names the
+    /// point that is in force.
+    pub fn point_index_for(temperature_c: f32) -> usize {
+        let offset = (temperature_c - CURVE_FIRST_TEMP_C as f32).round();
+        offset.clamp(0.0, (CURVE_POINT_COUNT - 1) as f32) as usize
+    }
+
+    /// The duty this curve commands at `temperature_c`.
+    ///
+    /// `None` when the curve does not carry the ABI's point count, because a
+    /// curve of the wrong length names no duty at any temperature.
+    pub fn duty_at(&self, temperature_c: f32) -> Option<u8> {
+        if self.points.len() != CURVE_POINT_COUNT {
+            return None;
+        }
+        self.points
+            .get(Self::point_index_for(temperature_c))
+            .copied()
+    }
 }
 
 /// Control nodes the editor exposes, fewer than the ABI's points.
