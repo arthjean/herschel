@@ -12,13 +12,16 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, Div, ElementId, Hsla, PathBuilder, Pixels, Point, SharedString, Stateful, Window,
-    canvas, div, prelude::*, px,
+    Bounds, Div, ElementId, Hsla, PathBuilder, Pixels, Point, SharedString, Stateful, Svg, Window,
+    canvas, div, fill, point, prelude::*, px, size, svg,
 };
-use nzxt_core::profile::{CURVE_NODE_COUNT, CurveNodes};
+use nzxt_core::profile::{CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent};
 use nzxt_core::telemetry::{History, MetricView};
 
-use crate::theme::{Color, FOCUS_RING, RADIUS, TARGET_MIN, color, numeric_font, space};
+use crate::assets::Icon;
+use crate::theme::{
+    Color, FOCUS_RING, META_SEPARATOR, RADIUS, TARGET_MIN, color, numeric_font, space,
+};
 
 /// What a control is allowed to do right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,11 +94,47 @@ pub enum ButtonVariant {
     Danger,
 }
 
+thread_local! {
+    /// Whether focus arrived by keyboard, and a ring is therefore wanted.
+    static FOCUS_VISIBLE: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Whether controls should draw their focus ring right now.
+///
+/// This is what a browser calls `:focus-visible`, which GPUI has no equivalent
+/// of: its `focus` style applies however focus arrived, so every clicked
+/// control keeps a ring afterwards. The ring is what tells someone navigating
+/// by keyboard where they are, and noise to someone who just pointed at the
+/// control they were already looking at.
+///
+/// It is thread-local process state rather than a parameter because that is
+/// what it describes: how the person is driving the window right now, not a
+/// property of any one control. Threading it through would put the same value
+/// in every primitive's signature and in every call site. The interface renders
+/// on one thread, so a `Cell` is the whole synchronization story.
+pub fn focus_visible() -> bool {
+    FOCUS_VISIBLE.with(Cell::get)
+}
+
+/// Record how focus last moved. The shell sets this; controls only read it.
+pub fn set_focus_visible(visible: bool) {
+    FOCUS_VISIBLE.with(|flag| flag.set(visible));
+}
+
 /// A base interactive surface with the shared focus, hover and active states.
 ///
 /// Every primitive builds on this, so focus looks and behaves the same
 /// everywhere and no control can accidentally ship without a focus ring.
-fn interactive(id: impl Into<ElementId>, state: &ControlState, tab_index: isize) -> Stateful<Div> {
+///
+/// `hover_bg` overrides the shared hover fill for a control that carries its
+/// own accent. It is a parameter rather than a second `hover` call on the
+/// returned element because GPUI refuses to replace a hover style once set.
+fn interactive(
+    id: impl Into<ElementId>,
+    state: &ControlState,
+    tab_index: isize,
+    hover_bg: Option<Hsla>,
+) -> Stateful<Div> {
     let enabled = state.is_enabled() || matches!(state, ControlState::Error { .. });
     let base = div()
         .id(id)
@@ -111,12 +150,14 @@ fn interactive(id: impl Into<ElementId>, state: &ControlState, tab_index: isize)
         base.tab_index(tab_index)
             .tab_stop(true)
             .cursor_pointer()
-            .hover(|this| this.bg(color::CONTROL.alpha(0.75)))
+            .hover(|this| this.bg(hover_bg.unwrap_or_else(|| color::CONTROL.alpha(0.75))))
             .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
-            .focus(|this| {
-                this.border_color(color::FOCUS.hsla())
-                    .border(FOCUS_RING)
-                    .bg(color::CONTROL.alpha(0.6))
+            .when(focus_visible(), |this| {
+                this.focus(|this| {
+                    this.border_color(color::FOCUS.hsla())
+                        .border(FOCUS_RING)
+                        .bg(color::CONTROL.alpha(0.6))
+                })
             })
     } else {
         // A disabled control is not a tab stop: keyboard traversal must not
@@ -187,14 +228,15 @@ impl Button {
         let label_color = self.label_color();
         let primary = self.variant == ButtonVariant::Primary && self.state.is_enabled();
 
-        interactive(self.key.clone(), &self.state, self.tab_index)
+        let hover_bg = primary.then(|| color::ACCENT_HOVER.hsla());
+
+        interactive(self.key.clone(), &self.state, self.tab_index, hover_bg)
             .justify_center()
             .px(space::LG)
             .bg(fill)
             .text_color(label_color)
             .when(primary, |this| {
-                this.hover(|style| style.bg(color::ACCENT_HOVER.hsla()))
-                    .active(|style| style.bg(color::ACCENT_ACTIVE.hsla()))
+                this.active(|style| style.bg(color::ACCENT_ACTIVE.hsla()))
             })
             .child(self.label)
     }
@@ -279,13 +321,13 @@ impl Select {
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(field_id, label, message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index)
+            interactive(self.key.clone(), &state, self.tab_index, None)
                 .w_full()
                 .justify_between()
                 .px(space::MD)
                 .bg(color::CONTROL.hsla())
-                .child(value)
-                .child(div().text_color(color::TEXT_MUTED.hsla()).child("▾"))
+                .child(div().truncate().child(value))
+                .child(icon(Icon::ChevronDown, ICON_SIZE, color::TEXT_MUTED.hsla()))
         })
     }
 }
@@ -332,7 +374,7 @@ impl Toggle {
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(field_id, self.label.clone(), message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index)
+            interactive(self.key.clone(), &state, self.tab_index, None)
                 .w_full()
                 .justify_between()
                 .px(space::MD)
@@ -360,7 +402,23 @@ impl Toggle {
     }
 }
 
-/// A bounded numeric control.
+/// Height of a slider's track.
+const TRACK_HEIGHT: Pixels = px(4.0);
+/// Size of the handle that rides the track.
+const HANDLE_WIDTH: Pixels = px(14.0);
+const HANDLE_HEIGHT: Pixels = px(22.0);
+
+/// A bounded numeric control the pointer can drag.
+///
+/// The track publishes its own painted rectangle through `bounds_sink`, and the
+/// caller converts a pointer position into a value with [`Slider::value_at`].
+/// That indirection is what makes the control real rather than decorative: GPUI
+/// hands a listener a window position, and only the element that painted the
+/// track knows where the track ended up.
+///
+/// The two icons are part of the control, not ornament. They say which end is
+/// which for a value that is otherwise a bare bar, and they mark the ends the
+/// pointer can snap to.
 pub struct Slider {
     key: SharedString,
     label: SharedString,
@@ -370,6 +428,8 @@ pub struct Slider {
     unit: SharedString,
     state: ControlState,
     tab_index: isize,
+    icons: Option<(Icon, Icon)>,
+    bounds_sink: Option<Rc<dyn Fn(Bounds<Pixels>)>>,
 }
 
 impl Slider {
@@ -383,6 +443,8 @@ impl Slider {
             unit: SharedString::default(),
             state: ControlState::Enabled,
             tab_index: 0,
+            icons: None,
+            bounds_sink: None,
         }
     }
 
@@ -407,6 +469,21 @@ impl Slider {
         self
     }
 
+    /// The icons that flank the track, from the low end to the high one.
+    pub fn icons(mut self, low: Icon, high: Icon) -> Self {
+        self.icons = Some((low, high));
+        self
+    }
+
+    /// Where to publish the track's painted rectangle, for hit testing.
+    ///
+    /// A callback rather than a cell: a screen with one slider per device row
+    /// has to tell them apart, and only the caller knows which row this one is.
+    pub fn bounds_sink(mut self, sink: Rc<dyn Fn(Bounds<Pixels>)>) -> Self {
+        self.bounds_sink = Some(sink);
+        self
+    }
+
     /// Filled fraction, always inside 0.0 to 1.0.
     pub fn fraction(&self) -> f32 {
         if self.max <= self.min {
@@ -417,44 +494,73 @@ impl Slider {
 
     pub fn render(self) -> Stateful<Div> {
         let fraction = self.fraction();
-        let fill = if self.state.is_enabled() {
+        let enabled = self.state.is_enabled();
+        let fill = if enabled {
             color::ACCENT.hsla()
         } else {
             color::TEXT_DISABLED.alpha(0.6)
         };
-        let readout = format!("{:.0}{}", self.value, self.unit);
+        let handle = if enabled {
+            color::TEXT.hsla()
+        } else {
+            color::TEXT_DISABLED.hsla()
+        };
+        let icon_color = if enabled {
+            color::TEXT_MUTED.hsla()
+        } else {
+            color::TEXT_DISABLED.hsla()
+        };
         let state = self.state.clone();
         let message = state.message().map(str::to_string);
+        // The value rides on the label rather than beside the track. A readout
+        // in the row costs the track a third of its width, and a track too
+        // short to aim at is what pushed the last arrangement back to buttons.
+        let label = SharedString::from(format!("{} {:.0}{}", self.label, self.value, self.unit));
         let field_id = SharedString::from(format!("{}-field", self.key));
+        let sink = self.bounds_sink.clone();
+        let icons = self.icons;
 
-        field(field_id, self.label.clone(), message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index)
+        // The whole track is one canvas: it paints the rail, the fill and the
+        // handle, and publishes the rectangle it was painted at, so painting
+        // and hit testing read the same numbers by construction. The first
+        // attempt measured with an absolutely positioned canvas beside an
+        // overlay of styled divs, and that canvas was laid out at zero width:
+        // every press converted against an empty rectangle and was dropped.
+        let track = div().flex_1().min_w_0().h(HANDLE_HEIGHT).child(
+            canvas(
+                move |bounds: Bounds<Pixels>, _, _| {
+                    if let Some(sink) = &sink {
+                        sink(bounds);
+                    }
+                },
+                move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
+                    paint_track(window, bounds, fraction, fill, handle);
+                },
+            )
+            .size_full(),
+        );
+
+        field(field_id, label, message, state.clone(), {
+            interactive(self.key.clone(), &state, self.tab_index, None)
                 .w_full()
-                .gap(space::MD)
-                .px(space::MD)
+                .gap(space::SM)
+                .px(space::SM)
                 .bg(color::CONTROL.alpha(0.4))
-                .child(
-                    div()
-                        .flex_1()
-                        .h(px(6.0))
-                        .rounded(px(3.0))
-                        .bg(color::SEPARATOR.hsla())
-                        .child(
-                            div()
-                                .h_full()
-                                .w(gpui::relative(fraction))
-                                .rounded(px(3.0))
-                                .bg(fill),
-                        ),
-                )
-                .child(
-                    div()
-                        .font(numeric_font())
-                        .min_w(px(56.0))
-                        .text_align(gpui::TextAlign::Right)
-                        .child(readout),
-                )
+                .children(icons.map(|(low, _)| icon(low, ICON_SIZE, icon_color).flex_none()))
+                .child(track)
+                .children(icons.map(|(_, high)| icon(high, ICON_SIZE, icon_color).flex_none()))
         })
+    }
+
+    /// The value a pointer position selects on a track painted at `bounds`.
+    ///
+    /// Clamped to the range at both ends, so a drag that leaves the track keeps
+    /// moving the value to whichever end it left by rather than stopping where
+    /// the pointer crossed the edge.
+    pub fn value_at(bounds: Bounds<Pixels>, position: Point<Pixels>, min: f32, max: f32) -> f32 {
+        let width = f32::from(bounds.size.width).max(1.0);
+        let across = ((f32::from(position.x) - f32::from(bounds.origin.x)) / width).clamp(0.0, 1.0);
+        min + (max - min) * across
     }
 }
 
@@ -496,7 +602,7 @@ impl ColorField {
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(field_id, self.label.clone(), message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index)
+            interactive(self.key.clone(), &state, self.tab_index, None)
                 .w_full()
                 .gap(space::MD)
                 .px(space::MD)
@@ -551,36 +657,68 @@ impl Panel {
     }
 
     pub fn render(self) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .gap(space::MD)
-            .p(space::LG)
-            .rounded(RADIUS)
-            .bg(color::PANEL.hsla())
-            .border_1()
-            .border_color(color::SEPARATOR.hsla())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::XS)
-                    .child(
-                        div()
-                            .text_color(color::TEXT.hsla())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(self.title),
-                    )
-                    .children(self.subtitle.map(|subtitle| {
-                        div()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child(subtitle)
-                    })),
-            )
+        panel_surface().child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(space::XS)
+                .child(
+                    div()
+                        .text_color(color::TEXT.hsla())
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(self.title),
+                )
+                .children(self.subtitle.map(|subtitle| {
+                    div()
+                        .text_sm()
+                        .text_color(color::TEXT_MUTED.hsla())
+                        .child(subtitle)
+                })),
+        )
     }
+}
+
+/// Side of an icon drawn inline with text, in logical pixels.
+pub const ICON_SIZE: Pixels = px(16.0);
+
+/// One icon at one size, in one color.
+///
+/// The color is not optional and is not decoration: GPUI renders an SVG to an
+/// alpha mask and tints it with the element's text color, so an icon without
+/// one resolves to `None` in `Svg::paint` and draws nothing at all. Routing
+/// every icon through here is what keeps that from being a per-call-site
+/// mistake, and what keeps icon color coming from `theme.rs` like every other
+/// color in this interface.
+pub fn icon(icon: Icon, size: Pixels, color: Hsla) -> Svg {
+    svg().path(icon.path()).size(size).text_color(color)
+}
+
+/// The disclosure chevron of a collapsible row.
+pub fn chevron(open: bool, color: Hsla) -> Svg {
+    let name = if open {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    icon(name, ICON_SIZE, color).flex_none()
+}
+
+/// The raised surface a [`Panel`] draws on, without its heading.
+///
+/// Shared rather than duplicated so a section that carries no title still sits
+/// on exactly the same surface as every titled one. It carries no outline: a
+/// card is told apart from the ground under it by its luminance, and the panel
+/// fill already clears the work surface it sits on.
+pub fn panel_surface() -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w_0()
+        .gap(space::MD)
+        .p(space::LG)
+        .rounded(RADIUS)
+        .bg(color::PANEL.hsla())
 }
 
 /// How a device presents in a [`DeviceRow`].
@@ -595,7 +733,8 @@ pub enum DeviceHealth {
 }
 
 impl DeviceHealth {
-    fn color(self) -> Hsla {
+    /// The status color, shared with any screen that names a device's state.
+    pub fn color(self) -> Hsla {
         match self {
             Self::Ready => color::SUCCESS.hsla(),
             Self::ReadOnly => color::WARNING.hsla(),
@@ -613,11 +752,11 @@ impl DeviceHealth {
     }
 
     /// A shape cue, for the same reason.
-    fn glyph(self) -> &'static str {
+    pub fn icon(self) -> Icon {
         match self {
-            Self::Ready => "●",
-            Self::ReadOnly => "◐",
-            Self::Unavailable => "○",
+            Self::Ready => Icon::CircleCheck,
+            Self::ReadOnly => Icon::Lock,
+            Self::Unavailable => Icon::AlertCircle,
         }
     }
 }
@@ -649,63 +788,63 @@ impl DeviceRow {
         self
     }
 
+    /// Two lines: what the device is and what state it is in, then everything
+    /// that only matters once one of those two raises a question.
+    ///
+    /// The row carries no separator and no leading status glyph. It is a list
+    /// of two devices inside a panel that already draws its own surface, so the
+    /// panel's own gap is the only rhythm it needs, and dropping the glyph is
+    /// what lets the device name start on the same vertical as the panel title
+    /// above it. State is still named in words, never by color alone; the
+    /// colored label is the word.
+    /// `min_w_0` belongs on the flex containers, never on the element that
+    /// holds the text. On a text element it removes the intrinsic minimum a
+    /// line needs, and GPUI then wraps the name one glyph per line rather than
+    /// letting the row be as wide as its content.
     pub fn render(self) -> Div {
         div()
             .flex()
             .flex_col()
             .w_full()
             .min_w_0()
-            .gap(space::XS)
-            .py(space::SM)
-            .border_b_1()
-            .border_color(color::SEPARATOR.hsla())
+            .gap(px(2.0))
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap(space::MD)
+                    .child(div().text_color(color::TEXT.hsla()).child(self.name))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_sm()
+                            .text_color(self.health.color())
+                            .child(self.health.label()),
+                    ),
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap(space::MD)
-                    .child(
+                    .gap(space::SM)
+                    .text_xs()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(div().font(numeric_font()).child(self.identifier))
+                    .children(self.detail.map(|detail| {
                         div()
                             .flex()
-                            .min_w_0()
                             .items_center()
                             .gap(space::SM)
                             .child(
                                 div()
-                                    .flex_none()
-                                    .text_color(self.health.color())
-                                    .child(self.health.glyph()),
+                                    .text_color(color::TEXT_DISABLED.hsla())
+                                    .child(META_SEPARATOR),
                             )
-                            .child(div().text_color(color::TEXT.hsla()).child(self.name)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(space::MD)
-                            .child(
-                                div()
-                                    .font(numeric_font())
-                                    .text_sm()
-                                    .text_color(color::TEXT_MUTED.hsla())
-                                    .child(self.identifier),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(self.health.color())
-                                    .child(self.health.label()),
-                            ),
-                    ),
+                            .child(div().child(detail))
+                    })),
             )
-            .children(self.detail.map(|detail| {
-                div()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child(detail)
-            }))
     }
 }
 
@@ -1083,9 +1222,15 @@ impl Sparkline {
     }
 
     pub fn render(self) -> Div {
-        let line_color = color::ACCENT.hsla();
-        let gap_color = color::TEXT_DISABLED.hsla();
-        let baseline_color = color::SEPARATOR.alpha(0.7);
+        let colors = SparklineColors {
+            line: color::ACCENT.hsla(),
+            // The same accent, at full opacity. Coverage is what makes the
+            // ramp, so a translucent cell would fade a texture that is already
+            // fading and leave the baseline weaker than the value it stands for.
+            area: color::ACCENT.hsla(),
+            gap: color::TEXT_DISABLED.hsla(),
+            baseline: color::SEPARATOR.alpha(0.7),
+        };
         let segments = self.segments();
         // Normalized once here, so the painter only places points and the
         // scale is exercised by the same code a test can call.
@@ -1099,22 +1244,14 @@ impl Sparkline {
             .w_full()
             .h(SPARKLINE_HEIGHT)
             .rounded(RADIUS)
+            // Darker than the panel it sits in, which is what sets the plot
+            // area apart now that no card in this interface is outlined.
             .bg(color::SURFACE.hsla())
-            .border_1()
-            .border_color(color::SEPARATOR.hsla())
             .child(
                 canvas(
                     move |_, _, _| {},
                     move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
-                        paint_sparkline(
-                            window,
-                            bounds,
-                            &values,
-                            &segments,
-                            line_color,
-                            gap_color,
-                            baseline_color,
-                        );
+                        paint_sparkline(window, bounds, &values, &segments, &colors);
                     },
                 )
                 .size_full(),
@@ -1149,15 +1286,158 @@ fn downsample(history: &History, limit: usize) -> Vec<Option<f32>> {
 
 /// Paint a series whose values are already normalized into 0.0 to 1.0.
 #[allow(clippy::too_many_arguments)]
+/// Side of one dither cell, in logical pixels.
+///
+/// Three pixels rather than one. A one-pixel cell is the honest ordered dither,
+/// and on a plot a few hundred pixels wide it is also tens of thousands of
+/// quads repainted every sample, on four sections at once, which is spendable
+/// only against a budget this process does not have. At three the texture still
+/// reads as a texture and the cell count stays in the low thousands.
+const DITHER_CELL: Pixels = px(3.0);
+
+/// Bayer ordered-dither threshold map, as its integer ranks.
+///
+/// The classic recursive 4x4 matrix. Kept as ranks rather than as fractions so
+/// the table can be checked for what it has to be, a permutation of `0..16`: a
+/// transposed or duplicated entry does not break the fill, it just makes the
+/// texture quietly uneven, which is the kind of defect nobody finds by looking.
+const BAYER_RANKS: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/// Distinct densities the map resolves.
+const BAYER_LEVELS: f32 = 16.0;
+
+/// Whether the cell at this grid position is lit at this density.
+///
+/// The dither is what carries the tone: a cell is either the full color or
+/// nothing, and the eye integrates the coverage. Nothing here is translucent,
+/// which is what keeps the texture crisp at any window scale.
+pub fn dither_cell(column: usize, row: usize, density: f32) -> bool {
+    let rank = f32::from(BAYER_RANKS[row % 4][column % 4]);
+    density.clamp(0.0, 1.0) * BAYER_LEVELS > rank
+}
+
+/// Height of the plotted series at one horizontal position, from 0.0 at the
+/// baseline, or `None` where the series has a hole there.
+///
+/// A hole on either side of the position is a hole at the position. The line
+/// leaves gaps visible for the same reason, and an area that closed over one
+/// would invent the volume the line refuses to invent.
+pub fn column_fraction(values: &[Option<f32>], position: f32) -> Option<f32> {
+    if values.len() < 2 {
+        return None;
+    }
+    let last = values.len() - 1;
+    let scaled = position.clamp(0.0, 1.0) * last as f32;
+    let low = scaled.floor() as usize;
+    let high = scaled.ceil() as usize;
+    let start = values.get(low).copied().flatten()?;
+    let end = values.get(high).copied().flatten()?;
+    Some(start + (end - start) * (scaled - low as f32))
+}
+
+/// Dither density at a depth below the curve, over the depth of the column.
+///
+/// Dense at the baseline and thinning out toward the line, which is what makes
+/// the fill read as volume under a value rather than as a second series.
+pub fn area_density(depth: f32, span: f32) -> f32 {
+    if span <= 0.0 || depth <= 0.0 {
+        return 0.0;
+    }
+    (depth / span).clamp(0.0, 1.0)
+}
+
+/// Whether a point falls inside a rounded rectangle.
+///
+/// GPUI masks paint to a rectangle, so a cell landing in a corner would square
+/// off the curve the container's own fill draws. Cells are tested one by one
+/// rather than the grid being inset, because an inset would leave a bare band
+/// exactly along the baseline, where the texture is densest.
+fn inside_rounded(bounds: Bounds<Pixels>, x: f32, y: f32, radius: f32) -> bool {
+    let left = f32::from(bounds.origin.x) + radius;
+    let right = f32::from(bounds.origin.x + bounds.size.width) - radius;
+    let top = f32::from(bounds.origin.y) + radius;
+    let bottom = f32::from(bounds.origin.y + bounds.size.height) - radius;
+    // A container narrower or shorter than two radii inverts the bounds, and
+    // `f32::clamp` panics on an inverted range rather than saturating.
+    let dx = x - x.clamp(left.min(right), right.max(left));
+    let dy = y - y.clamp(top.min(bottom), bottom.max(top));
+    dx * dx + dy * dy <= radius * radius
+}
+
+/// Fill under the curve, as an ordered-dither ramp.
+fn paint_dithered_area(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    values: &[Option<f32>],
+    radius: Pixels,
+    color: Hsla,
+) {
+    if values.len() < 2 || bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+        return;
+    }
+
+    let columns = (bounds.size.width / DITHER_CELL).ceil() as usize;
+    let rows = (bounds.size.height / DITHER_CELL).ceil() as usize;
+    let height = f32::from(bounds.size.height);
+    let radius = f32::from(radius);
+
+    for column in 0..columns {
+        let x = bounds.origin.x + DITHER_CELL * column as f32;
+        let center_x = f32::from(x) + f32::from(DITHER_CELL) * 0.5;
+        let position = (center_x - f32::from(bounds.origin.x)) / f32::from(bounds.size.width);
+        let Some(fraction) = column_fraction(values, position) else {
+            continue;
+        };
+
+        let top = height * (1.0 - fraction.clamp(0.0, 1.0));
+        for row in 0..rows {
+            let y = bounds.origin.y + DITHER_CELL * row as f32;
+            let center_y = f32::from(y) + f32::from(DITHER_CELL) * 0.5;
+            let depth = center_y - f32::from(bounds.origin.y) - top;
+            let density = area_density(depth, height - top);
+            if density <= 0.0
+                || !dither_cell(column, row, density)
+                || !inside_rounded(bounds, center_x, center_y, radius)
+            {
+                continue;
+            }
+
+            // Clamped so the last cell of a row or column cannot paint past
+            // the plot it belongs to.
+            let width = DITHER_CELL.min(bounds.origin.x + bounds.size.width - x);
+            let cell_height = DITHER_CELL.min(bounds.origin.y + bounds.size.height - y);
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(width, cell_height)),
+                color,
+            ));
+        }
+    }
+}
+
+/// The colors one sparkline is painted in.
+struct SparklineColors {
+    line: Hsla,
+    area: Hsla,
+    gap: Hsla,
+    baseline: Hsla,
+}
+
 fn paint_sparkline(
     window: &mut Window,
     bounds: Bounds<Pixels>,
     values: &[Option<f32>],
     segments: &[(usize, usize)],
-    line_color: Hsla,
-    gap_color: Hsla,
-    baseline_color: Hsla,
+    colors: &SparklineColors,
 ) {
+    let SparklineColors {
+        line: line_color,
+        area: area_color,
+        gap: gap_color,
+        baseline: baseline_color,
+    } = *colors;
+
+    paint_dithered_area(window, bounds, values, RADIUS, area_color);
+
     stroke_line(
         window,
         Point {
@@ -1237,6 +1517,8 @@ pub struct CurveEditor {
     tab_index: isize,
     /// Filled during paint so pointer events can be mapped back onto a node.
     bounds_sink: Option<Rc<Cell<Bounds<Pixels>>>>,
+    /// Liquid temperature to mark on the plot, when one has been read.
+    liquid_c: Option<f32>,
 }
 
 impl CurveEditor {
@@ -1248,7 +1530,17 @@ impl CurveEditor {
             height: px(200.0),
             tab_index: 0,
             bounds_sink: None,
+            liquid_c: None,
         }
+    }
+
+    /// The reading the curve is actually steered by, marked on the plot.
+    ///
+    /// `None` when nothing has been read, which is drawn as no marker rather
+    /// than as a marker at zero.
+    pub fn liquid(mut self, celsius: Option<f32>) -> Self {
+        self.liquid_c = celsius;
+        self
     }
 
     pub fn selected(mut self, index: usize) -> Self {
@@ -1286,48 +1578,119 @@ impl CurveEditor {
         } else {
             color::TEXT_DISABLED.hsla()
         };
-        let grid_color = color::SEPARATOR.alpha(0.6);
         let sink = self.bounds_sink.clone();
+        let liquid_c = self.liquid_c;
 
-        let mut plot = div()
+        // No fill and no border: the grid and the axis labels are what bound
+        // the plot, and a frame around them would be a second boundary inside
+        // the panel that already provides one.
+        let plot = div().w_full().h(self.height).child(
+            canvas(
+                move |_, _, _| {},
+                move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
+                    // The drawing area is inset so a node sitting at the
+                    // top or at either end is a whole marker rather than
+                    // half of one clipped by the border. Hit testing reads
+                    // the same rectangle, so a pointer lands where the
+                    // marker is drawn.
+                    let area = bounds.inset(PLOT_INSET);
+                    if let Some(sink) = &sink {
+                        sink.set(area);
+                    }
+                    paint_curve(window, area, &nodes, selected, line_color, marker_color);
+                    paint_liquid_marker(window, area, liquid_c);
+                },
+            )
+            .size_full(),
+        );
+
+        let mut frame = div()
             .id("curve-plot")
+            .flex()
+            .flex_col()
             .w_full()
-            .h(self.height)
+            .min_w_0()
+            .gap(space::XS)
             .rounded(RADIUS)
-            .bg(color::SURFACE.hsla())
-            .border_1()
-            .border_color(color::SEPARATOR.hsla())
+            // The ring is reserved rather than added on focus, so focusing the
+            // plot does not move the axes around it.
+            .border(FOCUS_RING)
+            .border_color(color::PANEL.alpha(0.0))
             .child(
-                canvas(
-                    move |_, _, _| {},
-                    move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
-                        if let Some(sink) = &sink {
-                            sink.set(bounds);
-                        }
-                        paint_curve(
-                            window,
-                            bounds,
-                            &nodes,
-                            selected,
-                            line_color,
-                            marker_color,
-                            grid_color,
-                        );
-                    },
-                )
-                .size_full(),
+                div()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap(space::XS)
+                    .child(duty_axis(self.height))
+                    .child(div().flex_1().min_w_0().child(plot)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap(space::XS)
+                    .child(div().flex_none().w(AXIS_LABEL_WIDTH))
+                    .child(temperature_axis()),
             );
 
         if enabled {
-            plot = plot
+            frame = frame
                 .tab_index(self.tab_index)
                 .tab_stop(true)
                 .cursor_pointer()
-                .focus(|this| this.border_color(color::FOCUS.hsla()).border(FOCUS_RING));
+                .when(focus_visible(), |this| {
+                    this.focus(|this| this.border_color(color::FOCUS.hsla()))
+                });
         }
 
-        plot
+        frame
     }
+}
+
+/// Margin kept between the plot's border and the outermost node.
+const PLOT_INSET: Pixels = px(10.0);
+/// Width reserved for the duty labels down the left of the plot.
+const AXIS_LABEL_WIDTH: Pixels = px(34.0);
+
+/// The duty scale, aligned with the grid lines it names.
+fn duty_axis(height: Pixels) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .justify_between()
+        .items_end()
+        .w(AXIS_LABEL_WIDTH)
+        .h(height)
+        // Matches the inset the plot is drawn with, so 100% sits on the top
+        // grid line rather than on the border above it.
+        .py(PLOT_INSET)
+        .children(["100%", "75%", "50%", "25%", "0%"].map(|label| {
+            div()
+                .font(numeric_font())
+                .text_xs()
+                .text_color(color::TEXT_MUTED.hsla())
+                .child(label)
+        }))
+}
+
+/// The temperature scale, one label per node.
+fn temperature_axis() -> Div {
+    div()
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .justify_between()
+        .px(PLOT_INSET)
+        .children((0..CURVE_NODE_COUNT).map(|index| {
+            div()
+                .font(numeric_font())
+                .text_xs()
+                .text_color(color::TEXT_MUTED.hsla())
+                .child(format!("{:.0}", CurveNodes::temperature_at(index)))
+        }))
 }
 
 /// Position of one curve node inside the plot area.
@@ -1344,6 +1707,13 @@ pub fn plot_node(index: usize, duty: u8, bounds: Bounds<Pixels>) -> Point<Pixels
 }
 
 /// The node a pointer position selects, and the duty that height represents.
+///
+/// The height is read as whole percent rather than as one of 256 duties. That
+/// is the scale the device actually has: the driver stores a percentage, so
+/// two duties a step apart routinely mean the same setting. Reading finer than
+/// the hardware can hold would make some values unreachable, since the plot is
+/// shorter than 256 pixels, and would let a pixel of hand tremor produce an
+/// edit that writes a full curve and changes nothing.
 pub fn node_at(bounds: Bounds<Pixels>, position: Point<Pixels>) -> (usize, u8) {
     let width = f32::from(bounds.size.width).max(1.0);
     let height = f32::from(bounds.size.height).max(1.0);
@@ -1351,8 +1721,8 @@ pub fn node_at(bounds: Bounds<Pixels>, position: Point<Pixels>) -> (usize, u8) {
     let up = 1.0 - ((f32::from(position.y) - f32::from(bounds.origin.y)) / height).clamp(0.0, 1.0);
 
     let index = (across * (CURVE_NODE_COUNT - 1) as f32).round() as usize;
-    let duty = (up * 255.0).round().clamp(0.0, 255.0) as u8;
-    (index.min(CURVE_NODE_COUNT - 1), duty)
+    let percent = (up * MAX_DUTY_PERCENT as f32).round().clamp(0.0, 100.0) as u8;
+    (index.min(CURVE_NODE_COUNT - 1), duty_from_percent(percent))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1363,9 +1733,10 @@ fn paint_curve(
     selected: usize,
     line_color: Hsla,
     marker_color: Hsla,
-    grid_color: Hsla,
 ) {
-    for step in 1..4 {
+    // The duty grid, one line per labeled step including the two edges, so
+    // every label on the axis has a line to sit against.
+    for step in 0..=4 {
         let y = bounds.origin.y + bounds.size.height * (step as f32 / 4.0);
         stroke_line(
             window,
@@ -1378,7 +1749,26 @@ fn paint_curve(
                 y,
             },
             px(1.0),
-            grid_color,
+            color::SEPARATOR.alpha(if step == 0 || step == 4 { 0.75 } else { 0.5 }),
+        );
+    }
+
+    // One vertical line per node, so a duty can be read back to the
+    // temperature that produces it without counting markers.
+    for index in 0..CURVE_NODE_COUNT {
+        let x = plot_node(index, 0, bounds).x;
+        stroke_line(
+            window,
+            Point {
+                x,
+                y: bounds.origin.y,
+            },
+            Point {
+                x,
+                y: bounds.origin.y + bounds.size.height,
+            },
+            px(1.0),
+            color::SEPARATOR.alpha(0.28),
         );
     }
 
@@ -1396,29 +1786,109 @@ fn paint_curve(
     }
 
     // Node markers, so each control point is visible without hovering, and the
-    // selected one is drawn wider so keyboard focus is legible without color.
+    // selected one is drawn wider and ringed so keyboard focus is legible
+    // without relying on color alone.
     for (index, duty) in nodes.duty.iter().enumerate() {
         let center = plot_node(index, *duty, bounds);
-        let half = if index == selected { px(7.0) } else { px(3.0) };
-        let thickness = if index == selected { px(6.0) } else { px(4.0) };
-        stroke_line(
-            window,
-            Point {
-                x: center.x - half,
-                y: center.y,
-            },
-            Point {
-                x: center.x + half,
-                y: center.y,
-            },
-            thickness,
-            if index == selected {
-                marker_color
-            } else {
-                line_color
-            },
-        );
+        if index == selected {
+            paint_dot(window, center, px(7.0), marker_color);
+            paint_dot(window, center, px(3.5), color::SURFACE.hsla());
+        } else {
+            paint_dot(window, center, px(4.5), line_color);
+        }
     }
+}
+
+/// The rail, the filled part and the handle of a slider.
+///
+/// `bounds` is the rectangle the canvas was given, which is also the rectangle
+/// [`Slider::value_at`] converts against. The handle is centered on the value
+/// and held inside the rail at both ends, so it never hangs off the track it
+/// belongs to while still marking the end it reached.
+fn paint_track(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    fraction: f32,
+    fill: Hsla,
+    handle: Hsla,
+) {
+    let radius = TRACK_HEIGHT / 2.0;
+    let rail = Bounds {
+        origin: Point {
+            x: bounds.origin.x,
+            y: bounds.origin.y + (bounds.size.height - TRACK_HEIGHT) / 2.0,
+        },
+        size: gpui::size(bounds.size.width, TRACK_HEIGHT),
+    };
+    window.paint_quad(gpui::fill(rail, color::SEPARATOR.hsla()).corner_radii(radius));
+
+    let filled = Bounds {
+        origin: rail.origin,
+        size: gpui::size(bounds.size.width * fraction, TRACK_HEIGHT),
+    };
+    window.paint_quad(gpui::fill(filled, fill).corner_radii(radius));
+
+    let left = (bounds.size.width * fraction - HANDLE_WIDTH / 2.0)
+        .clamp(px(0.0), (bounds.size.width - HANDLE_WIDTH).max(px(0.0)));
+    let knob = Bounds {
+        origin: Point {
+            x: bounds.origin.x + left,
+            y: bounds.origin.y + (bounds.size.height - HANDLE_HEIGHT) / 2.0,
+        },
+        size: gpui::size(HANDLE_WIDTH, HANDLE_HEIGHT),
+    };
+    window.paint_quad(
+        gpui::quad(
+            knob,
+            px(3.0),
+            handle,
+            px(1.0),
+            color::RAIL.hsla(),
+            gpui::BorderStyle::Solid,
+        )
+        .corner_radii(px(3.0)),
+    );
+}
+
+/// A filled circle of `radius` centered on `center`.
+fn paint_dot(window: &mut Window, center: Point<Pixels>, radius: Pixels, color: Hsla) {
+    let bounds = Bounds {
+        origin: Point {
+            x: center.x - radius,
+            y: center.y - radius,
+        },
+        size: gpui::size(radius * 2.0, radius * 2.0),
+    };
+    window.paint_quad(gpui::fill(bounds, color).corner_radii(radius));
+}
+
+/// Where the coolant currently sits on the temperature axis.
+///
+/// Drawn only when the reading falls inside the range the curve covers: a
+/// marker pinned to an edge would claim a temperature the plot cannot show.
+fn paint_liquid_marker(window: &mut Window, bounds: Bounds<Pixels>, liquid_c: Option<f32>) {
+    let Some(celsius) = liquid_c else { return };
+    let first = CurveNodes::temperature_at(0);
+    let last = CurveNodes::temperature_at(CURVE_NODE_COUNT - 1);
+    if celsius < first || celsius > last {
+        return;
+    }
+
+    let across = (celsius - first) / (last - first);
+    let x = bounds.origin.x + bounds.size.width * across;
+    stroke_line(
+        window,
+        Point {
+            x,
+            y: bounds.origin.y,
+        },
+        Point {
+            x,
+            y: bounds.origin.y + bounds.size.height,
+        },
+        px(1.5),
+        color::TEXT_MUTED.alpha(0.7),
+    );
 }
 
 fn stroke_line(
@@ -1545,6 +2015,23 @@ mod tests {
     use gpui::size;
 
     #[test]
+    fn the_focus_ring_follows_how_focus_last_moved() {
+        // Default true, so the first Tab of a session lands somewhere visible
+        // rather than on a control that gives no sign of holding focus.
+        assert!(focus_visible(), "a session starts keyboard-visible");
+
+        set_focus_visible(false);
+        assert!(!focus_visible());
+        // A control built while the pointer is driving carries no focus style,
+        // which is what removes the ring; it is still a tab stop.
+        let _ = Button::new("apply", "Apply").tab_index(3).render();
+
+        set_focus_visible(true);
+        assert!(focus_visible());
+        let _ = Button::new("apply", "Apply").tab_index(3).render();
+    }
+
+    #[test]
     fn a_disabled_control_carries_its_reason() {
         let state = ControlState::disabled("Another process owns this device.");
         assert!(state.is_disabled());
@@ -1563,6 +2050,30 @@ mod tests {
         let invalid = parse_hex_color("ZZZZZZ").unwrap_err();
         assert!(invalid.contains("0-9"), "{invalid}");
         assert!(parse_hex_color("").is_err());
+    }
+
+    #[test]
+    fn every_button_variant_builds_in_each_state() {
+        // GPUI asserts that a hover style is set once, so a primitive that
+        // layers its own accent over the shared one only fails when the screen
+        // holding it is actually rendered. Building them here catches it in
+        // `cargo test` instead of on the first click.
+        for variant in [
+            ButtonVariant::Primary,
+            ButtonVariant::Secondary,
+            ButtonVariant::Danger,
+        ] {
+            for state in [
+                ControlState::Enabled,
+                ControlState::disabled("Read-only."),
+                ControlState::error("Invalid."),
+            ] {
+                let _ = Button::new("action", "Apply")
+                    .variant(variant)
+                    .state(state)
+                    .render();
+            }
+        }
     }
 
     #[test]
@@ -1630,13 +2141,15 @@ mod tests {
             DeviceHealth::Unavailable,
         ] {
             assert!(!health.label().is_empty());
-            assert!(!health.glyph().is_empty());
         }
-        assert_ne!(DeviceHealth::Ready.glyph(), DeviceHealth::ReadOnly.glyph());
+        // Three distinct icons, so the state is legible without reading the
+        // color and without reading the label either.
+        assert_ne!(DeviceHealth::Ready.icon(), DeviceHealth::ReadOnly.icon());
         assert_ne!(
-            DeviceHealth::ReadOnly.glyph(),
-            DeviceHealth::Unavailable.glyph()
+            DeviceHealth::ReadOnly.icon(),
+            DeviceHealth::Unavailable.icon()
         );
+        assert_ne!(DeviceHealth::Ready.icon(), DeviceHealth::Unavailable.icon());
     }
 
     fn plot() -> Bounds<Pixels> {
@@ -1647,6 +2160,54 @@ mod tests {
             },
             size: size(px(400.0), px(200.0)),
         }
+    }
+
+    #[test]
+    fn a_pointer_on_the_track_selects_the_value_that_position_marks() {
+        // A track 200 wide starting at x=100, which is what an offset row
+        // produces: reading the position without the origin would put every
+        // value half a track too high.
+        let track = Bounds {
+            origin: Point {
+                x: px(100.0),
+                y: px(40.0),
+            },
+            size: size(px(200.0), px(22.0)),
+        };
+        let at = |x: f32| {
+            Slider::value_at(
+                track,
+                Point {
+                    x: px(x),
+                    y: px(50.0),
+                },
+                0.0,
+                100.0,
+            )
+        };
+
+        assert_eq!(at(100.0), 0.0, "the left edge is the low end");
+        assert_eq!(at(200.0), 50.0, "the middle is the middle");
+        assert_eq!(at(300.0), 100.0, "the right edge is the high end");
+
+        // A drag that leaves the track keeps pinning the end it left by,
+        // rather than stopping at wherever the pointer crossed the edge.
+        assert_eq!(at(-500.0), 0.0);
+        assert_eq!(at(5_000.0), 100.0);
+    }
+
+    #[test]
+    fn a_slider_fills_the_fraction_its_value_stands_for() {
+        let slider = |value: f32| Slider::new("brightness", "Brightness", value).range(0.0, 100.0);
+        assert_eq!(slider(0.0).fraction(), 0.0);
+        assert_eq!(slider(50.0).fraction(), 0.5);
+        assert_eq!(slider(100.0).fraction(), 1.0);
+        // A value outside the range is drawn at the end it passed, never off
+        // the track or with a negative width.
+        assert_eq!(slider(140.0).fraction(), 1.0);
+        assert_eq!(slider(-20.0).fraction(), 0.0);
+        // A degenerate range cannot divide by zero.
+        assert_eq!(Slider::new("x", "x", 5.0).range(3.0, 3.0).fraction(), 0.0);
     }
 
     #[test]
@@ -1807,6 +2368,108 @@ mod tests {
             history.push(step * 1_000, None);
         }
         assert!(Sparkline::new(&history, 0.0, 10.0).segments().is_empty());
+    }
+
+    #[test]
+    fn the_dither_map_is_a_permutation_of_its_levels() {
+        let mut seen: Vec<u8> = BAYER_RANKS.iter().flatten().copied().collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..BAYER_LEVELS as u8).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn the_dither_lights_no_cell_when_empty_and_every_cell_when_full() {
+        for row in 0..4 {
+            for column in 0..4 {
+                assert!(!dither_cell(column, row, 0.0));
+                assert!(dither_cell(column, row, 1.0));
+            }
+        }
+    }
+
+    /// Coverage has to track density, or the ramp is not a ramp.
+    #[test]
+    fn the_dither_lights_more_cells_as_the_density_rises() {
+        let lit = |density: f32| {
+            (0..4)
+                .flat_map(|row| (0..4).map(move |column| (column, row)))
+                .filter(|(column, row)| dither_cell(*column, *row, density))
+                .count()
+        };
+        assert_eq!(lit(0.5), 8, "half density has to light half the map");
+        let mut previous = 0;
+        for step in 0..=16 {
+            let count = lit(step as f32 / 16.0);
+            assert!(count >= previous, "coverage fell at {step}");
+            previous = count;
+        }
+        assert_eq!(previous, 16);
+    }
+
+    /// The fill is dense at the baseline and thin at the line, never inverted.
+    #[test]
+    fn the_area_density_is_highest_at_the_baseline() {
+        assert_eq!(area_density(0.0, 40.0), 0.0);
+        assert!((area_density(20.0, 40.0) - 0.5).abs() < 0.001);
+        assert_eq!(area_density(40.0, 40.0), 1.0);
+        assert_eq!(area_density(80.0, 40.0), 1.0);
+        // A column with no depth under it, and a curve sitting on the baseline.
+        assert_eq!(area_density(5.0, 0.0), 0.0);
+        assert_eq!(area_density(-5.0, 40.0), 0.0);
+    }
+
+    #[test]
+    fn the_area_follows_the_series_between_its_samples() {
+        let values = vec![Some(0.0), Some(1.0), Some(0.0)];
+        assert_eq!(column_fraction(&values, 0.0), Some(0.0));
+        assert_eq!(column_fraction(&values, 0.5), Some(1.0));
+        assert_eq!(column_fraction(&values, 1.0), Some(0.0));
+        assert!((column_fraction(&values, 0.25).unwrap() - 0.5).abs() < 0.001);
+        // Off either end, rather than extrapolating a value nothing measured.
+        assert_eq!(column_fraction(&values, -1.0), Some(0.0));
+        assert_eq!(column_fraction(&values, 2.0), Some(0.0));
+    }
+
+    /// A hole in the series is a hole in the fill, exactly as it is in the line.
+    #[test]
+    fn the_area_opens_where_the_series_has_a_hole() {
+        let values = vec![Some(1.0), None, Some(1.0)];
+        assert_eq!(column_fraction(&values, 0.5), None);
+        assert_eq!(column_fraction(&values, 0.3), None);
+        assert_eq!(column_fraction(&values, 0.0), Some(1.0));
+        assert_eq!(column_fraction(&values, 1.0), Some(1.0));
+        assert_eq!(column_fraction(&[Some(1.0)], 0.0), None);
+        assert_eq!(column_fraction(&[], 0.0), None);
+    }
+
+    #[test]
+    fn no_dither_cell_lands_outside_the_rounded_plot() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(56.0)));
+        let radius = f32::from(RADIUS);
+        assert!(inside_rounded(bounds, 50.0, 28.0, radius));
+        assert!(inside_rounded(bounds, 1.0, 28.0, radius));
+        assert!(inside_rounded(bounds, 50.0, 55.0, radius));
+        // The four corners, which is the whole reason this test exists.
+        for (x, y) in [(0.5, 0.5), (99.5, 0.5), (0.5, 55.5), (99.5, 55.5)] {
+            assert!(!inside_rounded(bounds, x, y, radius), "corner {x},{y}");
+        }
+    }
+
+    /// `f32::clamp` panics on an inverted range, and a plot narrower than two
+    /// radii inverts it. The window is resizable, so this is reachable.
+    #[test]
+    fn a_plot_smaller_than_its_own_radius_still_answers() {
+        let radius = f32::from(RADIUS);
+        for side in [0.0, 1.0, 4.0, 15.0] {
+            let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(side), px(side)));
+            // Reaching the assertion at all is the point. What it checks is
+            // that the middle of a plot is never culled, however small it got.
+            let middle = side / 2.0;
+            assert!(
+                inside_rounded(bounds, middle, middle, radius),
+                "side {side}"
+            );
+        }
     }
 
     #[test]

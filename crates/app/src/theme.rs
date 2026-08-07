@@ -119,13 +119,60 @@ pub const TARGET_MIN: Pixels = px(40.0);
 /// Width of the fixed navigation rail.
 pub const RAIL_WIDTH: Pixels = px(196.0);
 /// Corner radius shared by controls and panels.
-pub const RADIUS: Pixels = px(6.0);
+///
+/// Two pixels under [`CARD_RADIUS`], which is what keeps a rail entry or a
+/// panel reading as nested inside the card that holds it rather than as a
+/// second card of the same shape.
+pub const RADIUS: Pixels = px(8.0);
+/// Corner radius of a card: the navigation rail, and the window itself.
+///
+/// One radius for both, as in Paneflow: a card inset from a window corner reads
+/// as concentric with it only while the two curves match.
+pub const CARD_RADIUS: Pixels = px(10.0);
+/// Gap between the window edge and a card, and between two cards.
+///
+/// Paneflow's `SIDEBAR_CARD_INSET`. Narrow on purpose: the card is read as a
+/// raised surface by its luminance and its radius, so the gap only has to keep
+/// the two curves from touching.
+pub const CARD_INSET: Pixels = px(4.0);
 /// Width of the visible focus ring, in logical pixels.
 pub const FOCUS_RING: Pixels = px(2.0);
 
 /// Window size the layout is designed for.
 pub const WINDOW_WIDTH: Pixels = px(920.0);
 pub const WINDOW_HEIGHT: Pixels = px(640.0);
+
+/// Client-side window decoration geometry.
+///
+/// The window draws its own caption bar and its own frame, so these sizes are
+/// what the compositor would otherwise decide. They are the ones Paneflow uses,
+/// which is what keeps the two windows reading as the same desktop chrome.
+///
+/// The bar itself is `1.75 * rem_size` and never shorter than this floor, so it
+/// grows with the interface scale instead of clipping its own controls.
+pub const TITLE_BAR_MIN_HEIGHT: Pixels = px(36.0);
+/// Side of one window control button.
+pub const TITLE_BAR_CONTROL: Pixels = px(20.0);
+/// Gap between two window control buttons.
+pub const TITLE_BAR_CONTROL_GAP: Pixels = px(6.0);
+/// Inset between the window edge and the control group.
+///
+/// Narrower than the 8 pixels Paneflow keeps: the card underneath already holds
+/// its own [`CARD_INSET`] off the window, and the two insets stack.
+pub const TITLE_BAR_INSET: Pixels = px(6.0);
+/// Corner radius of the window itself, dropped edge by edge when tiled.
+pub const WINDOW_RADIUS: Pixels = CARD_RADIUS;
+/// Border the decorated surface draws around itself.
+pub const WINDOW_BORDER: Pixels = px(1.0);
+/// Invisible band around the window that starts a resize.
+pub const RESIZE_BORDER: Pixels = px(10.0);
+
+/// Glyph placed between two fragments of one metadata line.
+///
+/// A middle dot rather than a comma or a dash: it reads as a column break at
+/// the small size these lines are set in, and it does not compete with the
+/// punctuation inside the fragments it separates.
+pub const META_SEPARATOR: &str = "\u{00b7}";
 
 /// Font for numeric readouts.
 ///

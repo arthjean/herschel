@@ -12,6 +12,7 @@
 use std::process::ExitCode;
 
 use gpui::{AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
+use nzxt_app::assets::Assets;
 use nzxt_app::feed::Feed;
 use nzxt_app::offline::NoNetwork;
 use nzxt_app::shell::{Shell, key_bindings};
@@ -61,6 +62,9 @@ fn main() -> ExitCode {
     // Replacing it with a refusing client makes the local-only guarantee a
     // property of the binary rather than a promise about call sites.
     Application::new()
+        // Icons are compiled in, so the window draws the same whether it runs
+        // from a checkout or from an installed package.
+        .with_assets(Assets)
         .with_http_client(std::sync::Arc::new(NoNetwork))
         .run(move |cx| {
             cx.bind_keys(key_bindings());
@@ -69,8 +73,14 @@ fn main() -> ExitCode {
             let window = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // The window draws its own caption bar, its own frame and
+                    // its own resize band: see `nzxt_app::window_chrome`. The
+                    // title is still declared, because that is what a task
+                    // switcher and a window list read.
+                    window_decorations: Some(gpui::WindowDecorations::Client),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(PRODUCT_NAME.into()),
+                        appears_transparent: true,
                         ..Default::default()
                     }),
                     // Below this the rail and the work surface cannot both hold

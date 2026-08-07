@@ -10,11 +10,12 @@
 //! The window holds no hardware handle. It repaints when the worker publishes a
 //! new snapshot, and every write control is gated on what the daemon reported.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels,
+    App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels, Point,
     SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
 use nzxt_core::capability::CapabilityId;
@@ -22,28 +23,31 @@ use nzxt_core::display::{DisplayMode, LcdMetric, MetricSample};
 use nzxt_core::ipc::ChannelState;
 use nzxt_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
 use nzxt_core::profile::{
-    CURVE_NODE_COUNT, Channel, CoolingProgram, CurveNodes, MAX_DUTY, Profile, SAFE_PROFILE_NAME,
+    Channel, CoolingProgram, CurveNodes, MAX_DUTY, Profile, SAFE_PROFILE_NAME,
 };
 use nzxt_core::telemetry::{
-    Collector, HISTORY_WINDOW_MS, KrakenTelemetry, MetricView, PwmMode, SafetyAlert,
-    format_binary_bytes, format_temperature,
+    Collector, HISTORY_WINDOW_MS, KrakenTelemetry, MetricView, SafetyAlert, format_binary_bytes,
+    format_temperature,
 };
-use nzxt_core::{KRAKEN_BASE, RGB_CONTROLLER};
+use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
+use crate::assets::Icon;
 use crate::components::{
-    Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceRow, Metric, Note,
-    NoteLevel, Panel, Select, SelectOption, Sparkline, node_at,
+    Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceHealth, DeviceRow,
+    ICON_SIZE, Metric, Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron,
+    focus_visible, icon, node_at, panel_surface, set_focus_visible,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
 use crate::feed::{Command, CommandOutcome, Feed, OutcomeSeverity, now_unix_ms};
 use crate::lighting::{LightingEditor, LightingMode};
-use crate::link::LinkState;
+use crate::link::{DeviceSummary, LinkState};
 use crate::metrics::MetricBook;
 use crate::theme::{
-    Color, FOCUS_RING, PRODUCT_NAME, RADIUS, RAIL_WIDTH, TARGET_MIN, UNOFFICIAL_NOTICE, color,
-    space,
+    CARD_INSET, CARD_RADIUS, Color, FOCUS_RING, RADIUS, RAIL_WIDTH, TARGET_MIN, UNOFFICIAL_NOTICE,
+    color, space,
 };
+use crate::window_chrome::{self, DragLatch};
 
 actions!(
     shell,
@@ -53,7 +57,6 @@ actions!(
         GoMonitoring,
         GoCooling,
         GoLighting,
-        GoLcd,
         GoSettings,
         ClosePopover,
     ]
@@ -67,29 +70,31 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-1", GoMonitoring, None),
         KeyBinding::new("ctrl-2", GoCooling, None),
         KeyBinding::new("ctrl-3", GoLighting, None),
-        KeyBinding::new("ctrl-4", GoLcd, None),
         KeyBinding::new("ctrl-comma", GoSettings, None),
         KeyBinding::new("escape", ClosePopover, None),
     ]
 }
 
 /// The only destinations this product has.
+///
+/// The panel has no destination of its own. It is one device's appearance
+/// among the others, so it lives on Lighting next to the channels of the
+/// controller, which is also where an operator looking for "what my hardware
+/// shows" goes first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Destination {
     Monitoring,
     Cooling,
     Lighting,
-    Lcd,
     Settings,
 }
 
 impl Destination {
     /// Primary destinations, in rail order.
-    pub const PRIMARY: [Destination; 4] = [
+    pub const PRIMARY: [Destination; 3] = [
         Destination::Monitoring,
         Destination::Cooling,
         Destination::Lighting,
-        Destination::Lcd,
     ];
 
     pub fn label(self) -> &'static str {
@@ -97,19 +102,17 @@ impl Destination {
             Self::Monitoring => "Monitoring",
             Self::Cooling => "Cooling",
             Self::Lighting => "Lighting",
-            Self::Lcd => "LCD",
             Self::Settings => "Settings",
         }
     }
 
-    /// Glyph shown in the rail, so an entry is not identified by color alone.
-    pub fn glyph(self) -> &'static str {
+    /// Icon shown in the rail, so an entry is not identified by color alone.
+    pub fn icon(self) -> Icon {
         match self {
-            Self::Monitoring => "▤",
-            Self::Cooling => "❄",
-            Self::Lighting => "◈",
-            Self::Lcd => "◉",
-            Self::Settings => "⚙",
+            Self::Monitoring => Icon::ChartLine,
+            Self::Cooling => Icon::Snowflake,
+            Self::Lighting => Icon::Bulb,
+            Self::Settings => Icon::Settings,
         }
     }
 
@@ -119,46 +122,210 @@ impl Destination {
             Self::Monitoring => 1,
             Self::Cooling => 2,
             Self::Lighting => 3,
-            Self::Lcd => 4,
-            Self::Settings => 5,
+            Self::Settings => 4,
         }
     }
 }
 
+/// How still the Cooling screen has to be before an edit is written.
+///
+/// Long enough that a drag, a burst of arrow keys or a few stepper presses
+/// count as one change, and short enough that letting go feels like the value
+/// took. It also has to clear `MIN_PROGRAM_INTERVAL_MS`, the floor the daemon
+/// enforces to keep the firmware from discarding writes that arrive too fast.
+const AUTOSAVE_QUIET: Duration = Duration::from_millis(400);
+
 /// First tab index available to a screen's own controls.
 pub const SCREEN_TAB_BASE: isize = 10;
 
+/// Tab stops of the Cooling screen, in traversal order.
+///
+/// Each channel row reserves a whole block: the row header itself, then every
+/// control its open detail can render. Reserving the block per row rather than
+/// sharing one detail range is what keeps keyboard traversal in visual order
+/// whichever row is open, since an open row's controls sit above the next row.
+pub const COOLING_TAB_MODE: isize = SCREEN_TAB_BASE;
+/// Width of the two selects that sit under the Cooling heading.
+pub const COOLING_SELECT_WIDTH: Pixels = px(260.0);
+pub const COOLING_TAB_PROFILE: isize = COOLING_TAB_MODE + 1;
+pub const COOLING_TAB_ROW_BASE: isize = COOLING_TAB_PROFILE + 1;
+/// Stops one row occupies: its header, the stepper's two buttons and the plot.
+pub const COOLING_ROW_STRIDE: isize = 4;
+/// There is no Apply stop: an edit reaches the hardware on its own.
+pub const COOLING_TAB_REVERT: isize = COOLING_TAB_ROW_BASE + 2 * COOLING_ROW_STRIDE;
+pub const COOLING_TAB_SAVE: isize = COOLING_TAB_REVERT + 1;
+pub const COOLING_TAB_DELETE: isize = COOLING_TAB_SAVE + 1;
+
+/// First tab stop of one channel row's block.
+pub fn cooling_row_tab(channel: Channel) -> isize {
+    let index = match channel {
+        Channel::Pump => 0,
+        Channel::Fan => 1,
+    };
+    COOLING_TAB_ROW_BASE + index * COOLING_ROW_STRIDE
+}
+
 /// Tab stops of the Lighting screen, in traversal order.
 ///
-/// Named rather than written as offsets at each call site: the brightness
-/// stepper takes two stops rather than one, so a hand-counted offset after it
-/// lands on a control that already exists. Every stop is asserted distinct by
-/// `every_lighting_control_has_its_own_tab_stop_inside_the_screen_range`.
-pub const LIGHTING_TAB_CHANNEL: isize = SCREEN_TAB_BASE;
-pub const LIGHTING_TAB_MODE: isize = LIGHTING_TAB_CHANNEL + 1;
-pub const LIGHTING_TAB_COLOR: isize = LIGHTING_TAB_MODE + 1;
-/// First of the stepper's two buttons; the second is this plus one.
-pub const LIGHTING_TAB_BRIGHTNESS: isize = LIGHTING_TAB_COLOR + 1;
-pub const LIGHTING_TAB_SPEED: isize = LIGHTING_TAB_BRIGHTNESS + 2;
-pub const LIGHTING_TAB_DIRECTION: isize = LIGHTING_TAB_SPEED + 1;
-pub const LIGHTING_TAB_APPLY: isize = LIGHTING_TAB_DIRECTION + 1;
-pub const LIGHTING_TAB_OFF: isize = LIGHTING_TAB_APPLY + 1;
-
-/// Tab stops of the LCD screen, for the same reason the lighting ones are named.
+/// The screen is a list of device rows, so the stops are allocated per row the
+/// way the Cooling screen allocates them per channel: one block each, wide
+/// enough for every control an open row can render. Reserving the block rather
+/// than sharing one detail range is what keeps traversal in visual order
+/// whichever row is open, since an open row's controls sit above the next row.
 ///
-/// The color fields keep a fixed stop per field rather than per rendered
-/// control, so a mode that hides two of them does not renumber the rest.
-pub const LCD_TAB_MODE: isize = SCREEN_TAB_BASE;
-pub const LCD_TAB_METRIC_ONE: isize = LCD_TAB_MODE + 1;
-pub const LCD_TAB_METRIC_TWO: isize = LCD_TAB_METRIC_ONE + 1;
-pub const LCD_TAB_COLOR_BASE: isize = LCD_TAB_METRIC_TWO + 1;
-/// The stepper renders two buttons from one constant, so it occupies two stops.
-pub const LCD_TAB_BRIGHTNESS: isize = LCD_TAB_COLOR_BASE + DisplayColorField::ALL.len() as isize;
-pub const LCD_TAB_ROTATE: isize = LCD_TAB_BRIGHTNESS + 2;
-pub const LCD_TAB_APPLY: isize = LCD_TAB_ROTATE + 1;
+/// The offsets inside a block are named rather than counted at the call site,
+/// so a control that appears or disappears with the mode cannot renumber the
+/// ones after it.
+pub const LIGHTING_TAB_ROW_BASE: isize = SCREEN_TAB_BASE;
+/// Stops one lighting channel occupies, open or closed.
+pub const LIGHTING_ROW_STRIDE: isize = 10;
+
+/// Offsets inside a channel's block.
+pub const ROW_OFFSET_BRIGHTNESS: isize = 1;
+pub const ROW_OFFSET_MODE: isize = 2;
+pub const CHANNEL_OFFSET_COLOR: isize = 3;
+pub const CHANNEL_OFFSET_SPEED: isize = 4;
+pub const CHANNEL_OFFSET_DIRECTION: isize = 5;
+pub const CHANNEL_OFFSET_APPLY: isize = 6;
+pub const CHANNEL_OFFSET_OFF: isize = 7;
+
+/// Offsets inside the panel's block, which is the last one on the screen.
+///
+/// It is wider than [`LIGHTING_ROW_STRIDE`] and may be: nothing is allocated
+/// after it. The color fields keep a fixed stop per field rather than per
+/// rendered control, so a mode that hides two of them does not renumber the
+/// rest.
+pub const LCD_OFFSET_METRIC_ONE: isize = 3;
+pub const LCD_OFFSET_METRIC_TWO: isize = 4;
+pub const LCD_OFFSET_COLOR_BASE: isize = 5;
+pub const LCD_OFFSET_ROTATE: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
+pub const LCD_OFFSET_APPLY: isize = LCD_OFFSET_ROTATE + 1;
+
+/// First tab stop of the channel row at `index` in the rendered list.
+pub fn lighting_row_tab(index: usize) -> isize {
+    LIGHTING_TAB_ROW_BASE + index as isize * LIGHTING_ROW_STRIDE
+}
+
+/// First tab stop of the panel row, which follows every channel row.
+///
+/// Derived from how many channels the controller reported rather than from a
+/// fixed ceiling: a controller that answers with more channels than expected
+/// pushes the panel's block down instead of colliding with it.
+pub fn lcd_row_tab(channel_count: usize) -> isize {
+    lighting_row_tab(channel_count)
+}
 
 /// Width of the preview column, wide enough for the panel plus its padding.
 pub const PREVIEW_COLUMN_WIDTH: Pixels = px(276.0);
+
+/// Width of the two controls a device row carries on its right side.
+///
+/// Sized so the head of the row, the stepper and the mode select fit one line
+/// at the 920-pixel target: the row wraps below that rather than clipping, but
+/// it must not wrap at the size the layout is designed for.
+pub const ROW_BRIGHTNESS_WIDTH: Pixels = px(176.0);
+pub const ROW_MODE_WIDTH: Pixels = px(156.0);
+/// Smallest the head of a row may become before the line wraps.
+pub const ROW_HEAD_MIN_WIDTH: Pixels = px(180.0);
+/// Width of one field in an open row's detail, two of which fit side by side
+/// in the column left of the preview.
+pub const FIELD_WIDTH: Pixels = px(168.0);
+/// Width of the color grid: exactly two fields and the gap between them.
+pub const COLOR_GRID_WIDTH: Pixels = px(348.0);
+/// Side of the appearance thumbnail at the head of a device row.
+pub const ROW_THUMBNAIL: Pixels = px(34.0);
+
+/// One openable row of the Lighting screen.
+///
+/// The panel is a row here rather than a destination of its own: it is one
+/// device's appearance, configured next to the controller's channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightingRow {
+    Channel(u8),
+    Lcd,
+}
+
+impl LightingRow {
+    /// Stable fragment for the element ids this row's controls carry.
+    pub fn key(self) -> String {
+        match self {
+            Self::Channel(channel) => format!("channel-{channel}"),
+            Self::Lcd => "lcd".to_string(),
+        }
+    }
+}
+
+/// A brightness drag in progress.
+///
+/// The track's rectangle is captured when the drag starts rather than read
+/// again on every move. That is what lets the pointer leave the slider, or the
+/// row below it, and keep dragging the value it grabbed: the row that owns the
+/// drag is named here, so no other slider can answer for it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrightnessDrag {
+    pub row: LightingRow,
+    pub track: Bounds<Pixels>,
+}
+
+/// A curve node drag in progress.
+///
+/// The node is captured when the pointer goes down and does not change for the
+/// rest of the gesture, so a drag moves the node that was grabbed rather than
+/// repainting whichever one the pointer happens to be over. `base` is the whole
+/// curve as it stood at that moment, which is what
+/// [`CoolingEditor::set_node_from`] replays every move against.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CurveDrag {
+    channel: Channel,
+    node: usize,
+    base: CurveNodes,
+}
+
+/// Where each operable brightness track was painted, by row.
+///
+/// The window decides which slider a press landed on, rather than the slider
+/// hearing about the press itself. A listener on the control was the first
+/// arrangement and it never fired: the press has to travel down an element
+/// whose interactive state, hover styling and focus ring all sit between it and
+/// the handler. The window's own capture handler is the one place an event is
+/// guaranteed to arrive, and the same handler already runs there for focus.
+///
+/// A disabled slider records nothing, so a track that cannot be moved cannot be
+/// grabbed either.
+#[derive(Debug, Default)]
+pub struct TrackMap(RefCell<Vec<(LightingRow, Bounds<Pixels>)>>);
+
+impl TrackMap {
+    /// Publish where one row's track was painted, replacing its last position.
+    pub fn record(&self, row: LightingRow, track: Bounds<Pixels>) {
+        let mut tracks = self.0.borrow_mut();
+        match tracks.iter_mut().find(|(known, _)| *known == row) {
+            Some(entry) => entry.1 = track,
+            None => tracks.push((row, track)),
+        }
+    }
+
+    /// Forget every track, so a row that went away takes its rectangle with it.
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+    }
+
+    /// The track under a pointer position, if any.
+    ///
+    /// Dilated a little: the handle is 22 pixels tall inside a taller control,
+    /// and a press a pixel above the track is a press on the track as far as
+    /// the operator is concerned.
+    pub fn at(&self, position: Point<Pixels>) -> Option<(LightingRow, Bounds<Pixels>)> {
+        self.0
+            .borrow()
+            .iter()
+            .find(|(_, track)| track.dilate(TRACK_GRAB_MARGIN).contains(&position))
+            .copied()
+    }
+}
+
+/// How far outside a track a press still counts as landing on it.
+pub const TRACK_GRAB_MARGIN: Pixels = px(6.0);
 
 /// Modes the screen can configure completely.
 ///
@@ -200,7 +367,10 @@ pub struct Shell {
     cooling: CoolingEditor,
     /// Plot area of the curve editor, published during paint for hit testing.
     curve_bounds: Rc<Cell<Bounds<Pixels>>>,
-    curve_dragging: bool,
+    /// The curve node the pointer is currently dragging, if any.
+    curve_drag: Option<CurveDrag>,
+    /// When the current cooling edit should be written, once it settles.
+    autosave_at: Option<Instant>,
     /// The program the last Apply sent, held until its outcome arrives.
     sent: Option<CoolingProgram>,
     outcome: Option<CommandOutcome>,
@@ -216,6 +386,18 @@ pub struct Shell {
     /// blanking it, and so no control can move one without the other.
     lcd: DisplayScreen,
     lighting: LightingEditor,
+    /// The one row of the Lighting screen whose controls are revealed.
+    ///
+    /// One at a time, as on Cooling: an open row's controls sit above the next
+    /// row, and two open at once would put the panel's editor an arm's length
+    /// below the line it belongs to.
+    lighting_open: Option<LightingRow>,
+    /// The brightness slider the pointer is currently dragging, if any.
+    brightness_drag: Option<BrightnessDrag>,
+    /// Where this frame painted each operable brightness track.
+    tracks: Rc<TrackMap>,
+    /// Set while the pointer holds the title bar, before a move begins.
+    window_drag: DragLatch,
     /// Wall clock of the last refresh, used to age every reading.
     now_unix_ms: u64,
 }
@@ -250,7 +432,8 @@ impl Shell {
             metrics: MetricBook::new(),
             cooling: CoolingEditor::new(),
             curve_bounds: Rc::new(Cell::new(Bounds::default())),
-            curve_dragging: false,
+            curve_drag: None,
+            autosave_at: None,
             sent: None,
             outcome: None,
             confirm_delete: false,
@@ -258,6 +441,13 @@ impl Shell {
             popover: None,
             lcd: DisplayScreen::default(),
             lighting: LightingEditor::default(),
+            // The panel opens first: it is the row with something to look at,
+            // and a screen where every row is shut hides the editor the last
+            // arrangement put on its own destination.
+            lighting_open: Some(LightingRow::Lcd),
+            brightness_drag: None,
+            tracks: Rc::new(TrackMap::default()),
+            window_drag: DragLatch::default(),
             now_unix_ms: now_unix_ms(),
         }
     }
@@ -299,6 +489,13 @@ impl Shell {
             self.outcome = Some(outcome);
         }
 
+        // The timers above are what make an edit land promptly. This is what
+        // makes sure it lands at all: a write held back because another was in
+        // flight, or a timer that fired while a drag was still running, is
+        // picked up here on the next sample rather than waiting for the
+        // operator to touch the screen again.
+        self.flush_autosave(cx);
+
         cx.notify();
     }
 
@@ -315,6 +512,22 @@ impl Shell {
         cx.notify();
     }
 
+    /// Open one row of the Lighting screen, closing whichever was open.
+    ///
+    /// Opening a channel is also what selects it, so every control the detail
+    /// renders acts on the channel whose line it sits under and none of them
+    /// has to name a channel of its own.
+    fn toggle_lighting_row(&mut self, row: LightingRow, cx: &mut Context<Self>) {
+        self.lighting_open = (self.lighting_open != Some(row)).then_some(row);
+        if let LightingRow::Channel(channel) = row {
+            self.lighting.select(channel);
+        }
+        // A popover anchored to a control that just moved would be left
+        // pointing at nothing.
+        self.popover = None;
+        cx.notify();
+    }
+
     fn toggle_popover(&mut self, popover: Popover, cx: &mut Context<Self>) {
         self.popover = if self.popover.as_ref() == Some(&popover) {
             None
@@ -324,12 +537,21 @@ impl Shell {
         cx.notify();
     }
 
-    fn on_focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
+    fn on_focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
+        set_focus_visible(true);
         window.focus_next();
+        cx.notify();
     }
 
-    fn on_focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, _: &mut Context<Self>) {
+    fn on_focus_previous(
+        &mut self,
+        _: &FocusPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        set_focus_visible(true);
         window.focus_prev();
+        cx.notify();
     }
 
     fn on_close_popover(&mut self, _: &ClosePopover, _: &mut Window, cx: &mut Context<Self>) {
@@ -338,7 +560,23 @@ impl Shell {
         }
     }
 
-    fn rail(&self, cx: &mut Context<Self>) -> Div {
+    /// The navigation rail, as a card inset from the window it sits in.
+    ///
+    /// Paneflow's shape: the window's caption buttons at the top of the column,
+    /// the destinations below them, and the utility entry pinned to a footer.
+    /// Nothing names the product here. The window title carries the name, the
+    /// Settings screen carries the qualifier, and a heading repeating either one
+    /// would only push the first destination down the column.
+    ///
+    /// The card is a surface above the window's own, so the two separate by
+    /// luminance rather than by a drawn divider, and it is inset far enough on
+    /// every side that no corner of it has to know how the window is rounding
+    /// its own.
+    ///
+    /// `reserved_top` is the strip the title bar is laid over. The card runs
+    /// under it and starts its own content below, which is what puts the caption
+    /// buttons inside the card rather than in a bar above it.
+    fn rail(&self, reserved_top: Pixels, cx: &mut Context<Self>) -> Div {
         let current = self.destination;
         // A `map` closure would have to hold the mutable context borrow across
         // calls, which the 2024 edition's capture rules reject. A plain loop
@@ -354,46 +592,32 @@ impl Shell {
             .flex_none()
             .w(RAIL_WIDTH)
             .h_full()
-            .bg(color::RAIL.hsla())
-            .border_r_1()
-            .border_color(color::SEPARATOR.hsla())
+            .bg(color::SURFACE.hsla())
+            .rounded(CARD_RADIUS)
+            // No outline: the card is told apart from the window by its
+            // luminance, which is how Paneflow separates its own surfaces.
+            .overflow_hidden()
+            .pt(reserved_top)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(space::XS)
-                    .p(space::LG)
-                    .child(
-                        div()
-                            .text_color(color::TEXT.hsla())
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child(PRODUCT_NAME),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child("Unofficial"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::XS)
-                    .px(space::SM)
+                    // The same inset the card keeps from the window, so an entry
+                    // and the caption buttons above it sit on one edge.
+                    .px(CARD_INSET)
+                    .pt(CARD_INSET)
                     .children(primary_entries),
             )
             .child(div().flex_1())
             .child(
+                // No divider either: the empty space above it is what sets the
+                // utility entry apart from the destinations.
                 div()
                     .flex()
                     .flex_col()
-                    .px(space::SM)
-                    .pb(space::LG)
-                    .border_t_1()
-                    .border_color(color::SEPARATOR.hsla())
-                    .pt(space::SM)
+                    .px(CARD_INSET)
+                    .pb(CARD_INSET)
                     .child(self.rail_entry(Destination::Settings, current, cx)),
             )
     }
@@ -436,8 +660,18 @@ impl Shell {
                     color::CONTROL.alpha(0.6)
                 })
             })
-            .focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
-            .child(destination.glyph())
+            .when(focus_visible(), |this| {
+                this.focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
+            })
+            .child(icon(
+                destination.icon(),
+                ICON_SIZE,
+                if selected {
+                    color::TEXT_ON_ACCENT.hsla()
+                } else {
+                    color::TEXT_MUTED.hsla()
+                },
+            ))
             .child(destination.label())
             .on_click(cx.listener(move |this, _, _, cx| this.go(destination, cx)))
     }
@@ -661,16 +895,16 @@ impl Shell {
         let fan_write = self
             .link
             .cooling_state(KRAKEN_BASE, Channel::Fan.duty_capability(), now);
-        let curve_write =
-            self.link
-                .cooling_state(KRAKEN_BASE, self.cooling.channel.curve_capability(), now);
         let pending = self.cooling.pending(kraken);
         let invalid = self.cooling.validation_error();
 
-        // Apply writes every channel the program names, so it is refused unless
-        // all of them are writable. The capability list is the daemon's own, so
-        // an enabled Apply is one the daemon would accept.
-        let apply_state = match &invalid {
+        // A program writes every channel it names, so it is refused unless all
+        // of them are writable. The capability list is the daemon's own, so a
+        // program that passes here is one the daemon would accept. With no
+        // Apply button to disable, this is surfaced as a note instead: an
+        // autosaving screen that silently saves nothing would be worse than one
+        // that refuses out loud.
+        let program_state = match &invalid {
             Some(error) => ControlState::error(error.to_string()),
             None => self.link.program_state(
                 KRAKEN_BASE,
@@ -698,6 +932,45 @@ impl Shell {
         let mut surface = screen(
             "Cooling",
             "Pump, fan and the onboard liquid-temperature curve.",
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(space::MD)
+                .w_full()
+                .child(div().w(COOLING_SELECT_WIDTH).child(self.select(
+                    "cooling-mode",
+                    "Mode",
+                    mode_options,
+                    self.cooling.mode.value().to_string(),
+                    // Choosing a mode is an edit like any other now, so it
+                    // carries the same per-capability gate the profile selector
+                    // beside it does, and for the same reason.
+                    self.link.write_state(),
+                    COOLING_TAB_MODE,
+                    cx,
+                    |shell, value, cx| {
+                        if let Some(mode) = CoolingMode::from_value(value) {
+                            shell.cooling.set_mode(mode);
+                            shell.schedule_autosave(cx);
+                        }
+                    },
+                )))
+                .child(div().w(COOLING_SELECT_WIDTH).child(self.select(
+                    "profile",
+                    "Active profile",
+                    profiles,
+                    active,
+                    // Activating a profile is a write. It is disabled for
+                    // the same reasons every other write control is.
+                    self.link.write_state(),
+                    COOLING_TAB_PROFILE,
+                    cx,
+                    |shell, value, _| {
+                        shell.feed.send(Command::ActivateProfile(value.to_string()));
+                    },
+                ))),
         );
 
         for alert in self.link.alerts() {
@@ -706,100 +979,65 @@ impl Shell {
 
         surface
             .child(
-                Panel::new("Channels")
-                    .subtitle(match self.link.kraken_age_ms(now) {
-                        Some(age) => format!(
-                            "Temperature source: liquid, as the kernel curve requires. \
-                             Readback {:.1} s old.",
-                            age as f32 / 1000.0
-                        ),
-                        None => "No readback has arrived from the device yet.".to_string(),
-                    })
-                    .render()
-                    .child(self.channel_row(Channel::Pump, SCREEN_TAB_BASE, &pump_write, cx))
-                    .child(self.channel_row(Channel::Fan, SCREEN_TAB_BASE + 3, &fan_write, cx)),
+                // No heading: the two rows name themselves, and the freshness
+                // the subtitle used to carry is on every reading already,
+                // through the Stale and N/A qualifiers `readback` adds.
+                panel_surface()
+                    .child(self.channel_row(Channel::Pump, &pump_write, cx))
+                    .child(self.channel_row(Channel::Fan, &fan_write, cx)),
             )
             .child(
-                Panel::new("Program")
-                    .subtitle(if pending {
-                        "Pending. The hardware still runs its previous program until Apply \
-                         succeeds."
-                    } else {
-                        "The selection below matches what the hardware reports."
-                    })
-                    .render()
-                    .child(self.select(
-                        "cooling-mode",
-                        "Mode",
-                        mode_options,
-                        self.cooling.mode.value().to_string(),
-                        // Choosing a mode writes nothing: it is Apply that does,
-                        // and Apply carries the per-capability gate. This select
-                        // needs the same gate the profile selector below it
-                        // needs, and for the same reason.
-                        self.link.write_state(),
-                        SCREEN_TAB_BASE + 6,
-                        cx,
-                        |shell, value, _| {
-                            if let Some(mode) = CoolingMode::from_value(value) {
-                                shell.cooling.set_mode(mode);
-                            }
-                        },
-                    ))
-                    .child(self.select(
-                        "profile",
-                        "Active profile",
-                        profiles,
-                        active,
-                        // Activating a profile is a write. It is disabled for
-                        // the same reasons every other write control is.
-                        self.link.write_state(),
-                        SCREEN_TAB_BASE + 7,
-                        cx,
-                        |shell, value, _| {
-                            shell.feed.send(Command::ActivateProfile(value.to_string()));
-                        },
-                    ))
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(space::SM)
                     .child(
-                        div()
-                            .flex()
-                            .gap(space::SM)
-                            .child(
-                                Button::new(
-                                    "cooling-apply",
-                                    if pending { "Apply" } else { "Applied" },
-                                )
-                                .variant(ButtonVariant::Primary)
-                                .state(apply_state)
-                                .tab_index(SCREEN_TAB_BASE + 8)
-                                .render()
-                                .on_click(cx.listener(|shell, _, _, cx| shell.apply(cx))),
-                            )
-                            .child(
-                                Button::new("cooling-cancel", "Cancel")
-                                    .tab_index(SCREEN_TAB_BASE + 9)
-                                    .render()
-                                    .on_click(cx.listener(|shell, _, _, cx| {
-                                        let kraken = shell.kraken().cloned();
-                                        shell.cooling.cancel(kraken.as_ref());
-                                        shell.sent = None;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("cooling-save", "Save as profile")
-                                    .state(self.link.write_state())
-                                    .tab_index(SCREEN_TAB_BASE + 10)
-                                    .render()
-                                    .on_click(
-                                        cx.listener(|shell, _, _, cx| shell.save_profile(cx)),
-                                    ),
-                            )
-                            .child(self.delete_button(SCREEN_TAB_BASE + 11, cx)),
+                        // The only way back. An edit is already on the
+                        // hardware, so this is not an undo: it puts the editor
+                        // back on what the device reports it is running, which
+                        // is what an operator needs after a refusal or after an
+                        // edit they did not mean to make.
+                        Button::new("cooling-revert", "Revert to hardware")
+                            .tab_index(COOLING_TAB_REVERT)
+                            .render()
+                            .on_click(cx.listener(|shell, _, _, cx| {
+                                let kraken = shell.kraken().cloned();
+                                shell.cooling.cancel(kraken.as_ref());
+                                shell.sent = None;
+                                shell.schedule_autosave(cx);
+                            })),
                     )
-                    .children(self.outcome_note()),
+                    .child(
+                        Button::new("cooling-save", "Save as profile")
+                            .state(self.link.write_state())
+                            .tab_index(COOLING_TAB_SAVE)
+                            .render()
+                            .on_click(cx.listener(|shell, _, _, cx| shell.save_profile(cx))),
+                    )
+                    .child(self.delete_button(COOLING_TAB_DELETE, cx))
+                    .children(pending.then(|| {
+                        // Visible for the moment between the edit settling and
+                        // the daemon confirming it, and gone after. A steady
+                        // reading here means a write that did not land, which
+                        // is the one thing worth looking at.
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(color::TEXT_MUTED.hsla())
+                            .child(
+                                "Saving. The hardware keeps its previous program until this \
+                                 clears.",
+                            )
+                    })),
             )
-            .child(self.curve_panel(curve_write, cx))
+            .children(
+                program_state
+                    .message()
+                    .map(|reason| Note::new(NoteLevel::Warning, reason.to_string()).render()),
+            )
+            .children(self.outcome_note())
     }
 
     /// Delete the active profile, in two deliberate activations.
@@ -833,20 +1071,17 @@ impl Shell {
         cx.notify();
     }
 
-    /// One channel row: readback, mode, and the fixed-duty control.
-    fn channel_row(
-        &self,
-        channel: Channel,
-        tab_index: isize,
-        write: &ControlState,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    /// One channel as a single line, with its controls one activation away.
+    ///
+    /// Collapsed, the line is readback only: what the channel is doing, from
+    /// which temperature source, in what mode. Opening it reveals the controls
+    /// for that channel alone, so the curve editor never has to ask which
+    /// channel it is editing.
+    fn channel_row(&self, channel: Channel, write: &ControlState, cx: &mut Context<Self>) -> Div {
         let now = self.now_unix_ms;
         let metrics = self.metrics.channel(channel);
         let rpm = metrics.rpm.view(now);
         let duty = metrics.duty.view(now);
-        let mode = metrics.mode.view(now);
-        let target = self.cooling.duty(channel);
         let confirmed_percent = self
             .kraken()
             .and_then(|kraken| kraken.channel(channel).duty_percent());
@@ -856,28 +1091,43 @@ impl Shell {
             .into_iter()
             .cloned()
             .collect();
-        let adjustable = self.cooling.mode == CoolingMode::Fixed && write.is_enabled();
-        let step_state = if adjustable {
-            ControlState::Enabled
-        } else {
-            write.clone()
-        };
+        let open = self.cooling.expanded == Some(channel);
 
         div()
             .flex()
             .flex_col()
             .w_full()
             .min_w_0()
-            .gap(space::SM)
-            .py(space::SM)
-            .border_b_1()
-            .border_color(color::SEPARATOR.hsla())
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "cooling-row-{}",
+                        channel.label().to_lowercase()
+                    )))
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(space::LG)
+                    .gap(space::MD)
+                    .w_full()
+                    .min_w_0()
+                    .min_h(TARGET_MIN)
+                    .px(space::SM)
+                    .rounded(RADIUS)
+                    // The ring is reserved rather than added on focus, so
+                    // focusing a row does not move the line it sits on.
+                    .border(FOCUS_RING)
+                    .border_color(color::PANEL.alpha(0.0))
+                    .cursor_pointer()
+                    .tab_index(cooling_row_tab(channel))
+                    .tab_stop(true)
+                    .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
+                    // Shown to a keyboard user, who has no other way to know
+                    // which row Enter would open, and withheld from a pointer
+                    // user, who just aimed at it.
+                    .when(focus_visible(), |this| {
+                        this.focus(|this| this.border_color(color::FOCUS.hsla()))
+                    })
+                    .child(chevron(open, color::TEXT_MUTED.hsla()))
                     .child(
                         div()
                             .flex_none()
@@ -885,23 +1135,16 @@ impl Shell {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(channel.label()),
                     )
+                    .child(div().flex_1().min_w_0())
                     .child(readback("RPM", &rpm, |value| format!("{value:.0}")))
                     .child(readback("PWM", &duty_view(&duty), move |value| {
                         // The percentage comes from the reported duty, not from
-                        // the pending edit: this row is readback, not intent.
+                        // the pending edit: this line is readback, not intent.
                         match confirmed_percent {
                             Some(percent) => format!("{value:.0} ({percent:.0}%)"),
                             None => format!("{value:.0}"),
                         }
                     }))
-                    .child(mode_readback(&mode))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child("Source: liquid"),
-                    )
                     .children(alerts.into_iter().map(|alert| {
                         div()
                             .flex_none()
@@ -912,138 +1155,170 @@ impl Shell {
                                 SafetyAlert::ChannelStalled { .. } => "Critical: not turning",
                                 SafetyAlert::LiquidCritical { .. } => "Critical: coolant",
                             })
+                    }))
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        shell.cooling.toggle(channel);
+                        // A popover anchored to the row that just moved would
+                        // be left pointing at nothing.
+                        shell.popover = None;
+                        cx.notify();
                     })),
+            )
+            .when(open, |this| {
+                this.child(self.channel_detail(channel, write, cx))
+            })
+    }
+
+    /// What the open row reveals: the curve, plus the stepper the mode uses.
+    ///
+    /// The curve is editable whenever the hardware accepts one, not only while
+    /// the curve mode is selected: an edit sends nothing, and the first one
+    /// selects that mode itself. What gates it is the channel's own curve
+    /// capability, for the same reason the duty channels are gated separately.
+    fn channel_detail(
+        &self,
+        channel: Channel,
+        write: &ControlState,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let base = cooling_row_tab(channel);
+        let curve_state =
+            self.link
+                .cooling_state(KRAKEN_BASE, channel.curve_capability(), self.now_unix_ms);
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .gap(space::MD)
+            .pb(space::MD)
+            .pl(px(22.0))
+            .when(self.cooling.mode == CoolingMode::Fixed, |this| {
+                this.child(self.duty_stepper(channel, write, base + 1, cx))
+            })
+            .child(self.curve_editor(channel, curve_state, base + 3, cx))
+    }
+
+    /// The fixed duty of one channel, as a stepper.
+    fn duty_stepper(
+        &self,
+        channel: Channel,
+        write: &ControlState,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let target = self.cooling.duty(channel);
+
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(space::SM)
+            .child(
+                div()
+                    .flex_none()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child("Fixed duty"),
+            )
+            .child(
+                Button::new(
+                    SharedString::from(format!("{}-duty-down", channel.label())),
+                    "\u{2212}",
+                )
+                .state(write.clone())
+                .tab_index(tab_index)
+                .render()
+                .on_click(cx.listener(move |shell, _, _, cx| {
+                    shell.cooling.adjust_duty(channel, -1);
+                    shell.schedule_autosave(cx);
+                })),
+            )
+            .child(
+                // Wide enough for the longest reading this can hold,
+                // `255/255 (100%)`, and `flex_none` so it is never
+                // squeezed into wrapping mid-value.
+                div()
+                    .font(numeric())
+                    .flex_none()
+                    .min_w(px(140.0))
+                    .text_align(gpui::TextAlign::Center)
+                    .text_color(color::TEXT.hsla())
+                    .child(format!(
+                        "{target}/{MAX_DUTY} ({:.0}%)",
+                        target as f32 / MAX_DUTY as f32 * 100.0
+                    )),
+            )
+            .child(
+                Button::new(
+                    SharedString::from(format!("{}-duty-up", channel.label())),
+                    "+",
+                )
+                .state(write.clone())
+                .tab_index(tab_index + 1)
+                .render()
+                .on_click(cx.listener(move |shell, _, _, cx| {
+                    shell.cooling.adjust_duty(channel, 1);
+                    shell.schedule_autosave(cx);
+                })),
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(space::SM)
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child("Fixed duty"),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("{}-duty-down", channel.label())),
-                            "−",
-                        )
-                        .state(step_state.clone())
-                        .tab_index(tab_index)
-                        .render()
-                        .on_click(cx.listener(move |shell, _, _, cx| {
-                            shell.cooling.adjust_duty(channel, -1);
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        // Wide enough for the longest reading this can hold,
-                        // `255/255 (100%)`, and `flex_none` so it is never
-                        // squeezed into wrapping mid-value.
-                        div()
-                            .font(numeric())
-                            .flex_none()
-                            .min_w(px(140.0))
-                            .text_align(gpui::TextAlign::Center)
-                            .text_color(color::TEXT.hsla())
-                            .child(format!(
-                                "{target}/{MAX_DUTY} ({:.0}%)",
-                                target as f32 / MAX_DUTY as f32 * 100.0
-                            )),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("{}-duty-up", channel.label())),
-                            "+",
-                        )
-                        .state(step_state)
-                        .tab_index(tab_index + 1)
-                        .render()
-                        .on_click(cx.listener(move |shell, _, _, cx| {
-                            shell.cooling.adjust_duty(channel, 1);
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child(format!("Accepted range {}-{MAX_DUTY}", channel.min_duty())),
-                    ),
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(format!("Accepted range {}-{MAX_DUTY}", channel.min_duty())),
             )
     }
 
-    /// The curve editor and everything that drives it by keyboard or pointer.
-    fn curve_panel(&self, state: ControlState, cx: &mut Context<Self>) -> Div {
-        let channel = self.cooling.channel;
+    /// The curve of one channel and everything that drives it.
+    fn curve_editor(
+        &self,
+        channel: Channel,
+        state: ControlState,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let nodes = *self.cooling.curve(channel);
         let node = self.cooling.node;
         let editable = state.is_enabled();
+        let refusal = state.message().map(str::to_string);
+        let liquid_c = self
+            .kraken()
+            .and_then(|kraken| kraken.liquid_temperature_c.copied());
 
-        let channel_options = vec![
-            SelectOption::new("pump", Channel::Pump.label()),
-            SelectOption::new("fan", Channel::Fan.label()),
-        ];
-
-        Panel::new("Liquid temperature curve")
-            .subtitle(
-                "Ten nodes over 20-59 C, interpolated to the 40 values the kernel accepts. \
-                 Editing changes nothing until Apply is activated.",
-            )
-            .render()
-            .child(self.select(
-                "curve-channel",
-                "Channel",
-                channel_options,
-                match channel {
-                    Channel::Pump => "pump".to_string(),
-                    Channel::Fan => "fan".to_string(),
-                },
-                ControlState::Enabled,
-                SCREEN_TAB_BASE + 12,
-                cx,
-                |shell, value, _| {
-                    shell.cooling.channel = match value {
-                        "fan" => Channel::Fan,
-                        _ => Channel::Pump,
-                    };
-                },
-            ))
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .gap(space::SM)
+            .children(refusal.map(|reason| {
+                div()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(reason)
+            }))
             .child(
                 CurveEditor::new(nodes)
                     .selected(node)
                     .state(state.clone())
-                    .tab_index(SCREEN_TAB_BASE + 13)
+                    .tab_index(tab_index)
                     .bounds_sink(Rc::clone(&self.curve_bounds))
+                    .liquid(liquid_c)
                     .render()
+                    // The pointer part of the drag is not handled here. It is
+                    // handled by the window, for the reason the brightness
+                    // slider already is: a drag routinely leaves the control
+                    // that started it, and a plot that only hears its own
+                    // hitbox both stutters at the edge and never sees the
+                    // release, which leaves the node stuck to the cursor.
                     .when(editable, |plot| {
-                        plot.on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |shell, event: &gpui::MouseDownEvent, _, cx| {
-                                shell.curve_dragging = true;
-                                shell.edit_node_at(event.position, cx);
-                            }),
-                        )
-                        .on_mouse_move(cx.listener(
-                            move |shell, event: &gpui::MouseMoveEvent, _, cx| {
-                                if shell.curve_dragging {
-                                    shell.edit_node_at(event.position, cx);
-                                }
-                            },
-                        ))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |shell, _: &gpui::MouseUpEvent, _, _| {
-                                shell.curve_dragging = false;
-                            }),
-                        )
-                        .on_key_down(cx.listener(
+                        plot.on_key_down(cx.listener(
                             move |shell, event: &gpui::KeyDownEvent, _, cx| {
+                                let mut edited = false;
                                 let handled = match event.keystroke.key.as_str() {
                                     "left" => {
                                         shell.cooling.step_node(-1);
@@ -1054,16 +1329,20 @@ impl Shell {
                                         true
                                     }
                                     "up" => {
-                                        shell.cooling.adjust_node(1);
+                                        shell.cooling.adjust_node(channel, 1);
+                                        edited = true;
                                         true
                                     }
                                     "down" => {
-                                        shell.cooling.adjust_node(-1);
+                                        shell.cooling.adjust_node(channel, -1);
+                                        edited = true;
                                         true
                                     }
                                     _ => false,
                                 };
-                                if handled {
+                                if edited {
+                                    shell.schedule_autosave(cx);
+                                } else if handled {
                                     cx.notify();
                                 }
                             },
@@ -1071,84 +1350,143 @@ impl Shell {
                     })
                     .into_any_element(),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(space::SM)
-                    .child(
-                        div()
-                            .flex_none()
-                            .font(numeric())
-                            .text_color(color::TEXT.hsla())
-                            .child(format!(
-                                "Node {}/{} at {:.0} C: {}/{MAX_DUTY} ({:.0}%)",
-                                node + 1,
-                                CURVE_NODE_COUNT,
-                                CurveNodes::temperature_at(node),
-                                nodes.duty[node],
-                                nodes.duty[node] as f32 / MAX_DUTY as f32 * 100.0
-                            )),
-                    )
-                    .child(
-                        Button::new("curve-node-previous", "Previous node")
-                            .state(state.clone())
-                            .tab_index(SCREEN_TAB_BASE + 14)
-                            .render()
-                            .on_click(cx.listener(|shell, _, _, cx| {
-                                shell.cooling.step_node(-1);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("curve-node-next", "Next node")
-                            .state(state.clone())
-                            .tab_index(SCREEN_TAB_BASE + 15)
-                            .render()
-                            .on_click(cx.listener(|shell, _, _, cx| {
-                                shell.cooling.step_node(1);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("curve-duty-down", "−")
-                            .state(state.clone())
-                            .tab_index(SCREEN_TAB_BASE + 16)
-                            .render()
-                            .on_click(cx.listener(|shell, _, _, cx| {
-                                shell.cooling.adjust_node(-1);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("curve-duty-up", "+")
-                            .state(state)
-                            .tab_index(SCREEN_TAB_BASE + 17)
-                            .render()
-                            .on_click(cx.listener(|shell, _, _, cx| {
-                                shell.cooling.adjust_node(1);
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(div().text_sm().text_color(color::TEXT_MUTED.hsla()).child(
-                "Arrow keys move the selection and the duty once the plot has focus. \
-                         The firmware runs both channels at 100% at or above 60 C, and this \
-                         application never overrides it.",
-            ))
     }
 
-    /// Move the selected node to a pointer position.
-    fn edit_node_at(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+    /// The channel whose plot a pointer press would edit, if any.
+    ///
+    /// Deliberately strict. The plot's rectangle is published during paint and
+    /// keeps its last value afterwards, so the open row and the current screen
+    /// are checked too: without them a press at the same coordinates on another
+    /// screen would edit a curve nobody is looking at.
+    fn curve_under(&self, position: gpui::Point<Pixels>) -> Option<Channel> {
+        if self.destination != Destination::Cooling {
+            return None;
+        }
+        let channel = self.cooling.expanded?;
+        if !self
+            .link
+            .cooling_state(KRAKEN_BASE, channel.curve_capability(), self.now_unix_ms)
+            .is_enabled()
+        {
+            return None;
+        }
+        let bounds = self.curve_bounds.get();
+        if bounds.size.width <= px(0.0) {
+            return None;
+        }
+        // The plot is inset inside the frame that carries the two axes. A press
+        // on a label is not an edit, so it is ignored rather than clamped onto
+        // the nearest node.
+        bounds
+            .dilate(px(6.0))
+            .contains(&position)
+            .then_some(channel)
+    }
+
+    /// Grab the node nearest a pointer press and start a drag on it.
+    fn grab_node_at(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(channel) = self.curve_under(position) else {
+            return;
+        };
+        let (node, duty) = node_at(self.curve_bounds.get(), position);
+        let drag = CurveDrag {
+            channel,
+            node,
+            base: *self.cooling.curve(channel),
+        };
+        self.curve_drag = Some(drag);
+        self.cooling.select_node(node);
+        self.cooling.set_node_from(channel, drag.base, node, duty);
+        self.touch_cooling();
+        cx.notify();
+    }
+
+    /// Move the grabbed node to a pointer position.
+    ///
+    /// Only the height is read. The node is the one the press grabbed, so a
+    /// gesture that wanders sideways keeps editing the point the operator
+    /// aimed at instead of dragging a furrow across the plot. The pointer is
+    /// not bounds-checked either: a drag that leaves the plot keeps pinning the
+    /// edge it left by, which is what makes 0% and 100% reachable without
+    /// landing exactly on the border.
+    fn drag_node_to(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(drag) = self.curve_drag else {
+            return;
+        };
         let bounds = self.curve_bounds.get();
         if bounds.size.width <= px(0.0) {
             return;
         }
-        let (index, duty) = node_at(bounds, position);
-        self.cooling.select_node(index);
-        self.cooling.set_node(index, duty);
+        let (_, duty) = node_at(bounds, position);
+        let before = *self.cooling.curve(drag.channel);
+        self.cooling
+            .set_node_from(drag.channel, drag.base, drag.node, duty);
+        // A pointer reports far more moves than a 255-step scale has values,
+        // and a horizontal drag reports moves that change nothing at all.
+        // Repainting the window for those is what makes the gesture feel heavy.
+        if *self.cooling.curve(drag.channel) != before {
+            self.touch_cooling();
+            cx.notify();
+        }
+    }
+
+    /// Note that the cooling edit changed, without scheduling anything.
+    ///
+    /// Used by the moves inside a drag: they arrive by the dozen and only the
+    /// one the operator stops on is worth writing, so they push the deadline
+    /// out and let the release schedule the save.
+    fn touch_cooling(&mut self) {
+        self.autosave_at = Some(Instant::now() + AUTOSAVE_QUIET);
+    }
+
+    /// Note the change and arrange for it to be written once things go quiet.
+    ///
+    /// Every edit spawns its own timer and every timer runs
+    /// [`Shell::flush_autosave`], which does nothing unless the deadline it
+    /// finds has passed. A later edit pushes that deadline out, so the earlier
+    /// timers fire into nothing and the last one does the work. No task has to
+    /// be cancelled and no edit can be lost by cancelling the wrong one.
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        self.touch_cooling();
         cx.notify();
+        cx.spawn(async move |shell, cx| {
+            cx.background_executor().timer(AUTOSAVE_QUIET).await;
+            let _ = shell.update(cx, |shell, cx| shell.flush_autosave(cx));
+        })
+        .detach();
+    }
+
+    /// Write the pending edit, if it has been still long enough.
+    ///
+    /// The quiet period is not cosmetic. The daemon refuses a program that
+    /// arrives within `MIN_PROGRAM_INTERVAL_MS` of the last write, because the
+    /// firmware discards changes that come too fast. A screen that wrote on
+    /// every pointer move would have most of its writes refused, and the value
+    /// the operator actually stopped on could be one of them.
+    fn flush_autosave(&mut self, cx: &mut Context<Self>) {
+        let Some(deadline) = self.autosave_at else {
+            return;
+        };
+        // A later edit moved the deadline; that edit's own timer will do this.
+        if Instant::now() < deadline || self.curve_drag.is_some() {
+            return;
+        }
+        // One write in flight at a time. Two overlapping Applies would let the
+        // first outcome be recorded against the second program, which is how
+        // the screen would come to claim a curve the hardware refused. The
+        // deadline is deliberately left standing: the next refresh runs this
+        // again, and by then the outcome has landed.
+        if self.sent.is_some() {
+            return;
+        }
+        self.autosave_at = None;
+
+        // Nothing to write, or nothing the daemon would accept. A refusal is
+        // already on screen in both cases, so this stays silent.
+        if !self.cooling.pending(self.kraken()) || self.cooling.validation_error().is_some() {
+            return;
+        }
+        self.apply(cx);
     }
 
     /// Send the pending program, remembering it until its outcome arrives.
@@ -1175,32 +1513,58 @@ impl Shell {
     }
 
     /// The result of the last command, as a note under the buttons.
+    ///
+    /// Only when something went wrong. A confirmed Apply already tells the
+    /// operator everything it has to: the button reads `Applied`, the readings
+    /// move, and the pending state clears. Restating that in a banner after
+    /// every press is noise that trains the eye to skip the banner, which is
+    /// the one place a refusal or an unconfirmed write has to be noticed.
     fn outcome_note(&self) -> Option<Div> {
         let outcome = self.outcome.as_ref()?;
         let level = match outcome.severity {
-            OutcomeSeverity::Confirmed => NoteLevel::Info,
+            OutcomeSeverity::Confirmed => return None,
             OutcomeSeverity::Unconfirmed => NoteLevel::Critical,
             OutcomeSeverity::Refused => NoteLevel::Warning,
         };
         Some(Note::new(level, outcome.message.clone()).render())
     }
 
+    /// The Lighting screen: one card per device, one row per addressable thing.
+    ///
+    /// The panel used to be a destination of its own, which put the two things
+    /// an operator changes about the same machine's appearance two clicks
+    /// apart. They are one screen now: the controller card lists its channels,
+    /// the Kraken card carries its panel, and each row opens the controls that
+    /// belong to it alone.
     fn lighting(&self, cx: &mut Context<Self>) -> Div {
+        let channels: Vec<u8> = self
+            .link
+            .lighting_channels()
+            .iter()
+            .map(|state| state.channel)
+            .collect();
+
+        screen(
+            "Lighting",
+            "What each device shows: the controller's channels, and the panel on the Kraken.",
+        )
+        .child(self.controller_card(&channels, cx))
+        .child(self.panel_card(channels.len(), cx))
+        .children(self.outcome_note())
+    }
+
+    /// The controller and one row per channel it reported.
+    fn controller_card(&self, channels: &[u8], cx: &mut Context<Self>) -> Div {
         let fixed = self
             .link
             .control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor);
-        let effects = self
-            .link
-            .control_state(RGB_CONTROLLER, CapabilityId::RgbEffects);
-        let channels = self.link.lighting_channels();
-
-        let screen = screen("Lighting", "Per-channel color on the validated controller.");
+        let card = self.device_card(RGB_CONTROLLER, "RGB controller");
 
         // No channel means the controller has not told this daemon what it is.
         // The reason the capability record carries is the whole content of the
-        // screen: there is nothing to control and nothing to pretend about.
-        let Some(editor) = self.lighting.selected().filter(|_| !channels.is_empty()) else {
-            return screen.child(
+        // card: there is nothing to control and nothing to pretend about.
+        if channels.is_empty() {
+            return card.child(
                 Note::new(
                     NoteLevel::Warning,
                     fixed
@@ -1212,16 +1576,229 @@ impl Shell {
                 )
                 .render(),
             );
+        }
+
+        // A `map` closure would have to hold the mutable context borrow across
+        // calls, which the 2024 edition's capture rules reject.
+        let mut rows = Vec::with_capacity(channels.len());
+        for (index, channel) in channels.iter().enumerate() {
+            rows.push(self.channel_row_lighting(*channel, index, cx));
+        }
+        card.children(rows)
+    }
+
+    /// The Kraken and the row its panel occupies.
+    fn panel_card(&self, channel_count: usize, cx: &mut Context<Self>) -> Div {
+        self.device_card(KRAKEN_BASE, "Kraken")
+            .child(self.lcd_row(lcd_row_tab(channel_count), cx))
+    }
+
+    /// The card one device gets: what it is, what state it is in, and its rows.
+    ///
+    /// The name is the product string the device itself reported, not one this
+    /// client invented, and the second line is the firmware and kernel binding
+    /// the Devices panel already shows for it.
+    fn device_card(&self, device: DeviceId, fallback_name: &str) -> Div {
+        let summary = self
+            .link
+            .device_rows()
+            .into_iter()
+            .find(|summary| summary.id == device);
+        let name = summary
+            .as_ref()
+            .map(|summary| summary.name.clone())
+            .unwrap_or_else(|| fallback_name.to_string());
+        let health = summary
+            .as_ref()
+            .map(|summary| summary.health)
+            .unwrap_or(DeviceHealth::Unavailable);
+        let detail = summary
+            .as_ref()
+            .map(DeviceSummary::detail)
+            .unwrap_or_else(|| format!("{device} has not been detected."));
+
+        panel_surface().child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(space::MD)
+                .w_full()
+                .min_w_0()
+                .pb(space::SM)
+                .border_b_1()
+                .border_color(color::SEPARATOR.hsla())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_color(color::TEXT.hsla())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(color::TEXT_MUTED.hsla())
+                                .child(detail),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(space::XS)
+                        .text_sm()
+                        .text_color(health.color())
+                        .child(icon(health.icon(), ICON_SIZE, health.color()))
+                        .child(health.label()),
+                ),
+        )
+    }
+
+    /// One lighting channel as a single line, with its controls one press away.
+    ///
+    /// Collapsed, the line still carries the two controls an operator reaches
+    /// for most: how bright the channel is and what it is doing. Opening it
+    /// reveals the color and the effect parameters for that channel alone.
+    fn channel_row_lighting(&self, channel: u8, index: usize, cx: &mut Context<Self>) -> Div {
+        let base = lighting_row_tab(index);
+        let Some(editor) = self.lighting.channel(channel) else {
+            return div();
         };
 
-        let reported = channels
-            .iter()
-            .find(|state| state.channel == editor.channel);
+        let fixed = self
+            .link
+            .control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor);
+        let effects = self
+            .link
+            .control_state(RGB_CONTROLLER, CapabilityId::RgbEffects);
         let write = if matches!(editor.mode, LightingMode::Effect(_)) {
             effects.clone()
         } else {
             fixed.clone()
         };
+
+        // Short enough to stay on one line beside the controls. What the
+        // controller reported about the channel's contents is a sentence, and
+        // it belongs in the open detail rather than on the line.
+        let activity = match self.link.committed_lighting(channel) {
+            Some(program) => program.summary(),
+            None => "nothing sent yet".to_string(),
+        };
+        // What is plugged in leads, because that is what the operator is
+        // looking at inside the case. The channel number stays on the line
+        // under it, since that is what the write is addressed to.
+        let (title, subtitle) = match self
+            .link
+            .lighting_channels()
+            .iter()
+            .find(|state| state.channel == channel)
+            .filter(|state| !state.accessories.is_empty())
+        {
+            Some(state) => (
+                channel_headline(state),
+                format!("Channel {channel} \u{b7} {activity}"),
+            ),
+            None => (format!("Channel {channel}"), activity),
+        };
+
+        // The thumbnail is what the channel is pending, so a color chosen and
+        // not yet applied is visible on the collapsed line rather than only in
+        // the open one. An unusable entry paints nothing instead of a value it
+        // never held.
+        let swatch = editor
+            .mode
+            .uses_color()
+            .then(|| crate::components::parse_hex_color(&editor.color).ok())
+            .flatten();
+        let open = self.lighting_open == Some(LightingRow::Channel(channel));
+        let brightness = editor.brightness;
+        let mode_value = editor.mode.value();
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_end()
+                    .gap(space::MD)
+                    .w_full()
+                    .min_w_0()
+                    .py(space::XS)
+                    .child(self.row_disclosure(
+                        LightingRow::Channel(channel),
+                        base,
+                        row_thumbnail(swatch, false),
+                        title,
+                        subtitle,
+                        cx,
+                    ))
+                    .child(self.brightness_slider(
+                        LightingRow::Channel(channel),
+                        brightness,
+                        write.clone(),
+                        base + ROW_OFFSET_BRIGHTNESS,
+                        cx,
+                    ))
+                    .child(
+                        div().flex_none().w(ROW_MODE_WIDTH).child(
+                            self.select(
+                                format!("lighting-mode-{channel}"),
+                                "Mode",
+                                LightingMode::all(effects.is_enabled())
+                                    .into_iter()
+                                    .map(|mode| SelectOption::new(mode.value(), mode.label()))
+                                    .collect(),
+                                mode_value,
+                                write.clone(),
+                                base + ROW_OFFSET_MODE,
+                                cx,
+                                move |shell, value, _| {
+                                    if let Some(mode) = LightingMode::from_value(value)
+                                        && let Some(editor) = shell.lighting.channel_mut(channel)
+                                    {
+                                        editor.mode = mode;
+                                    }
+                                },
+                            ),
+                        ),
+                    ),
+            )
+            .when(open, |this| {
+                this.child(self.channel_detail_lighting(channel, base, write, fixed, cx))
+            })
+    }
+
+    /// What an open channel row reveals: its color, its effect parameters, and
+    /// the two actions that reach the hardware.
+    fn channel_detail_lighting(
+        &self,
+        channel: u8,
+        base: isize,
+        write: ControlState,
+        fixed: ControlState,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let Some(editor) = self.lighting.channel(channel) else {
+            return div();
+        };
+        let reported = self
+            .link
+            .lighting_channels()
+            .iter()
+            .find(|state| state.channel == channel);
+
         // Apply is gated on the pending program being buildable as well as on
         // the capability: an unusable color must disable it with its own
         // reason, not with the capability's.
@@ -1230,173 +1807,129 @@ impl Shell {
             (state, _) => state,
         };
 
-        screen
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .gap(space::MD)
+            .pb(space::MD)
+            .pl(px(22.0))
             .child(
-                Panel::new("Channels")
-                    .subtitle("Each channel is addressed on its own.")
-                    .render()
-                    .child(
-                        self.select(
-                            "lighting-channel",
-                            "Channel",
-                            channels
-                                .iter()
-                                .map(|state| {
-                                    SelectOption::new(
-                                        state.channel.to_string(),
-                                        channel_label(state),
-                                    )
-                                })
-                                .collect(),
-                            editor.channel.to_string(),
-                            ControlState::Enabled,
-                            LIGHTING_TAB_CHANNEL,
-                            cx,
-                            |shell, value, _| {
-                                if let Ok(channel) = value.parse() {
-                                    shell.lighting.select(channel);
-                                }
-                            },
-                        ),
-                    )
-                    .child(setting_row_owned(
-                        "Detected".to_string(),
+                div()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(format!(
+                        "Detected: {}",
                         reported
                             .map(accessory_summary)
-                            .unwrap_or_else(|| "not reported".to_string()),
-                    ))
-                    .child(setting_row_owned(
-                        "Confirmed".to_string(),
-                        match self.link.committed_lighting(editor.channel) {
-                            Some(program) => program.summary(),
-                            None => "nothing has been sent to this channel".to_string(),
-                        },
+                            .unwrap_or_else(|| "not reported".to_string())
                     )),
             )
             .child(
-                Panel::new(format!("Channel {}", editor.channel))
-                    .subtitle(
-                        "The controller reports no state to read back, so what is shown here is \
-                         what this service last sent.",
-                    )
-                    .render()
-                    .child(
-                        self.select(
-                            "lighting-mode",
-                            "Mode",
-                            LightingMode::all(effects.is_enabled())
-                                .into_iter()
-                                .map(|mode| SelectOption::new(mode.value(), mode.label()))
-                                .collect(),
-                            editor.mode.value(),
-                            write.clone(),
-                            LIGHTING_TAB_MODE,
-                            cx,
-                            |shell, value, _| {
-                                if let Some(mode) = LightingMode::from_value(value)
-                                    && let Some(channel) = shell.lighting.selected_mut()
-                                {
-                                    channel.mode = mode;
-                                }
-                            },
-                        ),
-                    )
-                    .when(editor.mode.uses_color(), |panel| {
-                        panel.child(self.lighting_color_field(editor, LIGHTING_TAB_COLOR, cx))
-                    })
-                    .when(editor.mode.uses_brightness(), |panel| {
-                        panel.child(self.brightness_row(
-                            editor.brightness,
-                            write.clone(),
-                            LIGHTING_TAB_BRIGHTNESS,
-                            cx,
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(space::MD)
+                    .w_full()
+                    .min_w_0()
+                    .when(editor.mode.uses_color(), |this| {
+                        this.child(div().flex_none().w(FIELD_WIDTH).child(
+                            self.lighting_color_field(editor, base + CHANNEL_OFFSET_COLOR, cx),
                         ))
                     })
-                    .when(editor.mode.uses_speed(), |panel| {
-                        panel.child(
-                            self.select(
-                                "lighting-speed",
-                                "Speed",
-                                EffectSpeed::ALL
-                                    .into_iter()
-                                    .map(|speed| SelectOption::new(speed.key(), speed.label()))
-                                    .collect(),
-                                editor.speed.key().to_string(),
-                                write.clone(),
-                                LIGHTING_TAB_SPEED,
-                                cx,
-                                |shell, value, _| {
-                                    if let Some(speed) = EffectSpeed::from_key(value)
-                                        && let Some(channel) = shell.lighting.selected_mut()
-                                    {
-                                        channel.speed = speed;
-                                    }
-                                },
-                            ),
-                        )
-                    })
-                    .when(editor.mode.uses_direction(), |panel| {
-                        panel.child(
-                            self.select(
-                                "lighting-direction",
-                                "Direction",
-                                EffectDirection::ALL
-                                    .into_iter()
-                                    .map(|direction| {
-                                        SelectOption::new(direction.key(), direction.label())
-                                    })
-                                    .collect(),
-                                editor.direction.key().to_string(),
-                                write.clone(),
-                                LIGHTING_TAB_DIRECTION,
-                                cx,
-                                |shell, value, _| {
-                                    if let Some(direction) = EffectDirection::from_key(value)
-                                        && let Some(channel) = shell.lighting.selected_mut()
-                                    {
-                                        channel.direction = direction;
-                                    }
-                                },
-                            ),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .gap(space::SM)
-                            .child(
-                                Button::new("lighting-apply", "Apply")
-                                    .variant(ButtonVariant::Primary)
-                                    .state(apply)
-                                    .tab_index(LIGHTING_TAB_APPLY)
-                                    .render()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.popover = None;
-                                        this.apply_lighting(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("lighting-off", "Turn off")
-                                    .state(fixed.clone())
-                                    .tab_index(LIGHTING_TAB_OFF)
-                                    .render()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.popover = None;
-                                        // The mode changes, so the color the
-                                        // operator chose is still there to come
-                                        // back to.
-                                        if let Some(channel) = this.lighting.selected_mut() {
-                                            channel.mode = LightingMode::Off;
+                    .when(editor.mode.uses_speed(), |this| {
+                        this.child(
+                            div().flex_none().w(FIELD_WIDTH).child(
+                                self.select(
+                                    format!("lighting-speed-{channel}"),
+                                    "Speed",
+                                    EffectSpeed::ALL
+                                        .into_iter()
+                                        .map(|speed| SelectOption::new(speed.key(), speed.label()))
+                                        .collect(),
+                                    editor.speed.key().to_string(),
+                                    write.clone(),
+                                    base + CHANNEL_OFFSET_SPEED,
+                                    cx,
+                                    move |shell, value, _| {
+                                        if let Some(speed) = EffectSpeed::from_key(value)
+                                            && let Some(editor) =
+                                                shell.lighting.channel_mut(channel)
+                                        {
+                                            editor.speed = speed;
                                         }
-                                        this.apply_lighting(cx);
-                                    })),
+                                    },
+                                ),
                             ),
+                        )
+                    })
+                    .when(editor.mode.uses_direction(), |this| {
+                        this.child(
+                            div().flex_none().w(FIELD_WIDTH).child(
+                                self.select(
+                                    format!("lighting-direction-{channel}"),
+                                    "Direction",
+                                    EffectDirection::ALL
+                                        .into_iter()
+                                        .map(|direction| {
+                                            SelectOption::new(direction.key(), direction.label())
+                                        })
+                                        .collect(),
+                                    editor.direction.key().to_string(),
+                                    write.clone(),
+                                    base + CHANNEL_OFFSET_DIRECTION,
+                                    cx,
+                                    move |shell, value, _| {
+                                        if let Some(direction) = EffectDirection::from_key(value)
+                                            && let Some(editor) =
+                                                shell.lighting.channel_mut(channel)
+                                        {
+                                            editor.direction = direction;
+                                        }
+                                    },
+                                ),
+                            ),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(space::SM)
+                    .child(
+                        Button::new(format!("lighting-apply-{channel}"), "Apply")
+                            .variant(ButtonVariant::Primary)
+                            .state(apply)
+                            .tab_index(base + CHANNEL_OFFSET_APPLY)
+                            .render()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.popover = None;
+                                this.lighting.select(channel);
+                                this.apply_lighting(cx);
+                            })),
                     )
-                    .children(self.outcome_note()),
+                    .child(
+                        Button::new(format!("lighting-off-{channel}"), "Turn off")
+                            .state(fixed)
+                            .tab_index(base + CHANNEL_OFFSET_OFF)
+                            .render()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.popover = None;
+                                // The mode changes, so the color the operator
+                                // chose is still there to come back to.
+                                if let Some(editor) = this.lighting.channel_mut(channel) {
+                                    editor.mode = LightingMode::Off;
+                                }
+                                this.lighting.select(channel);
+                                this.apply_lighting(cx);
+                            })),
+                    ),
             )
     }
 
-    fn lcd(&self, cx: &mut Context<Self>) -> Div {
+    /// The panel as a single line, with its editor one press away.
+    fn lcd_row(&self, base: isize, cx: &mut Context<Self>) -> Div {
         let frame = self.link.control_state(KRAKEN_BASE, CapabilityId::LcdFrame);
         let editor = self.lcd.editor().clone();
         let panel = self
@@ -1406,6 +1939,97 @@ impl Shell {
         let confirmed = panel.is_some();
         let panel = panel.unwrap_or_else(crate::preview::assumed_panel);
 
+        let subtitle = match self
+            .link
+            .status()
+            .and_then(|status| status.display.committed.clone())
+        {
+            Some(preset) => format!(
+                "{} at {}, {}%",
+                preset.mode.label(),
+                preset.orientation.label(),
+                preset.brightness.percent()
+            ),
+            None if confirmed => {
+                format!("{}x{} panel, nothing sent yet", panel.width, panel.height)
+            }
+            None => "no panel has answered".to_string(),
+        };
+
+        let open = self.lighting_open == Some(LightingRow::Lcd);
+        let background = crate::components::parse_hex_color(
+            self.lcd.editor().color_text(DisplayColorField::Background),
+        )
+        .ok();
+        let brightness = editor.brightness;
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_end()
+                    .gap(space::MD)
+                    .w_full()
+                    .min_w_0()
+                    .py(space::XS)
+                    .child(self.row_disclosure(
+                        LightingRow::Lcd,
+                        base,
+                        row_thumbnail(background, true),
+                        "LCD display".to_string(),
+                        subtitle,
+                        cx,
+                    ))
+                    .child(self.brightness_slider(
+                        LightingRow::Lcd,
+                        brightness,
+                        ControlState::Enabled,
+                        base + ROW_OFFSET_BRIGHTNESS,
+                        cx,
+                    ))
+                    .child(
+                        div().flex_none().w(ROW_MODE_WIDTH).child(
+                            self.select(
+                                "lcd-mode",
+                                "Display mode",
+                                SCREEN_MODES
+                                    .into_iter()
+                                    .map(|mode| SelectOption::new(mode.key(), mode.label()))
+                                    .collect(),
+                                editor.mode.key().to_string(),
+                                ControlState::Enabled,
+                                base + ROW_OFFSET_MODE,
+                                cx,
+                                |shell, value, _| {
+                                    if let Some(mode) = DisplayMode::from_key(value) {
+                                        shell.lcd.edit(|editor| editor.mode = mode);
+                                    }
+                                },
+                            ),
+                        ),
+                    ),
+            )
+            .when(open, |this| {
+                this.child(self.lcd_detail(base, &editor, &panel, confirmed, frame, cx))
+            })
+    }
+
+    /// What the open panel row reveals: the fields on the left, the frame the
+    /// daemon would send on the right.
+    fn lcd_detail(
+        &self,
+        base: isize,
+        editor: &DisplayEditor,
+        panel: &nzxt_core::capability::LcdPanel,
+        confirmed: bool,
+        frame: ControlState,
+        cx: &mut Context<Self>,
+    ) -> Div {
         // The preview ages with telemetry exactly as the panel does, from the
         // same samples the daemon renders against.
         let samples = match self.link.telemetry() {
@@ -1419,138 +2043,305 @@ impl Shell {
         // Apply is refused for two separate reasons, and they are reported
         // separately: a preset that cannot be built names its own field, and a
         // panel that may not be written names the missing evidence.
-        let pending = editor.preset();
-        let apply = match (&pending, &frame) {
+        let apply = match (editor.preset(), &frame) {
             (Err(error), _) => ControlState::Disabled {
                 reason: error.to_string(),
             },
             _ => frame.clone(),
         };
 
-        let committed = self
-            .link
-            .status()
-            .and_then(|status| status.display.committed.clone());
-
-        screen("LCD", "Layout and colors for the Kraken display.").child(
-            div()
-                .flex()
-                .gap(space::LG)
-                .child(
-                    Panel::new("Editor")
-                        .render()
-                        .flex_1()
-                        .child(
-                            self.select(
-                                "lcd-mode",
-                                "Display mode",
-                                SCREEN_MODES
-                                    .into_iter()
-                                    .map(|mode| SelectOption::new(mode.key(), mode.label()))
-                                    .collect(),
-                                editor.mode.key().to_string(),
-                                ControlState::Enabled,
-                                LCD_TAB_MODE,
-                                cx,
-                                |shell, value, _| {
-                                    if let Some(mode) = DisplayMode::from_key(value) {
-                                        shell.lcd.edit(|editor| editor.mode = mode);
-                                    }
-                                },
-                            ),
-                        )
-                        // One metric select per reading slot. The infographic
-                        // draws two, so it configures two.
-                        .when(editor.mode.uses_readings(), |this| {
-                            this.child(self.metric_select(0, LCD_TAB_METRIC_ONE, cx))
-                                .child(self.metric_select(1, LCD_TAB_METRIC_TWO, cx))
-                        })
-                        // A color the current mode never draws is absent, not
-                        // disabled: a control that cannot change the picture
-                        // still says the picture has that part.
-                        .children(
-                            DisplayColorField::ALL
-                                .into_iter()
-                                .enumerate()
-                                .filter(|(_, field)| field.is_used_by(editor.mode))
-                                .map(|(index, field)| {
-                                    self.color_field(field, LCD_TAB_COLOR_BASE + index as isize, cx)
-                                }),
-                        )
-                        .child(self.lcd_brightness(&editor, cx))
-                        .child(
+        div()
+            .flex()
+            .flex_wrap()
+            .items_start()
+            .gap(space::LG)
+            .w_full()
+            .min_w_0()
+            .pb(space::MD)
+            .pl(px(22.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(space::MD)
+                    // One metric select per reading slot. The infographic draws
+                    // two, so it configures two.
+                    .when(editor.mode.uses_readings(), |this| {
+                        this.child(
                             div()
                                 .flex()
-                                .gap(space::SM)
-                                .child(
-                                    Button::new(
-                                        "lcd-rotate",
-                                        format!("Rotate display ({})", editor.orientation.label()),
-                                    )
-                                    .tab_index(LCD_TAB_ROTATE)
-                                    .render()
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            // Acting on the editor dismisses any
-                                            // open popover, so a swatch list never
-                                            // hides the result.
-                                            this.popover = None;
-                                            this.lcd.edit(DisplayEditor::rotate);
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    Button::new("lcd-apply", "Apply")
-                                        .variant(ButtonVariant::Primary)
-                                        .state(apply)
-                                        .tab_index(LCD_TAB_APPLY)
-                                        .render()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.popover = None;
-                                            if let Ok(preset) = this.lcd.preset() {
-                                                this.feed.send(Command::ApplyDisplay(preset));
-                                            }
-                                            cx.notify();
-                                        })),
-                                ),
+                                .flex_wrap()
+                                .gap(space::MD)
+                                .child(div().flex_none().w(FIELD_WIDTH).child(self.metric_select(
+                                    0,
+                                    base + LCD_OFFSET_METRIC_ONE,
+                                    cx,
+                                )))
+                                .child(div().flex_none().w(FIELD_WIDTH).child(self.metric_select(
+                                    1,
+                                    base + LCD_OFFSET_METRIC_TWO,
+                                    cx,
+                                ))),
                         )
-                        .children(committed.map(|preset| {
-                            div()
-                                .text_xs()
-                                .text_color(color::TEXT_MUTED.hsla())
-                                .child(format!(
-                                    "Confirmed on the panel: {} at {}, {}% brightness.",
-                                    preset.mode.label(),
-                                    preset.orientation.label(),
-                                    preset.brightness.percent()
-                                ))
-                        }))
-                        .children(frame.message().map(|reason| {
-                            div()
-                                .text_xs()
-                                .text_color(color::WARNING.hsla())
-                                .child(reason.to_string())
-                        })),
-                )
-                .child(
-                    Panel::new("Preview")
-                        .subtitle(format!("Rotation {}", editor.orientation.label()))
-                        .render()
-                        // Fixed rather than sized to content: the caption under
-                        // the preview is a sentence, and letting it set the
-                        // column width squeezed the editor until its buttons
-                        // were clipped at 920 logical pixels.
-                        .flex_none()
-                        .w(PREVIEW_COLUMN_WIDTH)
-                        .child(crate::preview::panel_preview(
-                            self.lcd.preview(),
-                            &samples,
-                            &panel,
-                            confirmed,
-                        )),
-                ),
+                    })
+                    .child(
+                        // Two columns, held by the container's own width rather
+                        // than by whatever the window leaves: the fields come in
+                        // pairs, and a third column would split a pair across
+                        // two rows.
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(space::MD)
+                            .max_w(COLOR_GRID_WIDTH)
+                            // A color the current mode never draws is absent,
+                            // not disabled: a control that cannot change the
+                            // picture still says the picture has that part.
+                            .children(
+                                DisplayColorField::ALL
+                                    .into_iter()
+                                    .enumerate()
+                                    .filter(|(_, field)| field.is_used_by(editor.mode))
+                                    .map(|(index, field)| {
+                                        div().flex_none().w(FIELD_WIDTH).child(self.color_field(
+                                            field,
+                                            base + LCD_OFFSET_COLOR_BASE + index as isize,
+                                            cx,
+                                        ))
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(space::SM)
+                            .child(
+                                Button::new(
+                                    "lcd-rotate",
+                                    format!("Rotate display ({})", editor.orientation.label()),
+                                )
+                                .tab_index(base + LCD_OFFSET_ROTATE)
+                                .render()
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        // Acting on the editor dismisses any open
+                                        // popover, so a swatch list never hides the
+                                        // result.
+                                        this.popover = None;
+                                        this.lcd.edit(DisplayEditor::rotate);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new("lcd-apply", "Apply")
+                                    .variant(ButtonVariant::Primary)
+                                    .state(apply)
+                                    .tab_index(base + LCD_OFFSET_APPLY)
+                                    .render()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.popover = None;
+                                        if let Ok(preset) = this.lcd.preset() {
+                                            this.feed.send(Command::ApplyDisplay(preset));
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .children(frame.message().map(|reason| {
+                        div()
+                            .text_xs()
+                            .text_color(color::WARNING.hsla())
+                            .child(reason.to_string())
+                    })),
+            )
+            .child(
+                // Fixed rather than sized to content: the caption under the
+                // preview is a sentence, and letting it set the column width
+                // squeezed the fields until their buttons were clipped at 920
+                // logical pixels.
+                div()
+                    .flex_none()
+                    .w(PREVIEW_COLUMN_WIDTH)
+                    .child(crate::preview::panel_preview(
+                        self.lcd.preview(),
+                        &samples,
+                        panel,
+                        confirmed,
+                    )),
+            )
+    }
+
+    /// The head of a device row: chevron, thumbnail and two lines of text, as
+    /// one target that opens the row.
+    ///
+    /// Only this part of the line toggles. The brightness and mode controls sit
+    /// beside it rather than inside it, so operating one of them cannot also
+    /// collapse the row it belongs to.
+    fn row_disclosure(
+        &self,
+        row: LightingRow,
+        tab_index: isize,
+        thumbnail: Div,
+        title: String,
+        subtitle: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let open = self.lighting_open == Some(row);
+        let id = match row {
+            LightingRow::Channel(channel) => format!("lighting-row-{channel}"),
+            LightingRow::Lcd => "lighting-row-lcd".to_string(),
+        };
+
+        div()
+            .id(SharedString::from(id))
+            .flex()
+            .flex_1()
+            .items_center()
+            .gap(space::SM)
+            .min_w(ROW_HEAD_MIN_WIDTH)
+            .min_h(TARGET_MIN)
+            .px(space::SM)
+            .rounded(RADIUS)
+            // The ring is reserved rather than added on focus, so focusing a
+            // row does not move the line it sits on.
+            .border(FOCUS_RING)
+            .border_color(color::PANEL.alpha(0.0))
+            .cursor_pointer()
+            .tab_index(tab_index)
+            .tab_stop(true)
+            .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
+            // Shown to a keyboard user, who has no other way to know which row
+            // Enter would open, and withheld from a pointer user, who just
+            // aimed at it.
+            .when(focus_visible(), |this| {
+                this.focus(|this| this.border_color(color::FOCUS.hsla()))
+            })
+            .child(chevron(open, color::TEXT_MUTED.hsla()))
+            .child(thumbnail)
+            .child(
+                // Truncated rather than wrapped: a long product string is what
+                // the device reported, and letting it wrap makes the line grow
+                // until it no longer reads as one row per device.
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(color::TEXT.hsla())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .text_color(color::TEXT_MUTED.hsla())
+                            .child(subtitle),
+                    ),
+            )
+            .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_lighting_row(row, cx)))
+    }
+
+    /// The brightness a row carries on its line, as a slider the pointer drags.
+    ///
+    /// A real slider rather than a pair of buttons: the track publishes the
+    /// rectangle it was painted at, the press captures that rectangle, and
+    /// every later move is converted against it. Capturing it is what lets a
+    /// drag leave the slider and keep working, and what keeps a second row's
+    /// slider from answering for the one under the cursor.
+    ///
+    /// The keyboard reaches the same values: Left and Right move one step,
+    /// Home and End go to the ends. A control that only a pointer can operate
+    /// would fail the screen's keyboard-only gate.
+    fn brightness_slider(
+        &self,
+        row: LightingRow,
+        value: u8,
+        state: ControlState,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let enabled = state.is_enabled();
+        let max = f32::from(nzxt_core::lighting::MAX_BRIGHTNESS);
+        // Created per render and captured by this render's listeners, so the
+        // rectangle a press reads is the one the track was just painted at.
+        // Only an operable track is published, so a press cannot grab a slider
+        // the hardware has refused.
+        let sink: Option<Rc<dyn Fn(Bounds<Pixels>)>> = enabled.then(|| {
+            let tracks = Rc::clone(&self.tracks);
+            Rc::new(move |bounds| tracks.record(row, bounds)) as Rc<dyn Fn(Bounds<Pixels>)>
+        });
+
+        let mut slider = Slider::new(
+            SharedString::from(format!("brightness-{}", row.key())),
+            "Brightness",
+            f32::from(value),
         )
+        .range(0.0, max)
+        .unit("%")
+        .icons(Icon::SunLow, Icon::SunHigh)
+        .state(state)
+        .tab_index(tab_index);
+        if let Some(sink) = sink {
+            slider = slider.bounds_sink(sink);
+        }
+
+        let control = slider.render().when(enabled, |slider| {
+            slider.on_key_down(
+                cx.listener(move |shell, event: &gpui::KeyDownEvent, _, cx| {
+                    let step = i16::from(crate::lighting::BRIGHTNESS_STEP);
+                    let next = match event.keystroke.key.as_str() {
+                        "left" | "down" => i16::from(value) - step,
+                        "right" | "up" => i16::from(value) + step,
+                        "home" => 0,
+                        "end" => i16::from(nzxt_core::lighting::MAX_BRIGHTNESS),
+                        _ => return,
+                    };
+                    shell.popover = None;
+                    shell.set_brightness(row, next);
+                    cx.notify();
+                }),
+            )
+        });
+
+        div().flex_none().w(ROW_BRIGHTNESS_WIDTH).child(control)
+    }
+
+    /// Move the dragged row's brightness to a pointer position.
+    fn drag_brightness(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(drag) = self.brightness_drag else {
+            return;
+        };
+        if drag.track.size.width <= px(0.0) {
+            return;
+        }
+        let max = f32::from(nzxt_core::lighting::MAX_BRIGHTNESS);
+        let value = Slider::value_at(drag.track, position, 0.0, max);
+        self.set_brightness(drag.row, value.round() as i16);
+        cx.notify();
+    }
+
+    /// Set one row's pending brightness, clamped to what the daemon accepts.
+    ///
+    /// Takes a signed value so a keyboard step past either end arrives here to
+    /// be clamped rather than wrapping around in the caller.
+    fn set_brightness(&mut self, row: LightingRow, percent: i16) {
+        let percent = percent.clamp(0, i16::from(nzxt_core::lighting::MAX_BRIGHTNESS)) as u8;
+        match row {
+            LightingRow::Channel(channel) => {
+                if let Some(editor) = self.lighting.channel_mut(channel) {
+                    editor.set_brightness(percent);
+                }
+            }
+            LightingRow::Lcd => self.lcd.edit(|editor| editor.set_brightness(percent)),
+        }
     }
 
     /// The metric select for one reading slot.
@@ -1578,57 +2369,6 @@ impl Shell {
                 }
             },
         )
-    }
-
-    /// The panel brightness stepper.
-    ///
-    /// A stepper rather than a slider, for the reason the Lighting screen
-    /// already found: this codebase's slider paints a value and receives no
-    /// input, so it would look enabled and do nothing.
-    fn lcd_brightness(&self, editor: &DisplayEditor, cx: &mut Context<Self>) -> Div {
-        let step = |shell: &mut Self, steps: i16| {
-            shell.popover = None;
-            shell.lcd.edit(|editor| editor.adjust_brightness(steps));
-        };
-
-        div()
-            .flex()
-            .items_center()
-            .gap(space::SM)
-            .child(
-                div()
-                    .flex_none()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child("Brightness"),
-            )
-            .child(
-                Button::new("lcd-brightness-down", "\u{2212}")
-                    .tab_index(LCD_TAB_BRIGHTNESS)
-                    .render()
-                    .on_click(cx.listener(move |shell, _, _, cx| {
-                        step(shell, -1);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .font(numeric())
-                    .flex_none()
-                    .min_w(px(72.0))
-                    .text_align(gpui::TextAlign::Center)
-                    .text_color(color::TEXT.hsla())
-                    .child(format!("{}%", editor.brightness)),
-            )
-            .child(
-                Button::new("lcd-brightness-up", "+")
-                    .tab_index(LCD_TAB_BRIGHTNESS + 1)
-                    .render()
-                    .on_click(cx.listener(move |shell, _, _, cx| {
-                        step(shell, 1);
-                        cx.notify();
-                    })),
-            )
     }
 
     fn settings(&self) -> Div {
@@ -1704,8 +2444,8 @@ impl Shell {
     #[allow(clippy::too_many_arguments)]
     fn select(
         &self,
-        id: &'static str,
-        label: &'static str,
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
         options: Vec<SelectOption>,
         selected: String,
         state: ControlState,
@@ -1713,29 +2453,25 @@ impl Shell {
         cx: &mut Context<Self>,
         on_select: impl Fn(&mut Self, &str, &mut Context<Self>) + 'static,
     ) -> Div {
+        // The identifier is owned rather than borrowed: a screen with one
+        // select per channel has to name them apart, and the number of channels
+        // is whatever the controller reported.
+        let id: SharedString = id.into();
         // GPUI has no disabled semantics of its own: a handler left attached
         // still fires. Withholding it is what makes the refusal real rather
         // than a matter of styling.
         let enabled = state.is_enabled();
-        let open = enabled
-            && self.popover
-                == Some(Popover::Options {
-                    select: SharedString::from(id),
-                });
-        let control = Select::new(id, label)
+        let open = enabled && self.popover == Some(Popover::Options { select: id.clone() });
+        let control = Select::new(id.clone(), label)
             .options(options.clone())
             .selected(selected)
             .state(state)
             .tab_index(tab_index)
             .render()
             .when(enabled, |this| {
+                let id = id.clone();
                 this.on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_popover(
-                        Popover::Options {
-                            select: SharedString::from(id),
-                        },
-                        cx,
-                    )
+                    this.toggle_popover(Popover::Options { select: id.clone() }, cx)
                 }))
             });
 
@@ -1763,7 +2499,11 @@ impl Shell {
                             .cursor_pointer()
                             .text_color(color::TEXT.hsla())
                             .hover(|this| this.bg(color::ACCENT.alpha(0.25)))
-                            .focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
+                            .when(focus_visible(), |this| {
+                                this.focus(|this| {
+                                    this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
+                                })
+                            })
                             .child(option.label)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 on_select(this, &value, cx);
@@ -1790,80 +2530,6 @@ impl Shell {
                 .send(Command::ApplyLighting(LightingCommand { channel, program }));
         }
         cx.notify();
-    }
-
-    /// Brightness as a stepper, matching the Cooling screen's fixed duty.
-    ///
-    /// Not a slider. `Slider` in this codebase paints a value and receives no
-    /// input, so rendering one here would put an enabled-looking control on
-    /// screen that quietly does nothing. Two buttons and a readout are operable
-    /// by pointer and by keyboard alike.
-    fn brightness_row(
-        &self,
-        brightness: u8,
-        state: ControlState,
-        tab_index: isize,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let step = |shell: &mut Self, steps: i16| {
-            if let Some(channel) = shell.lighting.selected_mut() {
-                channel.adjust_brightness(steps);
-            }
-        };
-
-        div()
-            .flex()
-            .items_center()
-            .gap(space::SM)
-            .child(
-                div()
-                    .flex_none()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child("Brightness"),
-            )
-            .child(
-                Button::new("lighting-brightness-down", "\u{2212}")
-                    .state(state.clone())
-                    .tab_index(tab_index)
-                    .render()
-                    .on_click(cx.listener(move |shell, _, _, cx| {
-                        shell.popover = None;
-                        step(shell, -1);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .font(numeric())
-                    .flex_none()
-                    .min_w(px(72.0))
-                    .text_align(gpui::TextAlign::Center)
-                    .text_color(color::TEXT.hsla())
-                    .child(format!("{brightness}%")),
-            )
-            .child(
-                Button::new("lighting-brightness-up", "+")
-                    .state(state)
-                    .tab_index(tab_index + 1)
-                    .render()
-                    .on_click(cx.listener(move |shell, _, _, cx| {
-                        shell.popover = None;
-                        step(shell, 1);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child(format!(
-                        "Accepted range 0-{}",
-                        nzxt_core::lighting::MAX_BRIGHTNESS
-                    )),
-            )
     }
 
     /// One channel's color field plus its swatch popover.
@@ -1903,7 +2569,11 @@ impl Shell {
                             .border_color(color::SEPARATOR.hsla())
                             .bg(swatch.hsla())
                             .hover(|this| this.border_color(color::FOCUS.hsla()))
-                            .focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
+                            .when(focus_visible(), |this| {
+                                this.focus(|this| {
+                                    this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
+                                })
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(editor) = this.lighting.channel_mut(channel) {
                                     editor.color = format!("{:06X}", swatch.0);
@@ -1958,7 +2628,11 @@ impl Shell {
                             .border_color(color::SEPARATOR.hsla())
                             .bg(swatch.hsla())
                             .hover(|this| this.border_color(color::FOCUS.hsla()))
-                            .focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
+                            .when(focus_visible(), |this| {
+                                this.focus(|this| {
+                                    this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
+                                })
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.lcd.edit(|editor| {
                                     editor.set_color_text(field, format!("{:06X}", swatch.0))
@@ -1980,18 +2654,82 @@ impl Focusable for Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Each frame republishes the tracks it paints. Clearing here is what
+        // keeps a row that has gone away, or a screen that no longer shows one,
+        // from leaving a rectangle behind that a press could still grab.
+        self.tracks.clear();
+
         let content = match self.destination {
             Destination::Monitoring => self.monitoring(),
             Destination::Cooling => self.cooling(cx),
             Destination::Lighting => self.lighting(cx),
-            Destination::Lcd => self.lcd(cx),
             Destination::Settings => self.settings(),
         };
 
-        div()
+        let title_bar = window_chrome::title_bar(window, &self.window_drag);
+        // The bar is laid over the top of the window, so everything under it
+        // starts below the strip it occupies. The card and the work surface
+        // already begin one gap down, which is that much less to reserve.
+        let reserved_top = window_chrome::title_bar_height(window) - CARD_INSET;
+
+        let shell = div()
             .id("shell")
             .track_focus(&self.focus)
+            // Any press anywhere in the window means focus is about to move by
+            // pointer, so the ring is dropped before the control under the
+            // cursor renders with it. Capture phase, so it runs ahead of that
+            // control's own handler rather than after it. Enter and Space reach
+            // a control through the click listeners without a mouse event, so
+            // keyboard activation leaves the ring alone.
+            .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if focus_visible() {
+                    set_focus_visible(false);
+                    cx.notify();
+                }
+                // A press on a brightness track starts a drag. It is
+                // decided here, from where the tracks were painted, rather
+                // than by a listener on the slider: an event that has to
+                // reach a control nested under its own interactive state
+                // never arrived, and the capture phase on the window is the
+                // one place it always does.
+                if event.button == MouseButton::Left
+                    && let Some((row, track)) = this.tracks.at(event.position)
+                {
+                    this.popover = None;
+                    this.brightness_drag = Some(BrightnessDrag { row, track });
+                    this.drag_brightness(event.position, cx);
+                }
+                // A press on the curve plot starts a node drag, decided from
+                // the same place and for the same reason.
+                if event.button == MouseButton::Left {
+                    this.grab_node_at(event.position, cx);
+                }
+            }))
+            // A brightness drag is tracked by the window rather than by the
+            // slider: the pointer routinely leaves a 200-pixel control while
+            // still holding it, and a drag that stopped at the edge would leave
+            // the value wherever the cursor crossed it.
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if this.brightness_drag.is_some() {
+                    this.drag_brightness(event.position, cx);
+                }
+                this.drag_node_to(event.position, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                    this.brightness_drag = None;
+                    // Releasing ends the gesture wherever the pointer is. A
+                    // release the plot never heard is what used to leave a node
+                    // following the cursor with no button held.
+                    if this.curve_drag.take().is_some() {
+                        // The gesture is over, so the value it stopped on is
+                        // the one worth writing.
+                        this.schedule_autosave(cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::on_focus_next))
             .on_action(cx.listener(Self::on_focus_previous))
             .on_action(cx.listener(Self::on_close_popover))
@@ -2002,16 +2740,18 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &GoLighting, _, cx| this.go(Destination::Lighting, cx)),
             )
-            .on_action(cx.listener(|this, _: &GoLcd, _, cx| this.go(Destination::Lcd, cx)))
             .on_action(
                 cx.listener(|this, _: &GoSettings, _, cx| this.go(Destination::Settings, cx)),
             )
             .size_full()
             .flex()
-            .bg(color::SURFACE.hsla())
+            // The gap and the padding are what make the rail read as a card
+            // laid on the window rather than as a column cut out of it.
+            .gap(CARD_INSET)
+            .p(CARD_INSET)
             .text_color(color::TEXT.hsla())
             .text_sm()
-            .child(self.rail(cx))
+            .child(self.rail(reserved_top, cx))
             .child(
                 div()
                     .id("work-surface")
@@ -2020,14 +2760,35 @@ impl Render for Shell {
                     // exceed the window width instead of wrapping.
                     .min_w_0()
                     .h_full()
+                    // No fill: the window's own surface is the ground the
+                    // panels and the rail card sit on.
                     .overflow_y_scroll()
-                    .p(space::LG)
+                    // One gap of its own on top of the row's, so a screen keeps
+                    // a little more air than the rail card takes.
+                    .px(space::SM)
+                    .pb(space::SM)
+                    .pt(reserved_top)
                     .flex()
                     .flex_col()
                     .gap(space::LG)
                     .children(self.banner())
                     .child(content),
-            )
+            );
+
+        // The chrome color fills the window, so the transparent title bar, the
+        // work surface and all four corners read as one ground. The bar is laid
+        // over the shell rather than stacked above it: that is what puts the
+        // caption buttons inside the rail card while every pixel across the top
+        // of the window stays a place to drag it from.
+        window_chrome::window_shell(
+            div()
+                .relative()
+                .size_full()
+                .child(shell)
+                .child(div().absolute().top_0().left_0().w_full().child(title_bar)),
+            window,
+            color::RAIL.hsla(),
+        )
     }
 }
 
@@ -2052,6 +2813,25 @@ fn screen(title: &'static str, subtitle: &'static str) -> Div {
                     .child(subtitle),
             ),
     )
+}
+
+/// The appearance thumbnail at the head of a device row.
+///
+/// `None` is a color the row cannot show: a channel that is off, or an entry
+/// the operator has not finished typing. It paints the empty surface rather
+/// than a black swatch, because black is also a color a channel can be set to.
+fn row_thumbnail(color_value: Option<Color>, round: bool) -> Div {
+    div()
+        .flex_none()
+        .w(ROW_THUMBNAIL)
+        .h(ROW_THUMBNAIL)
+        .rounded(if round { ROW_THUMBNAIL / 2.0 } else { RADIUS })
+        .border_1()
+        .border_color(color::SEPARATOR.hsla())
+        .bg(match color_value {
+            Some(value) => value.hsla(),
+            None => color::SURFACE.hsla(),
+        })
 }
 
 /// A row of metric tiles that wraps rather than scrolling sideways.
@@ -2116,36 +2896,6 @@ fn duty_view(view: &MetricView<u8>) -> MetricView<f32> {
     }
 }
 
-/// The channel's control mode, in words.
-fn mode_readback(view: &MetricView<PwmMode>) -> Div {
-    let (label, muted) = match view {
-        MetricView::Fresh { value } => (value.label().to_string(), false),
-        MetricView::Stale { value, .. } => (format!("{} (stale)", value.label()), false),
-        MetricView::Unavailable { .. } => ("Mode N/A".to_string(), true),
-    };
-
-    div()
-        .flex()
-        .flex_none()
-        .items_baseline()
-        .gap(space::XS)
-        .child(
-            div()
-                .text_sm()
-                .text_color(color::TEXT_MUTED.hsla())
-                .child("Mode"),
-        )
-        .child(
-            div()
-                .text_color(if muted {
-                    color::TEXT_DISABLED.hsla()
-                } else {
-                    color::TEXT.hsla()
-                })
-                .child(label),
-        )
-}
-
 /// One sentence for a safety alert, ready to render.
 pub fn alert_message(alert: &SafetyAlert) -> String {
     alert.message()
@@ -2186,12 +2936,15 @@ pub fn next_deletion(active: Option<&str>, armed: bool) -> (bool, Option<Command
     }
 }
 
-/// A channel's entry in the selector: its number and what is plugged into it.
-pub fn channel_label(state: &ChannelState) -> String {
+/// What a channel row leads with: what the controller says is plugged in.
+///
+/// The channel number is not repeated here. It sits on the line below, where a
+/// row that has nothing plugged in carries it as the heading instead.
+pub fn channel_headline(state: &ChannelState) -> String {
     match state.accessories.len() {
         0 => format!("Channel {}", state.channel),
-        1 => format!("Channel {} ({})", state.channel, state.accessories[0]),
-        count => format!("Channel {} ({count} accessories)", state.channel),
+        1 => state.accessories[0].clone(),
+        count => format!("{count} accessories"),
     }
 }
 
@@ -2275,38 +3028,127 @@ mod tests {
     #[test]
     fn a_channel_names_what_the_controller_detected_and_never_an_led_count() {
         let one = channel_state(1, &["HUE 2 LED Strip 300 mm"]);
-        assert_eq!(channel_label(&one), "Channel 1 (HUE 2 LED Strip 300 mm)");
+        assert_eq!(channel_headline(&one), "HUE 2 LED Strip 300 mm");
         let summary = accessory_summary(&one);
         assert!(summary.contains("HUE 2 LED Strip 300 mm"), "{summary}");
         assert!(summary.contains("not reported"), "{summary}");
 
         let many = channel_state(2, &["AER RGB 2 120 mm", "AER RGB 2 140 mm"]);
-        assert_eq!(channel_label(&many), "Channel 2 (2 accessories)");
+        assert_eq!(channel_headline(&many), "2 accessories");
 
+        // Nothing plugged in leaves the channel number as the heading, so a row
+        // is never nameless.
         let empty = channel_state(3, &[]);
-        assert_eq!(channel_label(&empty), "Channel 3");
+        assert_eq!(channel_headline(&empty), "Channel 3");
         assert_eq!(
             accessory_summary(&empty),
             "nothing detected on this channel"
         );
     }
 
+    /// Every stop one channel row emits, in the order it draws them.
+    ///
+    /// Collected as the screen emits them rather than written as a range: a
+    /// stop counted by hand lands on a control that already exists the first
+    /// time one of them renders more than a single element.
+    fn channel_row_stops(base: isize) -> Vec<isize> {
+        vec![
+            base,
+            base + ROW_OFFSET_BRIGHTNESS,
+            base + ROW_OFFSET_MODE,
+            base + CHANNEL_OFFSET_COLOR,
+            base + CHANNEL_OFFSET_SPEED,
+            base + CHANNEL_OFFSET_DIRECTION,
+            base + CHANNEL_OFFSET_APPLY,
+            base + CHANNEL_OFFSET_OFF,
+        ]
+    }
+
+    /// Every stop the panel row emits, in the order it draws them.
+    fn lcd_row_stops(base: isize) -> Vec<isize> {
+        let mut stops = vec![
+            base,
+            base + ROW_OFFSET_BRIGHTNESS,
+            base + ROW_OFFSET_MODE,
+            base + LCD_OFFSET_METRIC_ONE,
+            base + LCD_OFFSET_METRIC_TWO,
+        ];
+        stops.extend(
+            (0..DisplayColorField::ALL.len() as isize)
+                .map(|index| base + LCD_OFFSET_COLOR_BASE + index),
+        );
+        stops.extend([base + LCD_OFFSET_ROTATE, base + LCD_OFFSET_APPLY]);
+        stops
+    }
+
     #[test]
-    fn every_lighting_control_has_its_own_tab_stop_inside_the_screen_range() {
-        // The stops the screen actually passes, in traversal order. The
-        // brightness stepper renders two buttons from one constant, so its
-        // second stop is listed here as the screen emits it: a successor
-        // counted by hand instead lands on a control that already exists.
+    fn every_lighting_control_keeps_traversal_order_equal_to_visual_order() {
+        // However many channels the controller reports, each row's block has to
+        // clear the row above it and the panel's block has to clear them all:
+        // an open row's controls sit above the next line, so a shared range
+        // would make Tab jump past a row and come back to it.
+        for channel_count in 0..4usize {
+            let mut stops = Vec::new();
+            for index in 0..channel_count {
+                stops.extend(channel_row_stops(lighting_row_tab(index)));
+            }
+            stops.extend(lcd_row_stops(lcd_row_tab(channel_count)));
+
+            let sorted = {
+                let mut copy = stops.clone();
+                copy.sort();
+                copy.dedup();
+                copy
+            };
+            assert_eq!(
+                stops, sorted,
+                "with {channel_count} channels two controls share a stop, or run out of order"
+            );
+            assert!(
+                stops
+                    .iter()
+                    .all(|stop| *stop >= SCREEN_TAB_BASE
+                        && *stop > Destination::Settings.tab_index()),
+                "screen controls come after every rail entry"
+            );
+        }
+    }
+
+    #[test]
+    fn a_channel_block_never_reaches_the_row_below_it() {
+        let widest = channel_row_stops(lighting_row_tab(0))
+            .into_iter()
+            .max()
+            .expect("a channel row emits stops");
+        assert!(
+            widest < lighting_row_tab(1),
+            "the widest channel detail must stay inside its own block"
+        );
+    }
+
+    #[test]
+    fn every_cooling_control_keeps_traversal_order_equal_to_visual_order() {
+        // The stops the screen emits, in the order they are drawn, with the
+        // Pump row open. Its detail sits between the two rows, so a shared
+        // detail range would make Tab jump past the Fan row and back.
+        let pump = cooling_row_tab(Channel::Pump);
+        let fan = cooling_row_tab(Channel::Fan);
         let indices = [
-            LIGHTING_TAB_CHANNEL,
-            LIGHTING_TAB_MODE,
-            LIGHTING_TAB_COLOR,
-            LIGHTING_TAB_BRIGHTNESS,
-            LIGHTING_TAB_BRIGHTNESS + 1,
-            LIGHTING_TAB_SPEED,
-            LIGHTING_TAB_DIRECTION,
-            LIGHTING_TAB_APPLY,
-            LIGHTING_TAB_OFF,
+            COOLING_TAB_MODE,
+            COOLING_TAB_PROFILE,
+            pump,
+            // The widest detail, which is the Fixed mode: the stepper's two
+            // buttons, then the curve plot. The plot carries its own editing
+            // through the arrow keys, so it is one stop rather than a row of
+            // buttons, and the stops stay reserved whichever mode the row is
+            // in so a mode change never renumbers the row below it.
+            pump + 1,
+            pump + 2,
+            pump + 3,
+            fan,
+            COOLING_TAB_REVERT,
+            COOLING_TAB_SAVE,
+            COOLING_TAB_DELETE,
         ];
 
         let mut sorted = indices.to_vec();
@@ -2315,22 +3157,29 @@ mod tests {
         assert_eq!(
             indices.to_vec(),
             sorted,
-            "no two lighting controls share a tab stop, and they run in order"
+            "no two cooling controls share a stop, and they run in visual order"
         );
         assert!(
-            indices
-                .iter()
-                .all(|index| *index > Destination::Settings.tab_index()),
+            indices.iter().all(
+                |index| *index >= SCREEN_TAB_BASE && *index > Destination::Settings.tab_index()
+            ),
             "screen controls come after every rail entry"
+        );
+        assert!(
+            fan + COOLING_ROW_STRIDE - 1 < COOLING_TAB_REVERT,
+            "the last row's detail must not reach the action buttons"
         );
     }
 
     #[test]
-    fn the_shell_exposes_four_primary_destinations_and_one_secondary() {
-        assert_eq!(Destination::PRIMARY.len(), 4);
+    fn the_shell_exposes_three_primary_destinations_and_one_secondary() {
+        // The panel is not one of them. It is a device's appearance, so it is a
+        // row on Lighting rather than a destination that would put the two
+        // halves of the same question two clicks apart.
+        assert_eq!(Destination::PRIMARY.len(), 3);
         assert_eq!(
             Destination::PRIMARY.map(Destination::label),
-            ["Monitoring", "Cooling", "Lighting", "LCD"]
+            ["Monitoring", "Cooling", "Lighting"]
         );
         assert!(!Destination::PRIMARY.contains(&Destination::Settings));
     }
@@ -2350,18 +3199,29 @@ mod tests {
         assert_eq!(indices, sorted, "rail order must match visual order");
 
         indices.dedup();
-        assert_eq!(indices.len(), 5, "every entry needs its own tab stop");
+        assert_eq!(indices.len(), 4, "every entry needs its own tab stop");
         assert!(indices.iter().all(|index| *index < SCREEN_TAB_BASE));
     }
 
     #[test]
-    fn every_destination_has_a_label_and_a_glyph() {
+    fn every_destination_has_a_label_and_its_own_icon() {
+        let mut icons = Vec::new();
         for destination in Destination::PRIMARY
             .into_iter()
             .chain([Destination::Settings])
         {
             assert!(!destination.label().is_empty());
-            assert!(!destination.glyph().is_empty());
+            icons.push(destination.icon());
+        }
+        // An entry identified by a shared icon is identified by its label
+        // alone, which is what the rail's icons exist to avoid. Compared
+        // pairwise rather than sorted: an icon is a name, and giving it an
+        // order would invent a ranking the interface never uses.
+        for (index, icon) in icons.iter().enumerate() {
+            assert!(
+                !icons[index + 1..].contains(icon),
+                "two rail entries share {icon:?}"
+            );
         }
     }
 
@@ -2410,30 +3270,97 @@ mod tests {
     }
 
     #[test]
-    fn every_lcd_control_has_its_own_tab_stop_inside_the_screen_range() {
-        // The brightness stepper renders two buttons from one constant, so its
-        // successor has to clear both. The values the screen actually passes
-        // are collected here rather than a hand-written range.
-        let mut stops = vec![LCD_TAB_MODE, LCD_TAB_METRIC_ONE, LCD_TAB_METRIC_TWO];
-        stops.extend(
-            (0..DisplayColorField::ALL.len() as isize).map(|index| LCD_TAB_COLOR_BASE + index),
-        );
-        stops.extend([
-            LCD_TAB_BRIGHTNESS,
-            LCD_TAB_BRIGHTNESS + 1,
-            LCD_TAB_ROTATE,
-            LCD_TAB_APPLY,
-        ]);
+    fn the_panel_row_follows_whatever_the_controller_reported() {
+        // The panel's block is derived from the channel count rather than from
+        // a fixed ceiling, so a controller answering with more channels than
+        // expected pushes the panel down instead of colliding with it.
+        for channel_count in 0..8usize {
+            let base = lcd_row_tab(channel_count);
+            let last_channel_stop = channel_count
+                .checked_sub(1)
+                .and_then(|index| channel_row_stops(lighting_row_tab(index)).into_iter().max());
+            if let Some(last) = last_channel_stop {
+                assert!(last < base, "the panel row overlaps the last channel row");
+            }
+            assert!(lcd_row_stops(base).iter().all(|stop| *stop >= base));
+        }
+    }
 
-        let mut unique = stops.clone();
-        unique.sort();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            stops.len(),
-            "two controls share a stop: {stops:?}"
+    fn track(row: LightingRow, x: f32, y: f32) -> (LightingRow, Bounds<Pixels>) {
+        (
+            row,
+            Bounds {
+                origin: Point { x: px(x), y: px(y) },
+                size: gpui::size(px(110.0), px(22.0)),
+            },
+        )
+    }
+
+    #[test]
+    fn a_press_finds_the_track_it_landed_on_and_no_other() {
+        // Three rows' sliders sit in one column, 87 pixels apart, which is what
+        // the screen lays out. Picking the wrong one would move a channel the
+        // operator never touched.
+        let tracks = TrackMap::default();
+        for (row, bounds) in [
+            track(LightingRow::Channel(1), 576.0, 210.0),
+            track(LightingRow::Channel(2), 576.0, 297.0),
+            track(LightingRow::Lcd, 576.0, 573.0),
+        ] {
+            tracks.record(row, bounds);
+        }
+
+        let at = |x: f32, y: f32| tracks.at(Point { x: px(x), y: px(y) }).map(|(row, _)| row);
+
+        assert_eq!(at(600.0, 220.0), Some(LightingRow::Channel(1)));
+        assert_eq!(at(600.0, 305.0), Some(LightingRow::Channel(2)));
+        assert_eq!(at(680.0, 580.0), Some(LightingRow::Lcd));
+        // Between two rows, and left of the column: a press there is not a
+        // press on a slider, and must not move one.
+        assert_eq!(at(600.0, 260.0), None);
+        assert_eq!(at(400.0, 220.0), None);
+
+        // A few pixels off the track still counts: the rail is four pixels
+        // tall inside a taller control, and aiming at it exactly is not what
+        // the operator is doing.
+        assert_eq!(at(600.0, 206.0), Some(LightingRow::Channel(1)));
+        assert_eq!(at(572.0, 220.0), Some(LightingRow::Channel(1)));
+    }
+
+    #[test]
+    fn a_row_that_went_away_takes_its_track_with_it() {
+        let tracks = TrackMap::default();
+        let (row, bounds) = track(LightingRow::Channel(1), 576.0, 210.0);
+        tracks.record(row, bounds);
+        let inside = Point {
+            x: px(600.0),
+            y: px(220.0),
+        };
+        assert!(tracks.at(inside).is_some());
+
+        // Re-recording moves the rectangle rather than adding a second one, so
+        // a row cannot accumulate stale hit areas as the screen scrolls.
+        let (_, moved) = track(LightingRow::Channel(1), 576.0, 400.0);
+        tracks.record(row, moved);
+        assert_eq!(tracks.at(inside), None);
+        assert!(
+            tracks
+                .at(Point {
+                    x: px(600.0),
+                    y: px(410.0)
+                })
+                .is_some()
         );
-        assert!(stops.iter().all(|stop| *stop >= SCREEN_TAB_BASE));
+
+        // And a frame that draws no slider leaves nothing to grab.
+        tracks.clear();
+        assert_eq!(
+            tracks.at(Point {
+                x: px(600.0),
+                y: px(410.0)
+            }),
+            None
+        );
     }
 
     #[test]

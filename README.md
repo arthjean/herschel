@@ -124,12 +124,11 @@ cargo test --workspace
 
 ## v1 scope
 
-The application holds four primary destinations:
+The application holds three primary destinations:
 
 1. Monitoring
 2. Cooling
-3. Lighting
-4. LCD
+3. Lighting, one card per device: the controller's channels and the Kraken panel
 
 Explicitly out of scope: Web Integrations, cloud, accounts, firmware updates, remote API, unvalidated NZXT devices and non-NZXT hardware control.
 

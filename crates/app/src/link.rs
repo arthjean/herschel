@@ -20,6 +20,7 @@ use nzxt_core::telemetry::{
 };
 
 use crate::components::{ControlState, DeviceHealth};
+use crate::theme::META_SEPARATOR;
 
 /// What the client knows about the daemon right now.
 ///
@@ -375,12 +376,16 @@ pub struct DeviceSummary {
 
 impl DeviceSummary {
     /// The secondary line: firmware and kernel binding, or their absence.
+    ///
+    /// Two fragments joined by the metadata separator rather than one sentence.
+    /// The sentence form read as "bound to no kernel driver" whenever nothing
+    /// was bound, which states the opposite of what it means.
     pub fn detail(&self) -> String {
-        let firmware = self
-            .firmware
-            .clone()
-            .unwrap_or_else(|| "firmware unknown".to_string());
-        format!("Firmware {firmware}, bound to {}", self.driver)
+        let firmware = match &self.firmware {
+            Some(firmware) => format!("Firmware {firmware}"),
+            None => "Firmware unknown".to_string(),
+        };
+        format!("{firmware} {META_SEPARATOR} {}", self.driver)
     }
 }
 
@@ -987,12 +992,21 @@ mod tests {
             driver: "kraken2023".into(),
             health: DeviceHealth::ReadOnly,
         };
-        assert_eq!(summary.detail(), "Firmware 0200, bound to kraken2023");
+        assert_eq!(summary.detail(), "Firmware 0200 \u{00b7} kraken2023");
 
         let unknown = DeviceSummary {
             firmware: None,
             ..summary
         };
-        assert!(unknown.detail().contains("firmware unknown"));
+        assert_eq!(unknown.detail(), "Firmware unknown \u{00b7} kraken2023");
+
+        let unbound = DeviceSummary {
+            driver: "no kernel driver".into(),
+            ..unknown
+        };
+        assert_eq!(
+            unbound.detail(),
+            "Firmware unknown \u{00b7} no kernel driver"
+        );
     }
 }

@@ -171,6 +171,14 @@ impl ChannelEditor {
         let next = self.brightness as i16 + steps * BRIGHTNESS_STEP as i16;
         self.brightness = next.clamp(0, nzxt_core::lighting::MAX_BRIGHTNESS as i16) as u8;
     }
+
+    /// Set the brightness outright, staying inside the same range.
+    ///
+    /// This is what a slider needs: a drag names a value rather than a number
+    /// of steps, and the range is enforced here so no caller has to know it.
+    pub fn set_brightness(&mut self, percent: u8) {
+        self.brightness = percent.min(nzxt_core::lighting::MAX_BRIGHTNESS);
+    }
 }
 
 /// Every channel's pending state, plus what the daemon last confirmed.
@@ -291,6 +299,19 @@ mod tests {
         assert_eq!(editor.brightness, 0);
         editor.adjust_brightness(1);
         assert_eq!(editor.brightness, BRIGHTNESS_STEP);
+        assert!(editor.program().is_ok());
+    }
+
+    #[test]
+    fn a_dragged_brightness_lands_inside_the_range_the_daemon_accepts() {
+        let mut editor = ChannelEditor::new(1);
+        editor.set_brightness(37);
+        assert_eq!(editor.brightness, 37);
+        // A slider can only produce a value it was given, but the range is
+        // enforced here rather than trusted from the caller, which is the same
+        // rule the daemon applies to this client.
+        editor.set_brightness(255);
+        assert_eq!(editor.brightness, nzxt_core::lighting::MAX_BRIGHTNESS);
         assert!(editor.program().is_ok());
     }
 

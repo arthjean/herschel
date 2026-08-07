@@ -22,3 +22,4 @@ pub mod preview;
 pub mod shell;
 pub mod startup;
 pub mod theme;
+pub mod window_chrome;

@@ -158,6 +158,14 @@ impl DisplayEditor {
         self.brightness = next.clamp(0, nzxt_core::lighting::MAX_BRIGHTNESS as i16) as u8;
     }
 
+    /// Set the brightness outright, staying inside the same range.
+    ///
+    /// The slider names a value rather than a number of steps, and the range is
+    /// enforced here so no caller has to know it.
+    pub fn set_brightness(&mut self, percent: u8) {
+        self.brightness = percent.min(nzxt_core::lighting::MAX_BRIGHTNESS);
+    }
+
     /// The preset Apply would send, or the first reason it cannot be built.
     ///
     /// Every color is parsed, including the ones the current mode does not
@@ -423,6 +431,13 @@ mod tests {
         assert_eq!(editor.brightness, 0);
         editor.adjust_brightness(1);
         assert_eq!(editor.brightness, BRIGHTNESS_STEP);
+        assert!(editor.preset().is_ok());
+
+        // The slider names a value outright, and the same range applies to it.
+        editor.set_brightness(63);
+        assert_eq!(editor.brightness, 63);
+        editor.set_brightness(200);
+        assert_eq!(editor.brightness, nzxt_core::lighting::MAX_BRIGHTNESS);
         assert!(editor.preset().is_ok());
     }
 
