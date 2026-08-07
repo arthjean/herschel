@@ -415,6 +415,7 @@ mod tests {
             interfaces: vec![],
             hwmon: None,
             rgb: None,
+            lcd: None,
             capabilities,
         }
     }
@@ -481,6 +482,12 @@ mod tests {
                 active_profile: "Onboard safe".into(),
                 config: ConfigState::Loaded,
                 lighting: Vec::new(),
+                display: nzxt_core::ipc::DisplayState {
+                    panel: None,
+                    committed: None,
+                    streaming: false,
+                    dropped_frames: 0,
+                },
                 socket_path: "/run/user/1000/nzxt-control/nzxt-control.sock".into(),
             }),
             capabilities: Arc::new(CapabilityRecord {

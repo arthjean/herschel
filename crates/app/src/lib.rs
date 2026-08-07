@@ -11,6 +11,7 @@
 
 pub mod components;
 pub mod cooling;
+pub mod display;
 pub mod feed;
 pub mod lighting;
 pub mod link;

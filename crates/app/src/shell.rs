@@ -18,6 +18,7 @@ use gpui::{
     SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
 use nzxt_core::capability::CapabilityId;
+use nzxt_core::display::{DisplayMode, LcdMetric, MetricSample};
 use nzxt_core::ipc::ChannelState;
 use nzxt_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
 use nzxt_core::profile::{
@@ -34,6 +35,7 @@ use crate::components::{
     NoteLevel, Panel, Select, SelectOption, Sparkline, node_at,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
+use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
 use crate::feed::{Command, CommandOutcome, Feed, OutcomeSeverity, now_unix_ms};
 use crate::lighting::{LightingEditor, LightingMode};
 use crate::link::LinkState;
@@ -142,42 +144,41 @@ pub const LIGHTING_TAB_DIRECTION: isize = LIGHTING_TAB_SPEED + 1;
 pub const LIGHTING_TAB_APPLY: isize = LIGHTING_TAB_DIRECTION + 1;
 pub const LIGHTING_TAB_OFF: isize = LIGHTING_TAB_APPLY + 1;
 
+/// Tab stops of the LCD screen, for the same reason the lighting ones are named.
+///
+/// The color fields keep a fixed stop per field rather than per rendered
+/// control, so a mode that hides two of them does not renumber the rest.
+pub const LCD_TAB_MODE: isize = SCREEN_TAB_BASE;
+pub const LCD_TAB_METRIC_ONE: isize = LCD_TAB_MODE + 1;
+pub const LCD_TAB_METRIC_TWO: isize = LCD_TAB_METRIC_ONE + 1;
+pub const LCD_TAB_COLOR_BASE: isize = LCD_TAB_METRIC_TWO + 1;
+/// The stepper renders two buttons from one constant, so it occupies two stops.
+pub const LCD_TAB_BRIGHTNESS: isize = LCD_TAB_COLOR_BASE + DisplayColorField::ALL.len() as isize;
+pub const LCD_TAB_ROTATE: isize = LCD_TAB_BRIGHTNESS + 2;
+pub const LCD_TAB_APPLY: isize = LCD_TAB_ROTATE + 1;
+
+/// Width of the preview column, wide enough for the panel plus its padding.
+pub const PREVIEW_COLUMN_WIDTH: Pixels = px(276.0);
+
+/// Modes the screen can configure completely.
+///
+/// [`DisplayMode::Image`] is deliberately absent. The screen has no control
+/// that can name a file, and a mode whose Apply could only ever refuse would be
+/// a control that says the feature is here and then does nothing. The renderer
+/// and the daemon support it, and a saved profile can select it; what is
+/// missing is a way to pick the file, which no criterion in US-017 asks the
+/// screen for.
+pub const SCREEN_MODES: [DisplayMode; 2] = [DisplayMode::DualInfographic, DisplayMode::Solid];
+
 /// Which popover, if any, is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Popover {
     /// A color swatch list anchored to one LCD color field.
-    Swatches { field: LcdColorField },
+    Swatches { field: DisplayColorField },
     /// A color swatch list anchored to one lighting channel.
     LightingSwatches { channel: u8 },
     /// An option list anchored to one select.
     Options { select: SharedString },
-}
-
-/// The four color controls of the LCD editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LcdColorField {
-    Reading,
-    Text,
-    Background,
-    Logo,
-}
-
-impl LcdColorField {
-    pub const ALL: [LcdColorField; 4] = [
-        LcdColorField::Reading,
-        LcdColorField::Text,
-        LcdColorField::Background,
-        LcdColorField::Logo,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Reading => "Reading color",
-            Self::Text => "Text color",
-            Self::Background => "Background",
-            Self::Logo => "Wordmark color",
-        }
-    }
 }
 
 /// Swatches offered by a color popover.
@@ -189,77 +190,6 @@ pub const SWATCHES: [Color; 6] = [
     Color::rgb(0xe8eaee),
     Color::rgb(0x14161a),
 ];
-
-/// The pending, unapplied state of the LCD editor.
-///
-/// Nothing here reaches hardware in this build: the LCD transport is
-/// unvalidated, so the editor drives the preview only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LcdEditor {
-    pub display_mode: String,
-    pub metric: String,
-    pub reading: Color,
-    pub text: Color,
-    pub background: Color,
-    pub logo: Color,
-    /// Rotation in degrees, always one of 0, 90, 180, 270.
-    pub rotation: u16,
-}
-
-impl Default for LcdEditor {
-    fn default() -> Self {
-        Self {
-            display_mode: "dual_infographic".into(),
-            metric: "cpu_gpu_temperature".into(),
-            reading: Color::rgb(0x6f4ef2),
-            text: Color::rgb(0xe8eaee),
-            background: Color::rgb(0x14161a),
-            logo: Color::rgb(0x30c8a0),
-            rotation: 0,
-        }
-    }
-}
-
-impl LcdEditor {
-    /// Advance the rotation by one validated increment.
-    pub fn rotate(&mut self) {
-        self.rotation = (self.rotation + 90) % 360;
-    }
-
-    pub fn color(&self, field: LcdColorField) -> Color {
-        match field {
-            LcdColorField::Reading => self.reading,
-            LcdColorField::Text => self.text,
-            LcdColorField::Background => self.background,
-            LcdColorField::Logo => self.logo,
-        }
-    }
-
-    pub fn set_color(&mut self, field: LcdColorField, value: Color) {
-        match field {
-            LcdColorField::Reading => self.reading = value,
-            LcdColorField::Text => self.text = value,
-            LcdColorField::Background => self.background = value,
-            LcdColorField::Logo => self.logo = value,
-        }
-    }
-
-    pub fn display_modes() -> Vec<SelectOption> {
-        vec![
-            SelectOption::new("dual_infographic", "Dual infographic"),
-            SelectOption::new("single_metric", "Single metric"),
-            SelectOption::new("solid_color", "Solid color"),
-        ]
-    }
-
-    pub fn metrics() -> Vec<SelectOption> {
-        vec![
-            SelectOption::new("cpu_gpu_temperature", "CPU and GPU temperature"),
-            SelectOption::new("liquid_temperature", "Liquid temperature"),
-            SelectOption::new("pump_speed", "Pump speed"),
-        ]
-    }
-}
 
 /// The root view.
 pub struct Shell {
@@ -281,7 +211,10 @@ pub struct Shell {
     confirm_delete: bool,
     destination: Destination,
     popover: Option<Popover>,
-    lcd: LcdEditor,
+    /// The LCD editor and the last preset that rendered, held together so an
+    /// unfinished field keeps the previous picture on screen instead of
+    /// blanking it, and so no control can move one without the other.
+    lcd: DisplayScreen,
     lighting: LightingEditor,
     /// Wall clock of the last refresh, used to age every reading.
     now_unix_ms: u64,
@@ -323,7 +256,7 @@ impl Shell {
             confirm_delete: false,
             destination: Destination::Monitoring,
             popover: None,
-            lcd: LcdEditor::default(),
+            lcd: DisplayScreen::default(),
             lighting: LightingEditor::default(),
             now_unix_ms: now_unix_ms(),
         }
@@ -1235,6 +1168,7 @@ impl Shell {
             program: self.cooling.program(),
             device: Some(KRAKEN_BASE),
             lighting: Vec::new(),
+            display: None,
         };
         self.feed.send(Command::SaveProfile(profile));
         cx.notify();
@@ -1464,7 +1398,39 @@ impl Shell {
 
     fn lcd(&self, cx: &mut Context<Self>) -> Div {
         let frame = self.link.control_state(KRAKEN_BASE, CapabilityId::LcdFrame);
-        let editor = self.lcd.clone();
+        let editor = self.lcd.editor().clone();
+        let panel = self
+            .link
+            .status()
+            .and_then(|status| status.display.panel.clone());
+        let confirmed = panel.is_some();
+        let panel = panel.unwrap_or_else(crate::preview::assumed_panel);
+
+        // The preview ages with telemetry exactly as the panel does, from the
+        // same samples the daemon renders against.
+        let samples = match self.link.telemetry() {
+            Some(snapshot) => self.lcd.preview().samples(snapshot),
+            None => [
+                MetricSample::unavailable(editor.metrics[0]),
+                MetricSample::unavailable(editor.metrics[1]),
+            ],
+        };
+
+        // Apply is refused for two separate reasons, and they are reported
+        // separately: a preset that cannot be built names its own field, and a
+        // panel that may not be written names the missing evidence.
+        let pending = editor.preset();
+        let apply = match (&pending, &frame) {
+            (Err(error), _) => ControlState::Disabled {
+                reason: error.to_string(),
+            },
+            _ => frame.clone(),
+        };
+
+        let committed = self
+            .link
+            .status()
+            .and_then(|status| status.display.committed.clone());
 
         screen("LCD", "Layout and colors for the Kraken display.").child(
             div()
@@ -1474,66 +1440,195 @@ impl Shell {
                     Panel::new("Editor")
                         .render()
                         .flex_1()
-                        .child(self.select(
-                            "lcd-mode",
-                            "Display mode",
-                            LcdEditor::display_modes(),
-                            editor.display_mode.clone(),
-                            ControlState::Enabled,
-                            SCREEN_TAB_BASE,
-                            cx,
-                            |shell, value, _| shell.lcd.display_mode = value.to_string(),
-                        ))
-                        .child(self.select(
-                            "lcd-metric",
-                            "Metric",
-                            LcdEditor::metrics(),
-                            editor.metric.clone(),
-                            ControlState::Enabled,
-                            SCREEN_TAB_BASE + 1,
-                            cx,
-                            |shell, value, _| shell.lcd.metric = value.to_string(),
-                        ))
-                        .children(LcdColorField::ALL.into_iter().enumerate().map(
-                            |(index, field)| {
-                                self.color_field(field, SCREEN_TAB_BASE + 2 + index as isize, cx)
-                            },
-                        ))
+                        .child(
+                            self.select(
+                                "lcd-mode",
+                                "Display mode",
+                                SCREEN_MODES
+                                    .into_iter()
+                                    .map(|mode| SelectOption::new(mode.key(), mode.label()))
+                                    .collect(),
+                                editor.mode.key().to_string(),
+                                ControlState::Enabled,
+                                LCD_TAB_MODE,
+                                cx,
+                                |shell, value, _| {
+                                    if let Some(mode) = DisplayMode::from_key(value) {
+                                        shell.lcd.edit(|editor| editor.mode = mode);
+                                    }
+                                },
+                            ),
+                        )
+                        // One metric select per reading slot. The infographic
+                        // draws two, so it configures two.
+                        .when(editor.mode.uses_readings(), |this| {
+                            this.child(self.metric_select(0, LCD_TAB_METRIC_ONE, cx))
+                                .child(self.metric_select(1, LCD_TAB_METRIC_TWO, cx))
+                        })
+                        // A color the current mode never draws is absent, not
+                        // disabled: a control that cannot change the picture
+                        // still says the picture has that part.
+                        .children(
+                            DisplayColorField::ALL
+                                .into_iter()
+                                .enumerate()
+                                .filter(|(_, field)| field.is_used_by(editor.mode))
+                                .map(|(index, field)| {
+                                    self.color_field(field, LCD_TAB_COLOR_BASE + index as isize, cx)
+                                }),
+                        )
+                        .child(self.lcd_brightness(&editor, cx))
                         .child(
                             div()
                                 .flex()
                                 .gap(space::SM)
                                 .child(
-                                    Button::new("lcd-rotate", "Rotate display")
-                                        .tab_index(SCREEN_TAB_BASE + 6)
-                                        .render()
-                                        .on_click(cx.listener(|this, _, _, cx| {
+                                    Button::new(
+                                        "lcd-rotate",
+                                        format!("Rotate display ({})", editor.orientation.label()),
+                                    )
+                                    .tab_index(LCD_TAB_ROTATE)
+                                    .render()
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
                                             // Acting on the editor dismisses any
-                                            // open popover, so a swatch list
-                                            // never hides the result.
+                                            // open popover, so a swatch list never
+                                            // hides the result.
                                             this.popover = None;
-                                            this.lcd.rotate();
+                                            this.lcd.edit(DisplayEditor::rotate);
                                             cx.notify();
-                                        })),
+                                        },
+                                    )),
                                 )
                                 .child(
                                     Button::new("lcd-apply", "Apply")
                                         .variant(ButtonVariant::Primary)
-                                        .state(frame)
-                                        .tab_index(SCREEN_TAB_BASE + 7)
-                                        .render(),
+                                        .state(apply)
+                                        .tab_index(LCD_TAB_APPLY)
+                                        .render()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.popover = None;
+                                            if let Ok(preset) = this.lcd.preset() {
+                                                this.feed.send(Command::ApplyDisplay(preset));
+                                            }
+                                            cx.notify();
+                                        })),
                                 ),
-                        ),
+                        )
+                        .children(committed.map(|preset| {
+                            div()
+                                .text_xs()
+                                .text_color(color::TEXT_MUTED.hsla())
+                                .child(format!(
+                                    "Confirmed on the panel: {} at {}, {}% brightness.",
+                                    preset.mode.label(),
+                                    preset.orientation.label(),
+                                    preset.brightness.percent()
+                                ))
+                        }))
+                        .children(frame.message().map(|reason| {
+                            div()
+                                .text_xs()
+                                .text_color(color::WARNING.hsla())
+                                .child(reason.to_string())
+                        })),
                 )
                 .child(
                     Panel::new("Preview")
-                        .subtitle(format!("Rotation {} degrees", editor.rotation))
+                        .subtitle(format!("Rotation {}", editor.orientation.label()))
                         .render()
+                        // Fixed rather than sized to content: the caption under
+                        // the preview is a sentence, and letting it set the
+                        // column width squeezed the editor until its buttons
+                        // were clipped at 920 logical pixels.
                         .flex_none()
-                        .w_auto()
-                        .child(crate::preview::circular_preview(editor)),
+                        .w(PREVIEW_COLUMN_WIDTH)
+                        .child(crate::preview::panel_preview(
+                            self.lcd.preview(),
+                            &samples,
+                            &panel,
+                            confirmed,
+                        )),
                 ),
         )
+    }
+
+    /// The metric select for one reading slot.
+    fn metric_select(&self, slot: usize, tab_index: isize, cx: &mut Context<Self>) -> Div {
+        let selected = self.lcd.editor().metrics[slot];
+        let (id, label) = if slot == 0 {
+            ("lcd-metric-1", "Reading 1 metric")
+        } else {
+            ("lcd-metric-2", "Reading 2 metric")
+        };
+        self.select(
+            id,
+            label,
+            LcdMetric::ALL
+                .into_iter()
+                .map(|metric| SelectOption::new(metric.key(), metric.label()))
+                .collect(),
+            selected.key().to_string(),
+            ControlState::Enabled,
+            tab_index,
+            cx,
+            move |shell, value, _| {
+                if let Some(metric) = LcdMetric::from_key(value) {
+                    shell.lcd.edit(|editor| editor.metrics[slot] = metric);
+                }
+            },
+        )
+    }
+
+    /// The panel brightness stepper.
+    ///
+    /// A stepper rather than a slider, for the reason the Lighting screen
+    /// already found: this codebase's slider paints a value and receives no
+    /// input, so it would look enabled and do nothing.
+    fn lcd_brightness(&self, editor: &DisplayEditor, cx: &mut Context<Self>) -> Div {
+        let step = |shell: &mut Self, steps: i16| {
+            shell.popover = None;
+            shell.lcd.edit(|editor| editor.adjust_brightness(steps));
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap(space::SM)
+            .child(
+                div()
+                    .flex_none()
+                    .text_sm()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child("Brightness"),
+            )
+            .child(
+                Button::new("lcd-brightness-down", "\u{2212}")
+                    .tab_index(LCD_TAB_BRIGHTNESS)
+                    .render()
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        step(shell, -1);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .font(numeric())
+                    .flex_none()
+                    .min_w(px(72.0))
+                    .text_align(gpui::TextAlign::Center)
+                    .text_color(color::TEXT.hsla())
+                    .child(format!("{}%", editor.brightness)),
+            )
+            .child(
+                Button::new("lcd-brightness-up", "+")
+                    .tab_index(LCD_TAB_BRIGHTNESS + 1)
+                    .render()
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        step(shell, 1);
+                        cx.notify();
+                    })),
+            )
     }
 
     fn settings(&self) -> Div {
@@ -1823,17 +1918,29 @@ impl Shell {
     }
 
     /// A color field plus its swatch popover.
-    fn color_field(&self, field: LcdColorField, tab_index: isize, cx: &mut Context<Self>) -> Div {
-        let value = self.lcd.color(field);
+    ///
+    /// The field shows the digits as typed, so an entry the operator has not
+    /// finished keeps its own error rather than being replaced by a value it
+    /// never held.
+    fn color_field(
+        &self,
+        field: DisplayColorField,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let open = self.popover == Some(Popover::Swatches { field });
-        let id = SharedString::from(format!("color-{}", field.label()));
+        let id = SharedString::from(format!("lcd-color-{}", field.key()));
 
-        let control = ColorField::new(id.clone(), field.label(), format!("{:06X}", value.0))
-            .tab_index(tab_index)
-            .render()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_popover(Popover::Swatches { field }, cx)
-            }));
+        let control = ColorField::new(
+            id.clone(),
+            field.label(),
+            self.lcd.editor().color_text(field),
+        )
+        .tab_index(tab_index)
+        .render()
+        .on_click(
+            cx.listener(move |this, _, _, cx| this.toggle_popover(Popover::Swatches { field }, cx)),
+        );
 
         div().relative().child(control).when(open, |this| {
             this.child(popover_surface(
@@ -1853,7 +1960,9 @@ impl Shell {
                             .hover(|this| this.border_color(color::FOCUS.hsla()))
                             .focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.lcd.set_color(field, swatch);
+                                this.lcd.edit(|editor| {
+                                    editor.set_color_text(field, format!("{:06X}", swatch.0))
+                                });
                                 this.popover = None;
                                 cx.notify();
                             }))
@@ -2257,52 +2366,74 @@ mod tests {
     }
 
     #[test]
-    fn rotation_cycles_through_the_four_validated_increments() {
-        let mut editor = LcdEditor::default();
-        assert_eq!(editor.rotation, 0);
-        for expected in [90, 180, 270, 0, 90] {
-            editor.rotate();
-            assert_eq!(editor.rotation, expected);
+    fn the_screen_offers_only_the_modes_it_can_configure_completely() {
+        // A mode whose Apply could only ever refuse is absent, not disabled,
+        // which is the same rule the Lighting screen applies to an unproven
+        // effect. Static images stay in the vocabulary and in the renderer.
+        assert_eq!(SCREEN_MODES.len(), 2);
+        assert!(SCREEN_MODES.contains(&DisplayMode::DualInfographic));
+        assert!(SCREEN_MODES.contains(&DisplayMode::Solid));
+        assert!(
+            !SCREEN_MODES.contains(&DisplayMode::Image),
+            "the screen has no control that can name a file"
+        );
+        assert!(
+            SCREEN_MODES.iter().all(|mode| {
+                let mut editor = DisplayEditor::default();
+                editor.mode = *mode;
+                editor.preset().is_ok()
+            }),
+            "every offered mode must produce a preset without further input"
+        );
+    }
+
+    #[test]
+    fn the_editor_exposes_the_six_color_controls_the_story_names() {
+        assert_eq!(DisplayColorField::ALL.len(), 6);
+        let labels: Vec<_> = DisplayColorField::ALL
+            .map(DisplayColorField::label)
+            .to_vec();
+        let mut unique = labels.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 6, "labels must be distinct: {labels:?}");
+        for required in [
+            "Reading 1",
+            "Reading 2",
+            "Text 1",
+            "Text 2",
+            "Background",
+            "Logo",
+        ] {
+            assert!(labels.contains(&required), "{required} is missing");
         }
     }
 
     #[test]
-    fn the_editor_exposes_exactly_four_color_controls() {
-        assert_eq!(LcdColorField::ALL.len(), 4);
-        let labels: Vec<_> = LcdColorField::ALL.map(LcdColorField::label).to_vec();
-        let mut unique = labels.clone();
+    fn every_lcd_control_has_its_own_tab_stop_inside_the_screen_range() {
+        // The brightness stepper renders two buttons from one constant, so its
+        // successor has to clear both. The values the screen actually passes
+        // are collected here rather than a hand-written range.
+        let mut stops = vec![LCD_TAB_MODE, LCD_TAB_METRIC_ONE, LCD_TAB_METRIC_TWO];
+        stops.extend(
+            (0..DisplayColorField::ALL.len() as isize).map(|index| LCD_TAB_COLOR_BASE + index),
+        );
+        stops.extend([
+            LCD_TAB_BRIGHTNESS,
+            LCD_TAB_BRIGHTNESS + 1,
+            LCD_TAB_ROTATE,
+            LCD_TAB_APPLY,
+        ]);
+
+        let mut unique = stops.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!(unique.len(), 4, "labels must be distinct: {labels:?}");
-    }
-
-    #[test]
-    fn the_editor_exposes_two_selects_with_options() {
-        assert!(LcdEditor::display_modes().len() >= 2);
-        assert!(LcdEditor::metrics().len() >= 2);
-        let default = LcdEditor::default();
-        assert!(
-            LcdEditor::display_modes()
-                .iter()
-                .any(|option| option.value == default.display_mode)
+        assert_eq!(
+            unique.len(),
+            stops.len(),
+            "two controls share a stop: {stops:?}"
         );
-        assert!(
-            LcdEditor::metrics()
-                .iter()
-                .any(|option| option.value == default.metric)
-        );
-    }
-
-    #[test]
-    fn setting_a_color_changes_only_that_field() {
-        let mut editor = LcdEditor::default();
-        let before = editor.clone();
-        editor.set_color(LcdColorField::Text, Color::rgb(0x123456));
-
-        assert_eq!(editor.color(LcdColorField::Text), Color::rgb(0x123456));
-        assert_eq!(editor.reading, before.reading);
-        assert_eq!(editor.background, before.background);
-        assert_eq!(editor.logo, before.logo);
+        assert!(stops.iter().all(|stop| *stop >= SCREEN_TAB_BASE));
     }
 
     #[test]

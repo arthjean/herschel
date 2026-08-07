@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 nzxt-core.workspace = true
+nzxt-lcd-renderer.workspace = true
 gpui = "0.2.2"
 serde_json.workspace = true
 anyhow.workspace = true

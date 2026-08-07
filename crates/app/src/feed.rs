@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use nzxt_core::client::{Client, ClientError};
+use nzxt_core::display::DisplayPreset;
 use nzxt_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome, Request, Response};
 use nzxt_core::lighting::LightingCommand;
 use nzxt_core::profile::{CoolingProgram, Profile};
@@ -38,6 +39,8 @@ pub enum Command {
     Apply(CoolingProgram),
     /// Write one channel's lighting without saving it as a profile.
     ApplyLighting(LightingCommand),
+    /// Show a preset on the panel without saving it as a profile.
+    ApplyDisplay(DisplayPreset),
     SaveProfile(Profile),
     ActivateProfile(String),
     DeleteProfile(String),
@@ -79,6 +82,38 @@ impl CommandOutcome {
     /// The controller answers no report that reads a channel back, so a
     /// confirmed command says the controller accepted it and claims nothing
     /// about what the strip is showing.
+    fn from_display(outcome: &nzxt_core::ipc::DisplayOutcome) -> Self {
+        let (severity, message) = match &outcome.hardware {
+            HardwareState::Confirmed if outcome.deduplicated => (
+                OutcomeSeverity::Confirmed,
+                "The panel already shows this. Nothing was sent.".to_string(),
+            ),
+            HardwareState::Confirmed => (
+                OutcomeSeverity::Confirmed,
+                format!(
+                    "Panel set to {}. The transfer completed; the panel reports no picture to \
+                     read back.",
+                    outcome.preset.mode.label()
+                ),
+            ),
+            HardwareState::Onboard => (
+                OutcomeSeverity::Confirmed,
+                "The panel keeps its own picture. Nothing was sent.".to_string(),
+            ),
+            HardwareState::NotApplied { reason } => (OutcomeSeverity::Refused, reason.clone()),
+            HardwareState::Uncertain { reason } => (
+                OutcomeSeverity::Unconfirmed,
+                format!("The panel is uncertain: {reason}"),
+            ),
+        };
+        Self {
+            at_unix_ms: now_unix_ms(),
+            message,
+            severity,
+            hardware: Some(outcome.hardware.clone()),
+        }
+    }
+
     fn from_lighting(outcome: &LightingOutcome) -> Self {
         let (severity, message) = match &outcome.hardware {
             HardwareState::Confirmed if outcome.deduplicated => (
@@ -344,6 +379,10 @@ fn execute(session: &mut Session, command: Command) -> (CommandOutcome, bool) {
                 ),
             }
         }
+        Command::ApplyDisplay(preset) => match session.client.apply_display(preset) {
+            Ok(outcome) => (CommandOutcome::from_display(&outcome), false),
+            Err(error) => (CommandOutcome::refused(error.to_string()), false),
+        },
         Command::SaveProfile(profile) => {
             let name = profile.name.clone();
             match session.client.request(Request::SaveProfile { profile }) {
