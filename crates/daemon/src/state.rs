@@ -512,6 +512,12 @@ impl Daemon {
         // silently write nothing.
         if !snapshot.kraken.present {
             self.cooling.forget();
+            // The panel lives on the same device, so it went away too. This
+            // also rearms the priming rule: the panel swaps buffers on the
+            // transfer after the one that filled it, so a link that came back
+            // believing it is already primed would lose its first frame into
+            // the buffer nothing is showing.
+            self.display.forget();
         } else {
             // A curve write is accepted on the mode alone, because the points
             // cannot be read back. This is the only place the device gets to

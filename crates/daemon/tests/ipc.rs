@@ -1620,6 +1620,51 @@ fn preset(mode: DisplayMode) -> DisplayPreset {
     }
 }
 
+/// The panel sits on the same device as the thermal path, so a Kraken that
+/// goes away takes the panel with it. The record of what the panel is showing
+/// has to go too: a panel that comes back has swapped nothing, so a preserved
+/// record would let the next Apply deduplicate against a picture the glass no
+/// longer holds, and would leave the link believing it is still primed when the
+/// device it was primed against is gone.
+#[test]
+fn a_kraken_that_goes_away_takes_the_panel_record_with_it() {
+    let harness = Harness::start_lcd("lcd-disconnect", "2.0.0");
+    let mut client = harness.client();
+
+    client
+        .apply_display(preset(DisplayMode::DualInfographic))
+        .expect("a validated firmware accepts a frame");
+    assert!(
+        client.status().unwrap().display.committed.is_some(),
+        "the panel is showing something before the device leaves"
+    );
+
+    // How a device that unplugs mid-session presents: every reading stops
+    // answering at once, and the instance stops resolving, so re-locating it on
+    // the next tick finds nothing.
+    for attribute in ["temp1_input", "fan1_input", "fan2_input", "name"] {
+        harness
+            .fake
+            .remove_attribute(&harness.hwmon_path(), attribute);
+    }
+
+    let snapshot = harness.wait_for_telemetry(&mut client, Duration::from_secs(5), |snapshot| {
+        !snapshot.kraken.present
+    });
+    assert!(!snapshot.kraken.present, "the device is gone");
+
+    let status = client.status().unwrap();
+    assert!(
+        status.display.committed.is_none(),
+        "the panel record must not outlive the device it describes"
+    );
+    // The preset the operator asked for is deliberately kept, which is what
+    // lets the panel resume on its own once the device answers again. Only the
+    // claim about what the glass currently holds is dropped. The fixture's link
+    // is in memory and never notices the device leave, so `streaming` still
+    // reads true here; on real hardware the transport would be gone.
+}
+
 #[test]
 fn a_machine_with_no_reachable_panel_reports_no_geometry_and_refuses_frames() {
     let harness = Harness::start("lcd-absent");
