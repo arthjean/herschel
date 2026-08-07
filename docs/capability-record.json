@@ -1,12 +1,12 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "context": {
     "kernel_release": {
       "state": "known",
       "value": "7.1.6-201.fc44.x86_64",
       "source": "uname(2)"
     },
-    "probed_at_unix_ms": 1786045122395
+    "probed_at_unix_ms": 1786101450276
   },
   "devices": [
     {
@@ -130,6 +130,7 @@
           "source": "/dev/hidraw12 report 0x21 0x03"
         }
       },
+      "lcd": null,
       "capabilities": [
         {
           "id": "rgb_fixed_color",
@@ -231,22 +232,22 @@
       ],
       "hwmon": {
         "driver": "kraken2023",
-        "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4",
+        "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5",
         "attributes": [
           {
             "name": "fan1_input",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_input",
             "readable": true,
             "writable": false,
             "label": {
               "state": "known",
               "value": "Pump speed",
-              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_label"
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_label"
             }
           },
           {
             "name": "fan1_label",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_label",
             "readable": true,
             "writable": false,
             "label": {
@@ -257,18 +258,18 @@
           },
           {
             "name": "fan2_input",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_input",
             "readable": true,
             "writable": false,
             "label": {
               "state": "known",
               "value": "Fan speed",
-              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_label"
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_label"
             }
           },
           {
             "name": "fan2_label",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_label",
             "readable": true,
             "writable": false,
             "label": {
@@ -279,7 +280,7 @@
           },
           {
             "name": "name",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/name",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/name",
             "readable": true,
             "writable": false,
             "label": {
@@ -290,7 +291,7 @@
           },
           {
             "name": "pwm1",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm1",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm1",
             "readable": true,
             "writable": false,
             "label": {
@@ -301,7 +302,7 @@
           },
           {
             "name": "pwm1_enable",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm1_enable",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm1_enable",
             "readable": true,
             "writable": false,
             "label": {
@@ -312,7 +313,7 @@
           },
           {
             "name": "pwm2",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm2",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm2",
             "readable": true,
             "writable": false,
             "label": {
@@ -323,7 +324,7 @@
           },
           {
             "name": "pwm2_enable",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm2_enable",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm2_enable",
             "readable": true,
             "writable": false,
             "label": {
@@ -334,18 +335,18 @@
           },
           {
             "name": "temp1_input",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_input",
             "readable": true,
             "writable": false,
             "label": {
               "state": "known",
               "value": "Coolant temp",
-              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_label"
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_label"
             }
           },
           {
             "name": "temp1_label",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_label",
             "readable": true,
             "writable": false,
             "label": {
@@ -369,13 +370,51 @@
         ]
       },
       "rgb": null,
+      "lcd": {
+        "hid_node": {
+          "state": "known",
+          "value": "/dev/hidraw10",
+          "source": "sysfs"
+        },
+        "bulk_node": {
+          "state": "known",
+          "value": "/dev/bus/usb/001/004 interface 0",
+          "source": "sysfs"
+        },
+        "firmware": {
+          "state": "known",
+          "value": "2.0.0",
+          "source": "/dev/hidraw10 report 0x11 0x01"
+        },
+        "panel": {
+          "state": "known",
+          "value": {
+            "width": 240,
+            "height": 240,
+            "shape": "square",
+            "pixel_format": "RGB565 big-endian",
+            "frame_bytes": 115200,
+            "bulk_endpoint": 2,
+            "bulk_interface": 0
+          },
+          "source": "candidate for 1e71:300e from liquidctl kraken3.py; this device reports no resolution of its own"
+        },
+        "display": {
+          "state": "known",
+          "value": {
+            "brightness_percent": 100,
+            "quarter_turns": 0
+          },
+          "source": "/dev/hidraw10 report 0x31 0x01"
+        }
+      },
       "capabilities": [
         {
           "id": "liquid_temperature",
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_input"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_input"
           }
         },
         {
@@ -383,7 +422,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan1_input"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_input"
           }
         },
         {
@@ -391,7 +430,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/fan2_input"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_input"
           }
         },
         {
@@ -399,7 +438,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm1"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm1"
           }
         },
         {
@@ -407,7 +446,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/pwm2"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm2"
           }
         },
         {
@@ -415,7 +454,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp1_auto_point*_pwm"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_auto_point*_pwm"
           }
         },
         {
@@ -423,23 +462,23 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon4/temp2_auto_point*_pwm"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp2_auto_point*_pwm"
           }
         },
         {
           "id": "lcd_frame",
           "state": {
-            "state": "unvalidated",
-            "required_story": "US-016",
-            "reason": "The LCD transport is not proven on this firmware."
+            "state": "available",
+            "writable": true,
+            "source": "/dev/hidraw10"
           }
         },
         {
           "id": "lcd_display_control",
           "state": {
-            "state": "unvalidated",
-            "required_story": "US-016",
-            "reason": "The LCD transport is not proven on this firmware."
+            "state": "available",
+            "writable": true,
+            "source": "/dev/hidraw10"
           }
         }
       ]
