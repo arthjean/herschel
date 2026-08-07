@@ -48,10 +48,19 @@
     {
       "id": "EP-004",
       "title": "Native Kraken LCD",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 3,
-      "stories_done": 0
+      "stories_done": 3,
+      "started_at": "2026-08-07",
+      "updated_at": "2026-08-07",
+      "stories_in_review": 0,
+      "completed_at": "2026-08-07",
+      "reviewed_at": "2026-08-07",
+      "deferred": [
+        "US-016 AC-5, physical unplug mid-transfer, to US-019 with the lighting equivalent PRD 1.3 already moved there.",
+        "US-017's UI gate matrix and US-018 AC-4 rotation on the glass, to the display polish iteration of the PRD."
+      ]
     },
     {
       "id": "EP-005",
@@ -294,22 +303,25 @@
       "id": "US-016",
       "title": "Validate the LCD transport on 1e71:300e",
       "epic": "EP-004",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": [
         "US-002",
         "US-003"
       ],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-08-07",
+      "completed_at": "2026-08-07",
+      "reviewed_at": "2026-08-07",
+      "deferred": [
+        "AC-5, physical unplug mid-transfer: never performed. The software half is proven by a_failed_transfer_reports_uncertain_and_forgets_the_picture, a_forgotten_panel_is_written_again_rather_than_deduplicated and a_panel_that_refuses_every_frame_is_reported_rather_than_retried. The observation belongs to US-019, which owns hotplug detection for both devices, exactly as PRD 1.3 already ruled for the lighting equivalent. DisplayExecutor::forget and LcdLink::unprime are the seams it calls and have no production caller until then."
+      ]
     },
     {
       "id": "US-017",
       "title": "Build the LCD editor, preview and static output",
       "epic": "EP-004",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": [
@@ -317,15 +329,19 @@
         "US-005",
         "US-016"
       ],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-08-07",
+      "completed_at": "2026-08-07",
+      "reviewed_at": "2026-08-07",
+      "review_note": "One blocking defect found and fixed on 2026-08-07. The display-mode select mutated the editor without re-deriving the preview, so the preview kept drawing the previous mode while Apply would have sent the new one (AC-2). The editor and its preview are now one DisplayScreen whose private field leaves edit() as the only mutator, pinned by every_editor_change_moves_the_preview_with_it.",
+      "deferred": [
+        "The PRD's UI gate matrix: Wayland and X11, 920x640 and 1280x720, 100% and 200% scale, and a keyboard-only walkthrough. Four captures are committed and the 920x640 clipping defect was found by running at that size, so the screen has been exercised, but docs/ep-004-evidence.md names neither the display server, nor the scale, nor the walkthrough. Folded into the display polish iteration of the PRD."
+      ]
     },
     {
       "id": "US-018",
       "title": "Render and stream the dual CPU/GPU infographic",
       "epic": "EP-004",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": [
@@ -333,9 +349,13 @@
         "US-016",
         "US-017"
       ],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-08-07",
+      "completed_at": "2026-08-07",
+      "reviewed_at": "2026-08-07",
+      "review_note": "AC-2, AC-5 and the hwmon coexistence closed on the measured 30-minute stream recorded in docs/ep-004-evidence.md: 1800 frames, 1800 hwmon samples, zero gaps above 2 s, zero dropped frames, 0.221% daemon CPU.",
+      "deferred": [
+        "AC-4, rotation on the glass: proven in the framebuffer by a_quarter_turn_moves_the_picture_and_keeps_every_pixel and four_quarter_turns_return_the_picture_unchanged, never photographed on the panel. One run applying the four orientations in turn replaces the inference with an observation. Folded into the display polish iteration of the PRD."
+      ]
     },
     {
       "id": "US-019",
