@@ -20,3 +20,31 @@ path = "**"
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Arthur Jean"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# The icons are Tabler's, not this project's. They are kept byte-identical to
+# upstream rather than given an SPDX header, so the attribution here can be
+# checked against the source file it names.
+#
+# This table comes after the catch-all deliberately: REUSE 3.3 states that "if a
+# Covered File is covered by multiple [[annotations]] tables in the same
+# REUSE.toml file, then exclusively the last matching table in the file is used",
+# so an entry placed above the wildcard would be the one that never applies.
+#
+# MIT into GPL-3.0-or-later is a compatible direction: the combined work stays
+# under the GPL and MIT's notice requirement is met by LICENSES/MIT.txt plus the
+# copyright line below.
+[[annotations]]
+path = "crates/app/assets/icons/**.svg"
+precedence = "closest"
+SPDX-FileCopyrightText = "2020-2026 Paweł Kuna"
+SPDX-License-Identifier = "MIT"
+
+# The caption glyphs are this project's own, drawn on Tabler's 16-pixel grid
+# because they sit next to its icons. They are listed after the table above for
+# the same reason it is listed after the wildcard: the last matching table wins,
+# so this is what takes them back out of the Tabler attribution.
+[[annotations]]
+path = "crates/app/assets/icons/window/**.svg"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Arthur Jean"
+SPDX-License-Identifier = "GPL-3.0-or-later"

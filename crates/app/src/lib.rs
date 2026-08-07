@@ -9,6 +9,7 @@
 //! handle, opens no socket other than the daemon's, and makes no network
 //! request.
 
+pub mod assets;
 pub mod components;
 pub mod cooling;
 pub mod display;
