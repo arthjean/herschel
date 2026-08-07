@@ -36,6 +36,30 @@ pub const MIN_PUMP_DUTY: u8 = 51; // 20% of 255
 pub const MIN_FAN_DUTY: u8 = 0;
 pub const MAX_DUTY: u8 = 255;
 
+/// Highest duty the device actually distinguishes, as a percentage.
+///
+/// The hwmon ABI takes 0-255, but the driver stores a percentage and converts
+/// in both directions, so the device has 101 distinct settings and not 256.
+/// Anything finer than a percent is a value the hardware cannot hold.
+pub const MAX_DUTY_PERCENT: u8 = 100;
+
+/// The 0-255 duty that means `percent`.
+///
+/// Deliberately the driver's own `kraken3_percent_to_pwm`, rounding the same
+/// way, so a value produced here survives the round trip through the device and
+/// reads back as the percent it was asked for.
+pub fn duty_from_percent(percent: u8) -> u8 {
+    let percent = percent.min(MAX_DUTY_PERCENT) as u16;
+    ((percent * MAX_DUTY as u16 + 50) / 100) as u8
+}
+
+/// The percentage a 0-255 duty becomes on the device.
+///
+/// The driver's own conversion, `DIV_ROUND_CLOSEST(val * 100, 255)`.
+pub fn duty_to_percent(duty: u8) -> u8 {
+    ((duty as u16 * 100 + (MAX_DUTY as u16 / 2)) / MAX_DUTY as u16) as u8
+}
+
 /// Kernel curve points exposed by `kraken2023`, one per degree Celsius.
 pub const CURVE_POINT_COUNT: usize = 40;
 /// Temperature of the first curve point, in degrees Celsius.
@@ -173,15 +197,23 @@ impl TemperatureCurve {
     }
 }
 
+/// Degrees between two adjacent editor nodes.
+///
+/// Five, so every node lands on a round temperature and the axis reads 20, 25,
+/// 30 rather than the arbitrary 20, 24, 29 that spacing ten nodes evenly across
+/// forty points produces. The ABI's own range is what bounds this: there is no
+/// point above 59 C to put a node on.
+pub const CURVE_NODE_STEP_C: usize = 5;
+
 /// Control nodes the editor exposes, fewer than the ABI's points.
 ///
 /// Forty draggable points would be unusable and would let a curve wobble
-/// between adjacent degrees. Ten nodes spread over the same 20-59 C range are
-/// what the operator edits; [`CurveNodes::interpolate`] turns them into the
-/// exact 40 integer values the kernel accepts.
-pub const CURVE_NODE_COUNT: usize = 10;
+/// between adjacent degrees. Nine nodes every five degrees over the same
+/// 20-59 C range are what the operator edits; [`CurveNodes::interpolate`] turns
+/// them into the exact 40 integer values the kernel accepts.
+pub const CURVE_NODE_COUNT: usize = 9;
 
-/// The editable form of a curve: ten duties over the fixed kernel range.
+/// The editable form of a curve: one duty per node over the fixed kernel range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurveNodes {
     /// Duty of each node, 0-255, in ascending temperature order.
@@ -191,15 +223,19 @@ pub struct CurveNodes {
 impl CurveNodes {
     /// ABI point index a node sits on.
     ///
-    /// Nodes land on whole points, spread as evenly as ten fit into forty.
-    /// That is what makes [`CurveNodes::from_curve`] the exact inverse of
-    /// [`CurveNodes::interpolate`]: a node read back off a stored curve is the
-    /// value that was written, not a value re-derived through two roundings
-    /// that would creep by one step per edit cycle.
+    /// One point per whole [`CURVE_NODE_STEP_C`] degrees, so every node names a
+    /// round temperature. The last node is the exception: five degrees past
+    /// 55 C is 60 C, which the ABI does not reach, so it sits on the last point
+    /// the kernel has. That makes the final segment four degrees wide where the
+    /// others are five, which is a degree of drawing error and no error at all
+    /// in what gets written.
+    ///
+    /// Landing on whole points is what makes [`CurveNodes::from_curve`] the
+    /// exact inverse of [`CurveNodes::interpolate`]: a node read back off a
+    /// stored curve is the value that was written, not a value re-derived
+    /// through two roundings that would creep by one step per edit cycle.
     pub fn point_index(index: usize) -> usize {
-        let span = (CURVE_POINT_COUNT - 1) as f32;
-        let step = span / (CURVE_NODE_COUNT - 1) as f32;
-        (index.min(CURVE_NODE_COUNT - 1) as f32 * step).round() as usize
+        (index * CURVE_NODE_STEP_C).min(CURVE_POINT_COUNT - 1)
     }
 
     /// Temperature of the node at `index`, in whole degrees Celsius.
@@ -277,8 +313,12 @@ impl CurveNodes {
     pub fn starting_ramp() -> Self {
         let mut duty = [0u8; CURVE_NODE_COUNT];
         for (index, entry) in duty.iter_mut().enumerate() {
-            let fraction = 0.40 + index as f32 * (0.60 / (CURVE_NODE_COUNT - 1) as f32);
-            *entry = (fraction * 255.0).round().clamp(0.0, 255.0) as u8;
+            // Built in percent and converted, so the curve the editor opens on
+            // sits on the same grid a drag produces. A default that was the one
+            // value off the grid would read as an edit the moment it was
+            // touched.
+            let percent = 40.0 + index as f32 * (60.0 / (CURVE_NODE_COUNT - 1) as f32);
+            *entry = duty_from_percent(percent.round().clamp(0.0, 100.0) as u8);
         }
         Self { duty }
     }
@@ -592,6 +632,58 @@ mod tests {
     use crate::KRAKEN_BASE;
     use crate::capability::{Capability, CapabilityState, Evidenced, SupportState, UsbIdentity};
 
+    /// The device holds a percentage, so a duty produced from one has to read
+    /// back as that same percentage. Without this the editor could not offer a
+    /// value and have the hardware agree it is running it.
+    #[test]
+    fn every_percentage_survives_the_trip_through_a_duty() {
+        for percent in 0..=MAX_DUTY_PERCENT {
+            let duty = duty_from_percent(percent);
+            assert_eq!(
+                duty_to_percent(duty),
+                percent,
+                "{percent}% became duty {duty}, which reads back as {}%",
+                duty_to_percent(duty)
+            );
+        }
+        assert_eq!(duty_from_percent(0), 0);
+        assert_eq!(duty_from_percent(MAX_DUTY_PERCENT), MAX_DUTY);
+    }
+
+    /// The point of snapping: one step of the control is one step the hardware
+    /// can tell apart. Two percentages sharing a duty would be a control with
+    /// dead positions in it.
+    #[test]
+    fn no_two_percentages_share_a_duty() {
+        let duties: Vec<u8> = (0..=MAX_DUTY_PERCENT).map(duty_from_percent).collect();
+        assert!(
+            duties.windows(2).all(|pair| pair[0] < pair[1]),
+            "{duties:?}"
+        );
+    }
+
+    /// The floor is the driver's own `PUMP_DUTY_MIN`, which is a percentage. It
+    /// has to sit exactly on the grid, or clamping to it would produce a value
+    /// no edit could ever land on.
+    #[test]
+    fn the_pump_floor_is_a_whole_percentage() {
+        assert_eq!(duty_to_percent(MIN_PUMP_DUTY), 20);
+        assert_eq!(duty_from_percent(20), MIN_PUMP_DUTY);
+    }
+
+    /// A default that sat off the grid would read as an edit as soon as any
+    /// node was touched, and with autosave it would be written.
+    #[test]
+    fn the_starting_ramp_sits_on_the_grid() {
+        for duty in CurveNodes::starting_ramp().duty {
+            assert_eq!(
+                duty_from_percent(duty_to_percent(duty)),
+                duty,
+                "node duty {duty} is not a whole percentage"
+            );
+        }
+    }
+
     fn device_with(capabilities: Vec<Capability>) -> DeviceRecord {
         DeviceRecord {
             support: SupportState::Supported,
@@ -763,10 +855,13 @@ mod tests {
     }
 
     #[test]
-    fn ten_nodes_span_exactly_the_kernel_range() {
-        assert_eq!(CURVE_NODE_COUNT, 10);
+    fn the_nodes_span_exactly_the_kernel_range_on_round_degrees() {
+        assert_eq!(CURVE_NODE_COUNT, 9);
         assert_eq!(CurveNodes::temperature_at(0), CURVE_FIRST_TEMP_C as f32);
-        assert!((CurveNodes::temperature_at(9) - CURVE_LAST_TEMP_C as f32).abs() < 0.001);
+        assert!(
+            (CurveNodes::temperature_at(CURVE_NODE_COUNT - 1) - CURVE_LAST_TEMP_C as f32).abs()
+                < 0.001
+        );
         assert!(
             (0..CURVE_NODE_COUNT)
                 .map(CurveNodes::temperature_at)
@@ -781,7 +876,10 @@ mod tests {
         assert_eq!(curve.points.len(), CURVE_POINT_COUNT);
         // The endpoints land on the nodes rather than near them.
         assert_eq!(curve.points[0], nodes.duty[0]);
-        assert_eq!(curve.points[CURVE_POINT_COUNT - 1], nodes.duty[9]);
+        assert_eq!(
+            curve.points[CURVE_POINT_COUNT - 1],
+            nodes.duty[CURVE_NODE_COUNT - 1]
+        );
         assert!(validate_curve(Channel::Pump, &curve).is_ok());
         assert!(validate_curve(Channel::Fan, &curve).is_ok());
     }
@@ -789,19 +887,20 @@ mod tests {
     #[test]
     fn interpolation_between_two_nodes_is_linear() {
         let mut nodes = CurveNodes::flat(0);
-        nodes.duty = [0, 90, 90, 90, 90, 90, 90, 90, 90, 90];
+        nodes.duty = [0, 90, 90, 90, 90, 90, 90, 90, 90];
         let curve = nodes.interpolate();
-        // Node 1 sits on point index 4, so point 2 is halfway: 0 + 90/2 = 45.
+        // Node 1 sits on point index 5, so point 2 is two fifths of the way
+        // up: 0 + 90 * 2/5 = 36.
         assert_eq!(curve.points[0], 0);
-        assert_eq!(curve.points[2], 45);
-        assert_eq!(curve.points[4], 90);
+        assert_eq!(curve.points[2], 36);
+        assert_eq!(curve.points[5], 90);
         assert!(curve.points.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     #[test]
     fn nodes_sit_on_whole_points_and_whole_degrees() {
         let indices: Vec<usize> = (0..CURVE_NODE_COUNT).map(CurveNodes::point_index).collect();
-        assert_eq!(indices, vec![0, 4, 9, 13, 17, 22, 26, 30, 35, 39]);
+        assert_eq!(indices, vec![0, 5, 10, 15, 20, 25, 30, 35, 39]);
         assert!(
             indices.windows(2).all(|pair| pair[0] < pair[1]),
             "two nodes must never share a point"
@@ -817,6 +916,34 @@ mod tests {
         assert_eq!(temperatures.last(), Some(&59.0));
     }
 
+    /// The axis an operator reads has to be made of round temperatures. Every
+    /// node but the last sits on a multiple of the step; the last sits on the
+    /// highest point the ABI has, because there is nothing above it to sit on.
+    #[test]
+    fn every_node_but_the_last_lands_on_a_round_temperature() {
+        let temperatures: Vec<f32> = (0..CURVE_NODE_COUNT)
+            .map(CurveNodes::temperature_at)
+            .collect();
+        assert_eq!(
+            temperatures,
+            vec![20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 59.0]
+        );
+
+        let step = CURVE_NODE_STEP_C as f32;
+        for (index, temperature) in temperatures.iter().enumerate().take(CURVE_NODE_COUNT - 1) {
+            assert_eq!(
+                temperature % step,
+                0.0,
+                "node {index} is at {temperature} C, not a multiple of {step}"
+            );
+        }
+        assert_eq!(
+            *temperatures.last().unwrap(),
+            CURVE_LAST_TEMP_C as f32,
+            "the last node is pinned to the end of the ABI, not to a round degree"
+        );
+    }
+
     #[test]
     fn editing_one_node_keeps_the_whole_set_monotonic() {
         let mut nodes = CurveNodes::flat(100);
@@ -824,13 +951,21 @@ mod tests {
         assert!(nodes.duty.windows(2).all(|pair| pair[0] <= pair[1]));
         assert_eq!(nodes.duty[3], 100);
         assert_eq!(nodes.duty[4], 200);
-        assert_eq!(nodes.duty[9], 200, "higher nodes are lifted");
+        assert_eq!(
+            nodes.duty[CURVE_NODE_COUNT - 1],
+            200,
+            "higher nodes are lifted"
+        );
 
         nodes.set(7, 50);
         assert!(nodes.duty.windows(2).all(|pair| pair[0] <= pair[1]));
         assert_eq!(nodes.duty[7], 50);
         assert_eq!(nodes.duty[4], 50, "lower nodes are pulled down");
-        assert_eq!(nodes.duty[9], 200, "nodes above are untouched");
+        assert_eq!(
+            nodes.duty[CURVE_NODE_COUNT - 1],
+            200,
+            "nodes above are untouched"
+        );
 
         // An index outside the set changes nothing rather than panicking.
         let before = nodes;
@@ -841,7 +976,7 @@ mod tests {
     #[test]
     fn an_edited_node_set_always_validates_as_a_curve() {
         let mut nodes = CurveNodes::starting_ramp();
-        for (index, duty) in [(0, 255), (9, 60), (5, 130), (2, 200)] {
+        for (index, duty) in [(0, 255), (8, 60), (5, 130), (2, 200)] {
             nodes.set(index, duty);
             let curve = nodes.interpolate();
             assert!(
@@ -857,7 +992,7 @@ mod tests {
             CurveNodes::starting_ramp(),
             CurveNodes::flat(200),
             CurveNodes {
-                duty: [51, 51, 60, 80, 110, 150, 190, 220, 240, 255],
+                duty: [51, 51, 60, 80, 110, 150, 190, 240, 255],
             },
         ] {
             // Exact, not merely close: an edit cycle that crept by one PWM
@@ -878,7 +1013,7 @@ mod tests {
     fn the_starting_ramp_clears_the_pump_floor_at_every_node() {
         let nodes = CurveNodes::starting_ramp();
         assert!(nodes.duty.iter().all(|duty| *duty >= MIN_PUMP_DUTY));
-        assert_eq!(nodes.duty[9], 255);
+        assert_eq!(nodes.duty[CURVE_NODE_COUNT - 1], 255);
         assert!(nodes.duty.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 }
