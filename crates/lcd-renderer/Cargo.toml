@@ -1,0 +1,20 @@
+[package]
+name = "nzxt-lcd-renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Turns one DisplayPreset into the exact framebuffer the Kraken panel takes"
+
+[dependencies]
+nzxt-core.workspace = true
+thiserror.workspace = true
+
+# Decodes the static image US-017 lets an operator pick. Default features are
+# off so the graph carries two decoders rather than the twenty the crate can
+# build; MIT OR Apache-2.0, compatible with this project's GPL-3.0-or-later.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[lints]
+workspace = true

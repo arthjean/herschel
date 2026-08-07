@@ -3451,6 +3451,7 @@ dependencies = [
  "futures",
  "gpui",
  "nzxt-core",
+ "nzxt-lcd-renderer",
  "serde_json",
 ]
 
@@ -3469,6 +3470,7 @@ version = "0.1.0"
 dependencies = [
  "nzxt-core",
  "nzxt-hardware-linux",
+ "nzxt-lcd-renderer",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -3485,6 +3487,15 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "nzxt-lcd-renderer"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "nzxt-core",
  "thiserror 2.0.19",
 ]
 

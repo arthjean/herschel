@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/hardware-linux",
+    "crates/lcd-renderer",
     "crates/daemon",
     "crates/app",
 ]
@@ -21,6 +22,7 @@ repository = "https://github.com/arthjean/nzxt-control-linux"
 [workspace.dependencies]
 nzxt-core = { path = "crates/core" }
 nzxt-hardware-linux = { path = "crates/hardware-linux" }
+nzxt-lcd-renderer = { path = "crates/lcd-renderer" }
 
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
