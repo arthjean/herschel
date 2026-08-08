@@ -363,6 +363,25 @@ a fraction of a degree survives into a different picture depends on where the
 antialiased end of the gauge falls, so nothing promises it either way; US-018
 asks for one frame a second regardless.
 
+### What made an Apply feel slow, 2026-08-08
+
+The panel is not slow: one sequence is 13.7 ms measured, and the render is
+1.12 ms at P95. The wait was in the client. `app/src/feed.rs` drained the command
+queue only at the top of each cycle and then slept out the remainder in 25 ms
+slices, so a command pressed just after a cycle began waited a whole polling
+interval, one second, before the request left the process. The worker now spends
+that gap waiting *on the queue* (`wait_for_command`), which costs nothing when it
+is empty and returns immediately when it is not:
+`a_command_ends_the_wait_instead_of_serving_out_the_interval`. The polling
+cadence is unchanged; only the waiting is.
+
+`draw_image` opened and decoded the operator's file twice per render, once for
+the declared size and once for the pixels, on every panel refresh and every
+preview repaint. It opens once and reads the size from the decoder's header, so
+the ceiling is still enforced before a pixel is decoded
+(`an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded` still passes
+against a 45-byte PNG claiming 9000x9000).
+
 `draw_image` opened and decoded the operator's file twice per render, once for
 the declared size and once for the pixels, on every panel refresh and every
 preview repaint. It opens once and reads the size from the decoder's header, so

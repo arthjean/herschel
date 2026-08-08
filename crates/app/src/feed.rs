@@ -13,10 +13,14 @@
 //! produced. Each cycle it publishes a complete [`LinkState`] and rings the
 //! notifier, which is what wakes the view: the window repaints when new data
 //! exists rather than on a timer of its own.
+//!
+//! A command does not wait for that cycle. The worker spends the gap between
+//! polls waiting *on the command queue* rather than sleeping through it, so an
+//! Apply leaves the process when it is pressed instead of at the next boundary.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -272,6 +276,8 @@ fn run(
     notifier: UnboundedSender<()>,
 ) {
     let mut session: Option<Session> = None;
+    // The command that ended the previous wait, held until the cycle it opens.
+    let mut pending: Option<Command> = None;
 
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
@@ -289,7 +295,7 @@ fn run(
             let mut refresh_profiles = false;
             // `try_recv` treats an empty queue and a dropped sender alike here:
             // both mean there is nothing more to run this cycle.
-            while let Ok(command) = inbox.try_recv() {
+            while let Some(command) = pending.take().or_else(|| inbox.try_recv().ok()) {
                 let (outcome, touched_profiles) = execute(active, command);
                 refresh_profiles |= touched_profiles;
                 if let Ok(mut shared) = shared.lock() {
@@ -319,13 +325,40 @@ fn run(
 
         let _ = notifier.unbounded_send(());
 
-        let mut remaining = interval.saturating_sub(started.elapsed());
-        while !remaining.is_zero() && !stop.load(Ordering::SeqCst) {
-            let slice = remaining.min(SHUTDOWN_GRANULARITY);
-            std::thread::sleep(slice);
-            remaining -= slice;
-        }
+        pending = wait_for_command(&inbox, &stop, interval.saturating_sub(started.elapsed()));
     }
+}
+
+/// Wait out the rest of a cycle, returning early with the command that arrives.
+///
+/// The waiting is what the operator feels. Sleeping through the remainder and
+/// looking at the queue only at the next cycle boundary put a full polling
+/// interval between pressing Apply and the request leaving the process: up to a
+/// second, against the 15 ms the daemon needs to render a frame and the panel
+/// needs to take it. Waiting *on the queue* costs nothing when it is empty and
+/// returns immediately when it is not.
+///
+/// Still sliced, because the slice is also how a shutdown is noticed, and a
+/// worker that waited a whole second on the queue would hold the window open
+/// for that long on quit.
+fn wait_for_command(
+    inbox: &Receiver<Command>,
+    stop: &AtomicBool,
+    mut remaining: Duration,
+) -> Option<Command> {
+    while !remaining.is_zero() && !stop.load(Ordering::SeqCst) {
+        let slice = remaining.min(SHUTDOWN_GRANULARITY);
+        match inbox.recv_timeout(slice) {
+            Ok(command) => return Some(command),
+            Err(RecvTimeoutError::Timeout) => {}
+            // A dropped sender means the window is going away. The stop flag is
+            // what ends this loop, so a disconnected queue waits exactly as an
+            // empty one does rather than spinning through the remainder.
+            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(slice),
+        }
+        remaining -= slice;
+    }
+    None
 }
 
 fn connect(socket: &std::path::Path) -> Result<Session, ClientError> {
@@ -467,6 +500,59 @@ mod tests {
     use super::*;
     use nzxt_core::ipc::ChannelReadback;
     use nzxt_core::profile::Channel;
+
+    #[test]
+    fn a_command_ends_the_wait_instead_of_serving_out_the_interval() {
+        // The defect this pins: the worker used to sleep through the gap
+        // between polls and look at the queue only at the next boundary, which
+        // put up to a whole interval between pressing Apply and the request
+        // leaving the process.
+        let (sender, inbox) = channel();
+        let stop = AtomicBool::new(false);
+        let queued = Command::ActivateProfile("Onboard safe".to_string());
+
+        let started = Instant::now();
+        std::thread::spawn({
+            let queued = queued.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(30));
+                let _ = sender.send(queued);
+            }
+        });
+
+        assert_eq!(
+            wait_for_command(&inbox, &stop, Duration::from_secs(5)),
+            Some(queued)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the command waited {:?} for a five second interval",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_waits_the_interval_out_and_a_stop_cuts_it_short() {
+        let (_sender, inbox) = channel::<Command>();
+
+        let started = Instant::now();
+        let waiting = AtomicBool::new(false);
+        assert_eq!(
+            wait_for_command(&inbox, &waiting, Duration::from_millis(60)),
+            None
+        );
+        assert!(started.elapsed() >= Duration::from_millis(50));
+
+        // A shutdown already requested means no waiting at all, which is what
+        // keeps quitting the window prompt.
+        let stopped = AtomicBool::new(true);
+        let started = Instant::now();
+        assert_eq!(
+            wait_for_command(&inbox, &stopped, Duration::from_secs(5)),
+            None
+        );
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
 
     fn outcome(hardware: HardwareState, writes: u32, deduplicated: bool) -> CommandOutcome {
         CommandOutcome::from_apply(&ApplyOutcome {
