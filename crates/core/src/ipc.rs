@@ -31,7 +31,15 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 /// this version and a daemon of the last cannot exchange one either way. The
 /// bump is what turns that into a refusal at the handshake, naming both
 /// versions, instead of a parse failure the first time a frame is applied.
-pub const PROTOCOL_VERSION: u32 = 4;
+///
+/// Version 5 narrowed what `DisplayOutcome::deduplicated` claims. It used to
+/// mean the whole command was a no-op; it now means only that no *frame* was
+/// sent, because the brightness travels over its own report and is sent even
+/// when the picture is unchanged. A version 4 client would read the new answer
+/// without error and report "nothing was sent" about a panel that was just
+/// dimmed, so the two are separated at the handshake rather than left to
+/// disagree quietly.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Largest frame either side will read.
 ///
@@ -216,7 +224,19 @@ pub struct DisplayOutcome {
     /// Frames actually sent. Zero means the request matched what the panel is
     /// already showing and was deduplicated.
     pub frames: u32,
+    /// True when the picture was already on the glass and no frame went out.
+    ///
+    /// This is about the picture alone. A command can be deduplicated here and
+    /// still have changed the panel, because the brightness is not a picture:
+    /// see `brightness_sent`.
     pub deduplicated: bool,
+    /// True when the display-control report went out for this command.
+    ///
+    /// The brightness is a panel setting rather than a pixel, so it survives
+    /// the frame comparison. Without this field a preset whose only edit was
+    /// the brightness would be reported as "nothing was sent" by a client that
+    /// had just changed what the operator is looking at.
+    pub brightness_sent: bool,
 }
 
 /// What the panel is currently showing, as far as the daemon knows.

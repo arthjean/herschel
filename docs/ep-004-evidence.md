@@ -363,6 +363,24 @@ a fraction of a degree survives into a different picture depends on where the
 antialiased end of the gauge falls, so nothing promises it either way; US-018
 asks for one frame a second regardless.
 
+### The brightness is not part of that picture, 2026-08-08
+
+The comparison used to stand ahead of the display-control report, which meant a
+preset whose only edit was the brightness rendered the same pixels, deduplicated
+and returned `deduplicated: true, frames: 0` with the report never sent. The
+glass stayed at the old level until some reading happened to move the picture,
+which for a stable temperature is tens of seconds and for a static preset is
+never, and the client said "The panel already shows this. Nothing was sent." the
+whole time.
+
+The brightness is a panel setting carried by `0x30 0x02`, not a pixel, so it is
+now written before the frames are compared and the outcome reports the two
+separately (`DisplayOutcome::brightness_sent`). Pinned by
+`a_brightness_only_change_reaches_the_panel_rather_than_being_deduplicated`,
+which asserts the report went out, carried the new value, and cost no transfer,
+and by `brightness_is_sent_once_rather_than_with_every_frame`, which now counts
+the reports the fixture received rather than the executor's own record.
+
 ### What made an Apply feel slow, 2026-08-08
 
 The panel is not slow: one sequence is 13.7 ms measured, and the render is
@@ -374,13 +392,6 @@ that gap waiting *on the queue* (`wait_for_command`), which costs nothing when i
 is empty and returns immediately when it is not:
 `a_command_ends_the_wait_instead_of_serving_out_the_interval`. The polling
 cadence is unchanged; only the waiting is.
-
-`draw_image` opened and decoded the operator's file twice per render, once for
-the declared size and once for the pixels, on every panel refresh and every
-preview repaint. It opens once and reads the size from the decoder's header, so
-the ceiling is still enforced before a pixel is decoded
-(`an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded` still passes
-against a 45-byte PNG claiming 9000x9000).
 
 `draw_image` opened and decoded the operator's file twice per render, once for
 the declared size and once for the pixels, on every panel refresh and every
@@ -468,7 +479,11 @@ module pins the shared identifiers so the two cannot drift onto different bytes
 - `CAPABILITY_SCHEMA_VERSION` 2 to 3, for `LcdTopology`.
 - `CONFIG_SCHEMA_VERSION` 2 to 3, for `Profile::display`. The field is optional,
   so a schema-2 file parses as it stands and the next save rewrites it.
-- `PROTOCOL_VERSION` 2 to 3, for `ApplyDisplay` and `DisplayState`.
+- `PROTOCOL_VERSION` 2 to 3, for `ApplyDisplay` and `DisplayState`; 4 to 5, for
+  `DisplayOutcome::brightness_sent`. Serde ignores an unknown field, so a
+  version 4 client would read the new answer without complaint and report
+  "nothing was sent" about a panel it had just dimmed. The bump makes that a
+  refusal at the handshake instead of a quiet disagreement.
 
 `DisplayError` is tagged `kind` rather than `error`, because `IpcError` wraps it
 and is itself tagged `error`: two `error` tags in one object is a frame neither

@@ -15,6 +15,13 @@
 //! the gauge happens to fall, so nothing here promises it either way. US-018
 //! asks for one frame a second regardless.
 //!
+//! **The brightness is not part of that comparison.** It is a panel setting
+//! carried by its own report, so it is written before the picture is compared
+//! and a deduplicated frame never swallows it. Sending it afterwards was a
+//! defect: a preset whose only edit was the brightness renders the same pixels,
+//! so the glass stayed at the old level until some reading happened to move the
+//! picture, and the client said "nothing was sent" the whole time.
+//!
 //! **At most one frame is ever outstanding.** The transfer is synchronous, so
 //! "outstanding" here means the sample that arrived while the previous frame
 //! was still being written. US-018 requires that such a sample replace the
@@ -194,17 +201,27 @@ impl DisplayExecutor {
         samples: &[MetricSample; 2],
     ) -> Result<DisplayOutcome, DisplayError> {
         let Some(panel) = self.panel.clone() else {
-            return Ok(DisplayOutcome {
-                preset: preset.clone(),
-                hardware: HardwareState::NotApplied {
-                    reason: "No panel answered on this device.".to_string(),
-                },
-                frames: 0,
-                deduplicated: false,
-            });
+            return Ok(absent(preset));
         };
 
         let frame = nzxt_lcd_renderer::render(preset, samples, &panel)?.to_rgb565_be();
+
+        let Some(link) = self.link.as_mut() else {
+            return Ok(absent(preset));
+        };
+
+        // Brightness travels over its own report and only when it changed, so
+        // a streaming preset does not resend it every second. It goes out ahead
+        // of the frame comparison because it is a panel setting rather than a
+        // picture: an unchanged picture must not be able to discard it.
+        let mut brightness_sent = false;
+        if self.brightness != Some(preset.brightness) {
+            if let Err(error) = link.set_display(preset.brightness) {
+                return Ok(uncertain(preset, &error, &mut self.committed, false));
+            }
+            self.brightness = Some(preset.brightness);
+            brightness_sent = true;
+        }
 
         // The picture is what the panel holds, so the picture is what is
         // compared. A preset that changed without changing a pixel still costs
@@ -220,28 +237,9 @@ impl DisplayExecutor {
                 hardware: HardwareState::Confirmed,
                 frames: 0,
                 deduplicated: true,
+                brightness_sent,
             });
         }
-
-        let Some(link) = self.link.as_mut() else {
-            return Ok(DisplayOutcome {
-                preset: preset.clone(),
-                hardware: HardwareState::NotApplied {
-                    reason: "No panel answered on this device.".to_string(),
-                },
-                frames: 0,
-                deduplicated: false,
-            });
-        };
-
-        // Brightness travels over its own report and only when it changed, so
-        // a streaming preset does not resend it every second.
-        if self.brightness != Some(preset.brightness)
-            && let Err(error) = link.set_display(preset.brightness)
-        {
-            return Ok(uncertain(preset, &error, &mut self.committed));
-        }
-        self.brightness = Some(preset.brightness);
 
         match link.send_frame(&frame) {
             Ok(_) => {
@@ -254,10 +252,29 @@ impl DisplayExecutor {
                     hardware: HardwareState::Confirmed,
                     frames: 1,
                     deduplicated: false,
+                    brightness_sent,
                 })
             }
-            Err(error) => Ok(uncertain(preset, &error, &mut self.committed)),
+            Err(error) => Ok(uncertain(
+                preset,
+                &error,
+                &mut self.committed,
+                brightness_sent,
+            )),
         }
+    }
+}
+
+/// A command that reached no panel at all.
+fn absent(preset: &DisplayPreset) -> DisplayOutcome {
+    DisplayOutcome {
+        preset: preset.clone(),
+        hardware: HardwareState::NotApplied {
+            reason: "No panel answered on this device.".to_string(),
+        },
+        frames: 0,
+        deduplicated: false,
+        brightness_sent: false,
     }
 }
 
@@ -270,6 +287,7 @@ fn uncertain(
     preset: &DisplayPreset,
     error: &LcdError,
     committed: &mut Option<Committed>,
+    brightness_sent: bool,
 ) -> DisplayOutcome {
     *committed = None;
     DisplayOutcome {
@@ -279,6 +297,7 @@ fn uncertain(
         },
         frames: 0,
         deduplicated: false,
+        brightness_sent,
     }
 }
 
@@ -286,7 +305,7 @@ fn uncertain(
 mod tests {
     use super::*;
     use nzxt_core::display::{DisplayMode, LcdMetric};
-    use nzxt_core::lighting::Rgb;
+    use nzxt_core::lighting::{Brightness, Rgb};
     use nzxt_hardware_linux::lcd::{self, FRAME_BYTES};
     use nzxt_hardware_linux::testing::{BulkRecorder, FakeKraken};
     use nzxt_hardware_linux::usbfs::UsbfsError;
@@ -401,6 +420,7 @@ mod tests {
     #[test]
     fn brightness_is_sent_once_rather_than_with_every_frame() {
         let kraken = FakeKraken::new("2.0.4");
+        let reports = kraken.report_recorder();
         let mut executor = DisplayExecutor::connected(kraken.link(), lcd::candidate_panel());
         let preset = DisplayPreset::default_infographic();
 
@@ -410,12 +430,44 @@ mod tests {
                 .unwrap();
         }
 
-        // Four frames, and the display-control report was not one of them per
-        // frame. The count is read back through a second executor because the
-        // first boxed the device away; what matters here is that a streaming
-        // preset does not resend a setting that did not change, which the
-        // brightness record enforces.
+        // Four different pictures, and exactly one display-control report: a
+        // streaming preset must not resend a setting that did not change.
+        assert_eq!(reports.matching(lcd::packet::DISPLAY_CONTROL).len(), 1);
         assert_eq!(executor.brightness, Some(preset.brightness));
+    }
+
+    #[test]
+    fn a_brightness_only_change_reaches_the_panel_rather_than_being_deduplicated() {
+        // The defect this pins: the brightness used to be written *after* the
+        // frame comparison, so a preset whose only edit was the brightness
+        // rendered the same pixels, deduplicated, and returned "nothing was
+        // sent" while the glass stayed at the old level. It is a panel setting,
+        // not a picture, and the picture must not be able to discard it.
+        let kraken = FakeKraken::new("2.0.4");
+        let bulk = kraken.bulk_recorder();
+        let reports = kraken.report_recorder();
+        let mut executor = DisplayExecutor::connected(kraken.link(), lcd::candidate_panel());
+
+        let mut preset = DisplayPreset::default_infographic();
+        let sample = samples(Some(50.0), Some(40.0));
+        executor.apply(&preset, &sample).unwrap();
+        let bytes = bulk.bytes();
+
+        preset.brightness = Brightness::new(20).unwrap();
+        let outcome = executor.apply(&preset, &sample).unwrap();
+
+        assert!(outcome.deduplicated, "the picture did not change");
+        assert_eq!(outcome.frames, 0);
+        assert!(outcome.brightness_sent, "the panel setting did change");
+        assert_eq!(
+            bulk.bytes(),
+            bytes,
+            "an unchanged picture is still not worth a transfer"
+        );
+
+        let control = reports.matching(lcd::packet::DISPLAY_CONTROL);
+        assert_eq!(control.len(), 2, "one for the first apply, one for the dim");
+        assert_eq!(control[1][3], 20, "the report carries the new brightness");
     }
 
     #[test]

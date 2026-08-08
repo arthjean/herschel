@@ -81,13 +81,26 @@ impl CommandOutcome {
         }
     }
 
-    /// The outcome of one lighting command.
+    /// The outcome of one panel command.
     ///
-    /// The controller answers no report that reads a channel back, so a
-    /// confirmed command says the controller accepted it and claims nothing
-    /// about what the strip is showing.
+    /// The panel answers no report that reads its picture back, so a confirmed
+    /// command says the transfer completed and claims nothing about the glass.
+    ///
+    /// A deduplicated frame is not the same as an untouched panel: the
+    /// brightness is a setting rather than a picture and travels whatever the
+    /// pixels do, so the two are reported separately instead of collapsed into
+    /// one "nothing was sent" that would be false exactly when the operator had
+    /// just changed the brightness.
     fn from_display(outcome: &nzxt_core::ipc::DisplayOutcome) -> Self {
         let (severity, message) = match &outcome.hardware {
+            HardwareState::Confirmed if outcome.deduplicated && outcome.brightness_sent => (
+                OutcomeSeverity::Confirmed,
+                format!(
+                    "Panel brightness set to {}%. The picture was already correct, so no frame \
+                     was sent.",
+                    outcome.preset.brightness.percent()
+                ),
+            ),
             HardwareState::Confirmed if outcome.deduplicated => (
                 OutcomeSeverity::Confirmed,
                 "The panel already shows this. Nothing was sent.".to_string(),
@@ -498,7 +511,8 @@ pub fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::ipc::ChannelReadback;
+    use nzxt_core::ipc::{ChannelReadback, DisplayOutcome};
+    use nzxt_core::lighting::Brightness;
     use nzxt_core::profile::Channel;
 
     #[test]
@@ -552,6 +566,42 @@ mod tests {
             None
         );
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_brightness_only_change_is_reported_as_applied_rather_than_as_nothing() {
+        let preset = nzxt_core::display::DisplayPreset {
+            brightness: Brightness::new(20).unwrap(),
+            ..nzxt_core::display::DisplayPreset::default_infographic()
+        };
+        let dimmed = DisplayOutcome {
+            preset,
+            hardware: HardwareState::Confirmed,
+            frames: 0,
+            deduplicated: true,
+            brightness_sent: true,
+        };
+
+        let reported = CommandOutcome::from_display(&dimmed);
+        assert_eq!(reported.severity, OutcomeSeverity::Confirmed);
+        assert!(reported.message.contains("20%"), "{}", reported.message);
+        assert!(
+            !reported.message.contains("Nothing was sent"),
+            "a panel that was just dimmed was told nothing happened: {}",
+            reported.message
+        );
+
+        // A command that changed neither the picture nor the setting still says
+        // so, which is the case the message was written for.
+        let untouched = DisplayOutcome {
+            brightness_sent: false,
+            ..dimmed
+        };
+        assert!(
+            CommandOutcome::from_display(&untouched)
+                .message
+                .contains("Nothing was sent")
+        );
     }
 
     fn outcome(hardware: HardwareState, writes: u32, deduplicated: bool) -> CommandOutcome {
