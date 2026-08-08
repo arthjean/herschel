@@ -40,27 +40,35 @@ const MAX_IMAGE_PATH_BYTES: usize = 4096;
 
 /// What kind of picture the panel shows.
 ///
-/// Three entries, each of which something in this product actually produces:
-/// the infographic US-018 streams, the solid field the US-016 transport probe
-/// sends, and a static image the operator picks. Nothing is listed that the
-/// renderer cannot draw.
+/// Four entries, each of which something in this product actually produces: the
+/// infographic US-018 streams, the single reading that gives one metric the
+/// whole dial, the solid field the US-016 transport probe sends, and a static
+/// image the operator picks. Nothing is listed that the renderer cannot draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayMode {
     /// Two metrics, each with an arc, a value and a label.
     DualInfographic,
-    /// The background color across the whole panel, with the wordmark.
+    /// One metric, on one arc, at the largest size the panel can hold.
+    SingleReading,
+    /// The background color across the whole panel, and nothing else.
     Solid,
     /// A static image the operator chose, scaled to the panel.
     Image,
 }
 
 impl DisplayMode {
-    pub const ALL: [Self; 3] = [Self::DualInfographic, Self::Solid, Self::Image];
+    pub const ALL: [Self; 4] = [
+        Self::DualInfographic,
+        Self::SingleReading,
+        Self::Solid,
+        Self::Image,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::DualInfographic => "Dual infographic",
+            Self::SingleReading => "Single reading",
             Self::Solid => "Solid color",
             Self::Image => "Static image",
         }
@@ -69,6 +77,7 @@ impl DisplayMode {
     pub fn key(self) -> &'static str {
         match self {
             Self::DualInfographic => "dual_infographic",
+            Self::SingleReading => "single_reading",
             Self::Solid => "solid",
             Self::Image => "image",
         }
@@ -78,14 +87,38 @@ impl DisplayMode {
         Self::ALL.into_iter().find(|mode| mode.key() == key)
     }
 
+    /// How many of the two reading slots this mode actually draws.
+    ///
+    /// The count rather than a flag: the editor hides the slots a mode never
+    /// draws, and a mode that draws one of the two would otherwise have to be
+    /// special-cased at every place that asks.
+    pub fn reading_slots(self) -> usize {
+        match self {
+            Self::DualInfographic => 2,
+            Self::SingleReading => 1,
+            Self::Solid | Self::Image => 0,
+        }
+    }
+
     /// Whether this mode draws the reading slots at all.
     pub fn uses_readings(self) -> bool {
-        matches!(self, Self::DualInfographic)
+        self.reading_slots() > 0
     }
 
     /// Whether this mode needs an image path before it can render.
     pub fn uses_image(self) -> bool {
         matches!(self, Self::Image)
+    }
+
+    /// Whether a band shades between its slot's two colors.
+    ///
+    /// Only the layout that gives one metric the whole ring: a band long enough
+    /// for a shade to be a shade rather than a smear. The paired layout draws
+    /// each of its two bands solid, which is also what the reference screens
+    /// do, and it keeps the editor from asking for four colors where two will
+    /// never be told apart.
+    pub fn gradates_band(self) -> bool {
+        matches!(self, Self::SingleReading)
     }
 }
 
@@ -281,14 +314,33 @@ impl Orientation {
 }
 
 /// One metric slot of the infographic: what it shows and in which colors.
+///
+/// The band and the text are colored separately, which is the split the
+/// reference screens make: the band carries the color, and the value reads in
+/// the same color as its caption. A band may shade between two colors in the
+/// layouts that draw it long enough for a shade to register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadingSlot {
     pub metric: LcdMetric,
-    /// Color of the number and its arc.
+    /// Color the band starts on, at the foot of its sweep.
     pub reading: Rgb,
-    /// Color of the caption under the number.
+    /// Color the band reaches at the head of its sweep.
+    ///
+    /// `None` is a solid band. It is also what a preset written before this
+    /// field existed deserializes to, which is why it is optional rather than
+    /// defaulted to a color nobody chose.
+    #[serde(default)]
+    pub reading_end: Option<Rgb>,
+    /// Color of the value and of the caption under it.
     pub text: Rgb,
+}
+
+impl ReadingSlot {
+    /// The color the band ends on, which is where it starts when it is solid.
+    pub fn band_end(&self) -> Rgb {
+        self.reading_end.unwrap_or(self.reading)
+    }
 }
 
 /// Everything the panel needs, with no pixel and no protocol byte in it.
@@ -299,7 +351,14 @@ pub struct DisplayPreset {
     /// Reading 1 and Reading 2, in the order they are drawn.
     pub readings: [ReadingSlot; 2],
     pub background: Rgb,
-    pub logo: Rgb,
+    /// Accepted, never drawn, never written back.
+    ///
+    /// The panel carried the product's name until it was taken off the glass.
+    /// The field stays so a profile written before that still loads, since a
+    /// preset refuses unknown fields; `skip_serializing` keeps it out of every
+    /// file written from now on, and it can go once no such file can remain.
+    #[serde(default, skip_serializing)]
+    pub logo: Option<Rgb>,
     pub orientation: Orientation,
     pub brightness: Brightness,
     /// Set only when [`DisplayMode::Image`] is selected.
@@ -314,17 +373,19 @@ impl DisplayPreset {
             readings: [
                 ReadingSlot {
                     metric: LcdMetric::CpuTemperature,
-                    reading: Rgb::new(0x6F, 0x4E, 0xF2),
-                    text: Rgb::new(0xE6, 0xE8, 0xEF),
+                    reading: Rgb::new(0x6B, 0x00, 0xDE),
+                    reading_end: Some(Rgb::new(0xD6, 0x00, 0xBF)),
+                    text: Rgb::new(0xFF, 0xFF, 0xFF),
                 },
                 ReadingSlot {
                     metric: LcdMetric::GpuTemperature,
-                    reading: Rgb::new(0x37, 0xC2, 0xA6),
-                    text: Rgb::new(0xE6, 0xE8, 0xEF),
+                    reading: Rgb::new(0xD6, 0x00, 0xBF),
+                    reading_end: Some(Rgb::new(0x6B, 0x00, 0xDE)),
+                    text: Rgb::new(0xFF, 0xFF, 0xFF),
                 },
             ],
-            background: Rgb::new(0x0B, 0x0C, 0x10),
-            logo: Rgb::new(0x8A, 0x90, 0xA2),
+            background: Rgb::BLACK,
+            logo: None,
             orientation: Orientation::Deg0,
             brightness: Brightness::FULL,
             image: None,
@@ -569,6 +630,38 @@ mod tests {
     }
 
     #[test]
+    fn a_preset_written_before_the_band_had_two_colors_still_loads() {
+        // The field was added after profiles were already on disk. Absent means
+        // a solid band, which is what those profiles drew, rather than a color
+        // nobody chose being invented for them.
+        let json = r#"{"mode":"dual_infographic","readings":[
+            {"metric":"cpu_temperature","reading":{"r":111,"g":78,"b":242},
+             "text":{"r":230,"g":232,"b":239}},
+            {"metric":"gpu_temperature","reading":{"r":55,"g":194,"b":166},
+             "text":{"r":230,"g":232,"b":239}}],
+            "background":{"r":11,"g":12,"b":16},"logo":{"r":138,"g":144,"b":162},
+            "orientation":"deg0","brightness":100,"image":null}"#;
+        let preset: DisplayPreset =
+            serde_json::from_str(json).expect("an older preset still loads");
+        assert_eq!(preset.readings[0].reading_end, None);
+        assert_eq!(
+            preset.readings[0].band_end(),
+            preset.readings[0].reading,
+            "a band with no second color is solid"
+        );
+        assert!(preset.validate().is_ok());
+
+        // And a preset that carries one round-trips with it.
+        let two_colored = DisplayPreset::default_infographic();
+        assert!(two_colored.readings[0].reading_end.is_some());
+        let encoded = serde_json::to_string(&two_colored).unwrap();
+        assert_eq!(
+            serde_json::from_str::<DisplayPreset>(&encoded).unwrap(),
+            two_colored
+        );
+    }
+
+    #[test]
     fn an_unknown_preset_field_is_rejected_rather_than_ignored() {
         let json = r#"{"mode":"solid","readings":[],"background":{"r":0,"g":0,"b":0},
             "logo":{"r":0,"g":0,"b":0},"orientation":"deg0","brightness":100,
@@ -589,11 +682,23 @@ mod tests {
     }
 
     #[test]
-    fn only_the_infographic_draws_readings_and_only_image_mode_needs_a_file() {
-        assert!(DisplayMode::DualInfographic.uses_readings());
-        assert!(!DisplayMode::Solid.uses_readings());
-        assert!(!DisplayMode::Image.uses_readings());
+    fn each_mode_declares_how_many_readings_it_draws() {
+        assert_eq!(DisplayMode::DualInfographic.reading_slots(), 2);
+        assert_eq!(DisplayMode::SingleReading.reading_slots(), 1);
+        assert_eq!(DisplayMode::Solid.reading_slots(), 0);
+        assert_eq!(DisplayMode::Image.reading_slots(), 0);
+
+        // The count is what `uses_readings` is derived from, so a mode can
+        // never claim to draw readings and then have no slot to draw.
+        for mode in DisplayMode::ALL {
+            assert_eq!(mode.uses_readings(), mode.reading_slots() > 0);
+            assert!(
+                mode.reading_slots() <= 2,
+                "{mode:?} asks for more slots than a preset carries"
+            );
+        }
         assert!(DisplayMode::Image.uses_image());
         assert!(!DisplayMode::Solid.uses_image());
+        assert!(!DisplayMode::SingleReading.uses_image());
     }
 }

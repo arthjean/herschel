@@ -267,22 +267,51 @@ and the `hidraw` one silently does not, which looks exactly like a wrong rule.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| Display-mode and metric selects, Reading 1/2, Text 1/2, Background and Logo colors, Rotate Display, and a preview matching the panel | `app/src/display.rs` (`DisplayEditor`, `DisplayColorField`), `app/src/shell.rs` (`lcd_row`, `lcd_detail`, `metric_select`, `color_field`) | `the_editor_exposes_the_six_color_controls_the_story_names`, `every_color_field_is_separately_addressable`, `the_six_fields_are_ordered_so_each_pair_sits_together`, `every_lighting_control_keeps_traversal_order_equal_to_visual_order`, `the_panel_row_follows_whatever_the_controller_reported`; captures [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) and [`ep-004-lcd-writable.png`](./screenshots/ep-004-lcd-writable.png), both against the answering panel, and [`lighting-panel-open.png`](./screenshots/lighting-panel-open.png) for the arrangement those controls are in now |
+| Display-mode and metric selects, Reading 1/2, Text 1/2, Background and Logo colors, Rotate Display, and a preview matching the panel | `app/src/display.rs` (`DisplayEditor`, `DisplayColorField`), `app/src/shell.rs` (`lcd_row`, `lcd_detail`, `metric_select`, `color_group`, `color_field`) | `the_editor_exposes_the_six_color_controls_the_story_names`, `every_color_field_is_separately_addressable`, `the_six_fields_are_ordered_so_each_pair_sits_together`, `every_field_names_both_the_slot_it_belongs_to_and_what_it_paints`, `every_lighting_control_keeps_traversal_order_equal_to_visual_order`, `the_panel_row_follows_whatever_the_controller_reported`; captures [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) and [`ep-004-lcd-writable.png`](./screenshots/ep-004-lcd-writable.png), both against the answering panel, and [`lighting-panel-open.png`](./screenshots/lighting-panel-open.png) for the arrangement those controls are in now. All six controls are the same six; what the redesign below changed is that they are now grouped under the reading they color, and that the field the criterion calls Logo is labeled **Wordmark**, which is what it paints (AC-6 asks for the project's own wordmark or no logo, and there is no logo) |
 | Any editor change repaints the preview within 16.7 ms at P95, writing no hardware | `app/src/display.rs` (`DisplayScreen::edit`), `lcd-renderer` (`render`, `Framebuffer::to_png`), `app/src/preview.rs` (`panel_preview`) | `every_editor_change_moves_the_preview_with_it` covers *which* changes reach the preview, and `a_preview_repaint_stays_inside_the_frame_budget` covers how long one takes. Measured on this machine, release build, 300 repaints with a moving reading: render alone **1.12 ms** at P95, render plus PNG encode **1.50 ms** at P95, against a 16.7 ms budget. Nothing in the path opens a device |
 | Apply renders one typed `DisplayPreset` into both the preview and the exact-resolution framebuffer | `crates/lcd-renderer` called by `app/src/preview.rs` and by `daemon/src/display.rs` | `the_preview_renders_the_same_frame_the_daemon_would_send`, `a_frame_encodes_to_a_png_the_toolkit_can_decode` (asserts every preview pixel equals the frame pixel), `a_frame_is_exactly_the_panels_size_in_the_panels_format`, `rgb565_packs_five_six_five_most_significant_byte_first` |
 | An invalid, incomplete or out-of-gamut hex leaves Apply disabled, the prior valid preview visible, and sends no frame | `app/src/display.rs` (`parsed_color`, `PreviewState`), `app/src/shell.rs` (`apply` state) | `an_incomplete_color_names_its_own_field_and_blocks_apply`, `the_preview_keeps_the_last_valid_picture_while_a_field_is_mid_edit`, `a_preset_the_renderer_refuses_never_reaches_the_endpoint`, `an_invalid_preset_is_refused_before_the_capability_gate_is_even_reached` |
 | A static image that fails to decode or exceeds 8192x8192 is rejected without panic, and no partial frame reaches the device | `lcd-renderer/src/lib.rs` (`draw_image`), `core/src/display.rs` (`MAX_IMAGE_DIMENSION`) | `a_file_that_is_not_an_image_is_rejected_without_panicking`, `an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded` (a 45-byte PNG declaring 9000x9000: the refusal comes from the size it claims, not from the file being large), `image_mode_without_a_file_is_refused_before_anything_is_drawn` |
-| The default preview uses the project's own wordmark and never NZXT's | `core/src/lib.rs` (`PRODUCT_NAME`), `lcd-renderer` (`draw_wordmark`) | `the_panel_never_carries_a_vendors_wordmark`, `the_face_covers_every_character_the_panel_can_be_asked_to_draw` |
+| The default preview uses the project's own wordmark and never NZXT's | `lcd-renderer/src/lib.rs`, which draws no wordmark at all | `the_panel_carries_no_wordmark_at_all`. The criterion allows "the project's own wordmark **or no logo**"; the panel now takes the second option, so the renderer no longer references `PRODUCT_NAME` and there is nothing on the glass to mistake for a vendor's mark |
 
-### Two typefaces, both drawn rather than loaded
+### One typeface, a real one
 
-The panel is 240 pixels across and needed text. Embedding a font file would put
-a third party's licensing into the shipped binary for six captions, so both
-faces are original work: a five by seven bitmap for the captions and the
-wordmark, and a seven-segment face for the readings, where a stroked shape stays
-legible at a glance and scales without a staircase. The arcs and the segments
-are rasterized with coverage rather than hard pixels, so an edge lands as a
-blend.
+The panel holds no font. It is a framebuffer that accepts pixels and nothing
+else: liquidctl's reverse-engineering of the same device records that it offers
+only a built-in liquid-temperature mode, orientation and brightness, and that
+contributors displayed text by pre-rendering images
+([liquidctl#479](https://github.com/liquidctl/liquidctl/pull/479)). Every glyph
+on the glass is therefore rasterized host-side, which means the choice of face
+is entirely ours.
+
+An earlier iteration drew the glyphs by hand, as strokes and elliptical
+segments, to keep a third party's licensing out of the binary. That was the
+wrong trade: the result was recognizably built rather than typeset, and the
+licensing it avoided turned out not to be a problem. `lcd-renderer/src/text.rs`
+now rasterizes a real face with `ab_glyph` (Apache-2.0), and
+`Canvas::fill_outline`, the scanline rasterizer that the hand-drawn face
+required, went with it.
+
+The face is Noto Sans SemiBold 2.015, cut to 98 glyphs with `pyftsubset`: ten
+kilobytes rather than six hundred. It is embedded rather than resolved through
+fontconfig, because FR-14 requires the daemon and the client to rasterize the
+same pixels from the same preset, and a face looked up on the system would make
+that depend on what happens to be installed. The family carries no Reserved Font
+Name, so the subset keeps its name and its provenance stays checkable; the
+rebuild command, the OFL 1.1 reasoning and the compatibility direction are
+recorded in `REUSE.toml` beside the file.
+
+Sizes throughout the renderer are cap heights rather than em sizes, because a
+layout on a 240 pixel panel is reasoned about in terms of how tall the digits
+look. The conversion factor is measured from the embedded face at startup
+instead of declared, since `ab_glyph` scales by ascent minus descent, which is
+neither the em nor the cap height and differs between faces
+(`a_capital_comes_out_the_height_it_was_asked_for` asserts the invariant against
+drawn pixels, so it survives a change of face). The digits of this face share
+one advance, which is what keeps a reading from shifting sideways as it changes
+(`the_digits_are_tabular_so_a_reading_never_shifts_under_itself`), and the set of
+characters the product can put on the glass is asserted against the subset
+(`every_character_the_panel_can_be_asked_to_draw_has_a_glyph`).
 
 ### What the screen does not offer
 
@@ -316,7 +345,7 @@ the channels'). The rail now holds three primary destinations, `ctrl-1` through
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| Two colored arcs, two temperatures, CPU/GPU labels and the wordmark, in the selected colors | `lcd-renderer/src/lib.rs` (`draw_infographic`, `draw_reading`, `draw_wordmark`) | `both_readings_are_drawn_and_each_uses_its_own_colors` (asserts every selected color appears in the frame), `the_two_gauges_occupy_opposite_halves_of_the_dial`, `a_higher_reading_fills_more_of_its_gauge`; capture [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) shows the live CPU and GPU readings |
+| Two colored arcs, two temperatures, CPU/GPU labels and the wordmark, in the selected colors | `lcd-renderer/src/lib.rs` (`draw_infographic`, `draw_gauge`, `draw_reading`, `draw_wordmark`) | `both_readings_are_drawn_and_each_uses_its_own_colors` (asserts every selected color appears in the frame), `the_two_gauges_occupy_opposite_sides_of_the_dial`, `a_higher_reading_fills_more_of_its_gauge`, `a_gauge_shades_along_its_sweep_and_ends_on_the_chosen_color`; capture [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) shows the live CPU and GPU readings |
 | The framebuffer updates once per second and displayed data age stays <=2 s at P95 over 30 minutes | `core/src/display.rs` (`FRAME_INTERVAL_MS`), `daemon/src/server.rs` (`spawn_display_ticker`), `daemon/src/state.rs` (`tick_display`) | See "Thirty minutes of output" under US-016. The render itself costs 1.13 ms at P95 on the device path, so the age is bounded by the tick rather than by the work |
 | An unavailable metric renders `--` and a neutral arc rather than zero degrees | `core/src/display.rs` (`MetricSample::text`, `fraction`), `lcd-renderer` (the `None` arm of the arc) | `an_unavailable_reading_shows_dashes_and_never_a_zero_gauge` (asserts the gauge loses the reading's color while the dashes keep it, and that the frame differs from a reading of zero), `an_unavailable_metric_is_never_drawn_as_zero`, `a_reading_and_its_unavailable_marker_occupy_the_same_room` |
 | Rotate Display turns the preview and the physical output together by the validated increment, preserving text alignment | `core/src/display.rs` (`Orientation`), `lcd-renderer/src/lib.rs` (`rotate`) | `a_quarter_turn_moves_the_picture_and_keeps_every_pixel`, `four_quarter_turns_return_the_picture_unchanged`, `rotation_walks_the_validated_increment_and_returns_to_zero`; capture [`ep-004-lcd-rotated-180.png`](./screenshots/ep-004-lcd-rotated-180.png). The two turn together by construction rather than by coincidence: one framebuffer is both, the device is left on its own orientation zero, and the frames already proven to reach the glass verbatim carry the rotation as pixel content. A rotated frame has not been photographed on the panel, which is the one part of this row that rests on that inference rather than on an observation, and which is deferred to the polish iteration |
@@ -333,6 +362,13 @@ it last committed and compares those
 a fraction of a degree survives into a different picture depends on where the
 antialiased end of the gauge falls, so nothing promises it either way; US-018
 asks for one frame a second regardless.
+
+`draw_image` opened and decoded the operator's file twice per render, once for
+the declared size and once for the pixels, on every panel refresh and every
+preview repaint. It opens once and reads the size from the decoder's header, so
+the ceiling is still enforced before a pixel is decoded
+(`an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded` still passes
+against a 45-byte PNG claiming 9000x9000).
 
 ## Boundaries this epic did not cross
 
@@ -526,3 +562,60 @@ for the Lighting screen; the same line is missing here, and it is a gap in the
 record rather than a known failure.
 
 Nothing else in the epic rests on an untested assumption.
+
+## The panel redesign, 2026-08-08
+
+EP-004 delivered a working panel. This iteration changed how it looks, on the
+glass and in the editor, against the CAM reference screens the PRD points US-017
+at. Nothing about the transport, the capability gate or the validated-firmware
+list moved: the same `DisplayPreset` goes to the same `LcdLink`, and every
+refusal in the tables above still refuses.
+
+### On the glass
+
+| What changed | Why | Proof |
+|---|---|---|
+| A real typeface replaces the bitmap captions and the seven-segment readings | Two alphabets on a 240 pixel panel is what made it read as assembled rather than made, and hand-drawn glyphs were not the fix. See "One typeface, a real one" above | `a_capital_comes_out_the_height_it_was_asked_for`, `the_digits_are_tabular_so_a_reading_never_shifts_under_itself`, `every_character_the_panel_can_be_asked_to_draw_has_a_glyph`, `a_string_is_drawn_at_the_size_and_place_it_was_given` |
+| The two gauges moved from the top and bottom of the dial to its left and right, mirrored about the vertical, both filling upward from the foot | Stacked halves read as two unrelated arcs. Mirrored bands read as one instrument, and they leave the openings at twelve and six o'clock where a dial is expected to be interrupted | `the_two_gauges_occupy_opposite_sides_of_the_dial` |
+| A band shades between the two colors its slot names, and only in the layouts that declare they shade | A first attempt derived the second color by turning the hue, which put colors on the glass the operator had not picked. The reference does it the other way round: its Radial Fill mode gives the operator two Visualization swatches and gradates between them, while its paired layout draws solid arcs. `DisplayMode::gradates_band` is that distinction, and `ReadingSlot::reading_end` the second color | `a_band_only_ever_shows_the_colors_its_slot_names` asserts both that each named color appears and that no pixel of the ring falls outside the envelope of the background and those two, and that the paired layout draws solid whatever second color the preset carries |
+| Both ends of every band are rounded off with a half disc of the band's own thickness | The reference's arcs are drawn that way, and a square end on a curved band reads as cut rather than machined. The cap extends the band past the angle it names by half its width, which is what the gap between the two paired bands is sized around | `a_rounded_end_extends_the_band_past_the_angle_it_names`, `a_rounded_band_with_no_sweep_is_the_single_dot_a_gauge_at_zero_shows` |
+| A gauge sitting at zero shows a dot rather than nothing | It falls out of the rounded ends: both land on the same point, so the two half discs make one. It is also the dot the reference shows at zero, and it is what distinguishes a real reading of zero from an unavailable one, which draws a thinner colorless band and no dot | `a_rounded_band_with_no_sweep_is_the_single_dot_a_gauge_at_zero_shows`, `an_unavailable_reading_shows_dashes_and_never_a_zero_gauge` |
+| The paired layout sets its two readings side by side in columns, each with its caption under it in the band's own color, and each flanked by a short band centered on nine or three o'clock | The arrangement of the reference screen. Stacked, the two values sit on one axis and read as a single four-digit number; side by side, each is a column with its own caption and its own band, and the pairing is legible without reading a word. The caption takes the band's color because that is what ties a reading to the arc measuring it | `the_two_gauges_occupy_opposite_sides_of_the_dial`, `a_reading_is_centered_on_its_digits_and_not_on_its_unit` |
+| The default palette is the reference's own: `#6B00DE` and `#D600BF` for the bands and captions, white for the values, black for the field | What the screen being imitated ships with. One measured cost: that violet reads **2.68:1** against black, under the 3:1 this project holds a non-text element to, so the editor shows its readability warning on Band 1 out of the box. Pinned rather than hidden, because the alternative is either a palette that is not the reference's or a guard that has been quietly loosened | `the_default_preset_is_the_reference_palette_and_its_violet_is_dim` records the exact ratio and asserts every other element still clears its own bar |
+| A reading is centered on its digits alone, with the unit hung off the right at 45 percent of the value's size and aligned on the cap line | Where the reference puts it. Centering the pair as a group would put the same number in a different place under a degree sign and under a percent sign, so the panel would appear to shift when the metric changed | `a_reading_is_centered_on_its_digits_and_not_on_its_unit` measures the drawn columns under both units |
+| The value reads in the same color as its caption; the band alone carries the accent | The alignment the reference makes: on its screens the number is white and the Visualization colors belong to the ring. Ours had the number take the band's color, which left the value competing with the gauge instead of being read off it | `ReadingSlot::text` now colors the value and the caption, `reading`/`reading_end` only the band; `an_unavailable_reading_shows_dashes_and_never_a_zero_gauge` checks the dashes follow the text color |
+| A preset written before the band had two colors still loads, as a solid band | The field was added after profiles were already on disk. Absent means solid, which is what those profiles drew, rather than a color nobody chose being invented for them | `a_preset_written_before_the_band_had_two_colors_still_loads` |
+| The unit is set at the value's size and in the value's color | It is a mark on the number, not a label beside it. The caption below carries the other color, which is what Text 1/2 now exclusively means | `both_readings_are_drawn_and_each_uses_its_own_colors` |
+| A `Single reading` mode centers three lines inside a full ring: the name, the value, the metric | The arrangement CAM uses for a one-metric screen. The ring fills clockwise from the top, which is where a gauge with nothing beside it starts | `the_single_layout_shows_one_reading_and_gives_it_the_whole_dial`, `each_mode_declares_how_many_readings_it_draws` |
+| The single layout's value is sized against the widest reading its **metric** can produce, not the one it holds | Fitting the current value would resize the whole line every time a load crossed 99, which is a panel that never sits still. Fitting the metric picks a size once and keeps it, at the cost of a percentage being set slightly smaller than a temperature | `single_value_height`; the ceiling is `SINGLE_VALUE_HEIGHT` and the fit only ever lowers it |
+| The panel carries no wordmark at all, and the color that painted it is gone from the editor | US-017 AC-6 asks for the project's own wordmark **or no logo**. It is now no logo: the glass shows the reading it exists to show and nothing that names anybody, which is the one arrangement that cannot be mistaken for a vendor's. A color control that paints nothing would be decorative, which this interface does not allow | `the_panel_carries_no_wordmark_at_all` measures the band of glass each layout used to put a name in, `the_editor_exposes_every_color_control_the_story_names` asserts no label mentions one |
+| `DisplayPreset::logo` survives as an ignored `Option<Rgb>` that is never written back | A preset refuses unknown fields, so removing it outright would make a profile written earlier fail to load, and the preset lives inside stored profiles. `skip_serializing` keeps it out of every file written from now on; the field can go once no such file can remain | `a_preset_written_before_the_band_had_two_colors_still_loads` covers the same deserialization path |
+| The preview is a disc, with nothing behind it | The screen is square but the window in the cooler is not: the corners of the framebuffer sit behind the housing rather than on the glass, so showing them would be showing pixels the operator cannot see | `PREVIEW_SIDE` in `app/src/preview.rs` |
+
+The repaint budget held. Release build, 60 repaints with a moving reading,
+render plus PNG encode stays inside the 16.7 ms US-017 allows
+(`a_preview_repaint_stays_inside_the_frame_budget`, which fails the build rather
+than reporting a number).
+
+### In the editor
+
+| What changed | Why |
+|---|---|
+| The color fields are grouped under what they paint: Band, Fade to and Text under `Reading 1`, the same under `Reading 2`, then Background and Wordmark | Equally weighted fields in a two-column grid is a wall. The slot number moved onto the group, so each field is labeled by its role. `Fade to` appears only where a layout actually shades, which is why the paired layout still shows six fields and the single reading shows four |
+| `Logo` is labeled `Wordmark` | It colors the product's name. There is no logo on the panel and AC-6 requires that there never be one |
+| The preview is the disc itself rather than a square plate inside a ring | A square plate under a round window read as a picture file sitting on the work surface |
+| The mode select offers `Single reading` alongside `Dual infographic` and `Solid color` | `the_screen_offers_only_the_modes_it_can_configure_completely` still holds: the new mode needs no input the screen cannot supply |
+
+### What this iteration did not do
+
+**The four committed captures still show the previous design.** They remain
+accurate about which controls exist and which gates apply, and inaccurate about
+what the panel and the editor look like. Retaking them needs a screenshot of a
+running window, which is the same UI gate matrix already deferred above; the two
+should be done in one pass.
+
+**`Single reading` is not in the PRD.** US-017 AC-1 lists the controls the
+screen must contain and US-018 specifies the dual infographic; neither excludes
+a second layout, and nothing in the tables above weakened. Whether it earns a
+story of its own is a scoping decision for the PRD rather than one this document
+should make quietly.

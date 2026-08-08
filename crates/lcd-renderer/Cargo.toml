@@ -16,5 +16,13 @@ thiserror.workspace = true
 # build; MIT OR Apache-2.0, compatible with this project's GPL-3.0-or-later.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+# Rasterizes the panel's text. Apache-2.0, compatible with this project's
+# GPL-3.0-or-later. Chosen over fontdue and swash because it is the smallest
+# graph that still gives sub-pixel glyph placement and OpenType kerning:
+# owned_ttf_parser to read the outlines and ab_glyph_rasterizer to fill them,
+# and nothing else. The coverage callback lands directly on this crate's own
+# Canvas::blend, so no intermediate bitmap is allocated per glyph.
+ab_glyph = "0.2.32"
+
 [lints]
 workspace = true

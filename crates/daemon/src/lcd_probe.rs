@@ -213,7 +213,6 @@ pub fn run<O: Operator>(
     for (name, color) in PROBE_COLORS {
         let mut preset = DisplayPreset::solid(color);
         preset.brightness = brightness;
-        preset.logo = contrasting_logo(color);
         // The panel is left on its own orientation, so nothing this run sends
         // can leave a rotation behind.
         preset.orientation = Orientation::Deg0;
@@ -362,22 +361,6 @@ fn restore<O: Operator>(
         };
     }
     Restoration::Confirmed { observed }
-}
-
-/// A wordmark that stays readable on a saturated field.
-///
-/// The probe fills the panel with primaries, so a fixed wordmark color would
-/// vanish into one of them. Black or white by luminance is enough: the point of
-/// the wordmark here is to prove text renders at all.
-fn contrasting_logo(background: Rgb) -> Rgb {
-    let luminance = 0.299 * f32::from(background.r)
-        + 0.587 * f32::from(background.g)
-        + 0.114 * f32::from(background.b);
-    if luminance > 140.0 {
-        Rgb::BLACK
-    } else {
-        Rgb::new(0xff, 0xff, 0xff)
-    }
 }
 
 #[cfg(test)]
@@ -640,19 +623,18 @@ mod tests {
     }
 
     #[test]
-    fn the_wordmark_stays_readable_on_every_field_the_probe_sends() {
+    fn every_field_the_probe_sends_is_one_the_operator_can_tell_apart() {
+        // The frames are what the operator watches for, and they now carry
+        // nothing but their own color, so the colors themselves have to be
+        // distinct and none of them may be the background of another.
+        let mut seen = Vec::new();
         for (name, color) in PROBE_COLORS {
-            let logo = contrasting_logo(color);
             assert!(
-                logo == Rgb::BLACK || logo == Rgb::new(0xff, 0xff, 0xff),
-                "{name} produced {logo:?}"
+                !seen.contains(&color),
+                "{name} repeats a color already sent"
             );
-            assert_ne!(
-                logo, color,
-                "the wordmark would vanish into the {name} field"
-            );
+            seen.push(color);
         }
-        assert_eq!(contrasting_logo(Rgb::new(0xff, 0xff, 0xff)), Rgb::BLACK);
-        assert_eq!(contrasting_logo(Rgb::BLACK), Rgb::new(0xff, 0xff, 0xff));
+        assert!(seen.len() > 1, "one field proves nothing changed");
     }
 }

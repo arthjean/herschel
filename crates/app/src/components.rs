@@ -703,6 +703,28 @@ pub fn chevron(open: bool, color: Hsla) -> Svg {
     icon(name, ICON_SIZE, color).flex_none()
 }
 
+/// A labeled group of controls inside an already-titled surface.
+///
+/// One step quieter than a [`Panel`]: no fill and no padding of its own, just a
+/// name over a set of controls that belong together. A detail pane with a dozen
+/// controls needs that step, because without it every control on it carries the
+/// same weight and the operator has to read all of them to find one.
+pub fn group(title: impl Into<SharedString>, content: Div) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w_0()
+        .gap(space::SM)
+        .child(
+            div()
+                .text_xs()
+                .text_color(color::TEXT_MUTED.hsla())
+                .child(title.into()),
+        )
+        .child(content)
+}
+
 /// The raised surface a [`Panel`] draws on, without its heading.
 ///
 /// Shared rather than duplicated so a section that carries no title still sits

@@ -35,7 +35,7 @@ use crate::assets::Icon;
 use crate::components::{
     Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceHealth, DeviceRow,
     ICON_SIZE, Metric, Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron,
-    focus_visible, icon, node_at, panel_surface, set_focus_visible,
+    focus_visible, group, icon, node_at, panel_surface, set_focus_visible,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
@@ -230,8 +230,13 @@ pub const ROW_HEAD_MIN_WIDTH: Pixels = px(180.0);
 /// Width of one field in an open row's detail, two of which fit side by side
 /// in the column left of the preview.
 pub const FIELD_WIDTH: Pixels = px(168.0);
-/// Width of the color grid: exactly two fields and the gap between them.
-pub const COLOR_GRID_WIDTH: Pixels = px(348.0);
+/// Width of one color field, and of the label naming the slot a pair belongs to.
+///
+/// The pair sits on one line with its slot name, so the two are sized together:
+/// a field wide enough for a swatch and six digits, and a label wide enough for
+/// "Reading 1" without wrapping under its own fields.
+pub const COLOR_FIELD_WIDTH: Pixels = px(132.0);
+pub const SLOT_LABEL_WIDTH: Pixels = px(72.0);
 /// Side of the appearance thumbnail at the head of a device row.
 pub const ROW_THUMBNAIL: Pixels = px(34.0);
 
@@ -335,7 +340,11 @@ pub const TRACK_GRAB_MARGIN: Pixels = px(6.0);
 /// and the daemon support it, and a saved profile can select it; what is
 /// missing is a way to pick the file, which no criterion in US-017 asks the
 /// screen for.
-pub const SCREEN_MODES: [DisplayMode; 2] = [DisplayMode::DualInfographic, DisplayMode::Solid];
+pub const SCREEN_MODES: [DisplayMode; 3] = [
+    DisplayMode::DualInfographic,
+    DisplayMode::SingleReading,
+    DisplayMode::Solid,
+];
 
 /// Which popover, if any, is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2065,54 +2074,50 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(space::MD)
-                    // One metric select per reading slot. The infographic draws
-                    // two, so it configures two.
+                    .gap(space::LG)
+                    // What the panel shows, then how it is colored, then what
+                    // sends it. Grouped that way the six colors stop reading as
+                    // one undifferentiated wall of fields: each one sits under
+                    // the thing it paints.
                     .when(editor.mode.uses_readings(), |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(space::MD)
-                                .child(div().flex_none().w(FIELD_WIDTH).child(self.metric_select(
-                                    0,
-                                    base + LCD_OFFSET_METRIC_ONE,
-                                    cx,
-                                )))
-                                .child(div().flex_none().w(FIELD_WIDTH).child(self.metric_select(
-                                    1,
-                                    base + LCD_OFFSET_METRIC_TWO,
-                                    cx,
-                                ))),
-                        )
+                        this.child(group(
+                            "Readings",
+                            div().flex().flex_wrap().gap(space::MD).children(
+                                (0..editor.mode.reading_slots()).map(|slot| {
+                                    div().flex_none().w(FIELD_WIDTH).child(self.metric_select(
+                                        slot,
+                                        base + LCD_OFFSET_METRIC_ONE + slot as isize,
+                                        cx,
+                                    ))
+                                }),
+                            ),
+                        ))
                     })
-                    .child(
-                        // Two columns, held by the container's own width rather
-                        // than by whatever the window leaves: the fields come in
-                        // pairs, and a third column would split a pair across
-                        // two rows.
+                    .child(group(
+                        "Colors",
                         div()
                             .flex()
-                            .flex_wrap()
+                            .flex_col()
                             .gap(space::MD)
-                            .max_w(COLOR_GRID_WIDTH)
-                            // A color the current mode never draws is absent,
-                            // not disabled: a control that cannot change the
-                            // picture still says the picture has that part.
+                            // One line per reading, then the pair that belongs
+                            // to the panel itself rather than to a reading.
+                            .children((0..editor.mode.reading_slots()).map(|slot| {
+                                self.color_group(
+                                    Some(format!("Reading {}", slot + 1)),
+                                    slot,
+                                    base,
+                                    cx,
+                                )
+                            }))
                             .children(
                                 DisplayColorField::ALL
                                     .into_iter()
-                                    .enumerate()
-                                    .filter(|(_, field)| field.is_used_by(editor.mode))
-                                    .map(|(index, field)| {
-                                        div().flex_none().w(FIELD_WIDTH).child(self.color_field(
-                                            field,
-                                            base + LCD_OFFSET_COLOR_BASE + index as isize,
-                                            cx,
-                                        ))
-                                    }),
+                                    .any(|field| {
+                                        field.slot().is_none() && field.is_used_by(editor.mode)
+                                    })
+                                    .then(|| self.color_group(None, usize::MAX, base, cx)),
                             ),
-                    )
+                    ))
                     .child(
                         div()
                             .flex()
@@ -2173,6 +2178,49 @@ impl Shell {
                         confirmed,
                     )),
             )
+    }
+
+    /// The colors belonging to one reading slot, or the two belonging to the
+    /// panel itself when `slot` names none.
+    ///
+    /// The fields keep a fixed tab stop per field rather than per rendered
+    /// control, so a mode that hides a slot does not renumber the rest.
+    fn color_group(
+        &self,
+        title: Option<String>,
+        slot: usize,
+        base: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let fields = DisplayColorField::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|(_, field)| field.slot() == (slot != usize::MAX).then_some(slot));
+
+        div()
+            .flex()
+            .flex_wrap()
+            .items_end()
+            .gap(space::MD)
+            .children(title.map(|title| {
+                div()
+                    .flex_none()
+                    .w(SLOT_LABEL_WIDTH)
+                    .pb(space::SM)
+                    .text_xs()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(title)
+            }))
+            .children(fields.map(|(index, field)| {
+                div()
+                    .flex_none()
+                    .w(COLOR_FIELD_WIDTH)
+                    .child(self.color_field(
+                        field,
+                        base + LCD_OFFSET_COLOR_BASE + index as isize,
+                        cx,
+                    ))
+            }))
     }
 
     /// The head of a device row: chevron, thumbnail and two lines of text, as
@@ -2347,10 +2395,12 @@ impl Shell {
     /// The metric select for one reading slot.
     fn metric_select(&self, slot: usize, tab_index: isize, cx: &mut Context<Self>) -> Div {
         let selected = self.lcd.editor().metrics[slot];
+        // The group above already says these are the readings, so the label
+        // names the slot and nothing more.
         let (id, label) = if slot == 0 {
-            ("lcd-metric-1", "Reading 1 metric")
+            ("lcd-metric-1", "Reading 1")
         } else {
-            ("lcd-metric-2", "Reading 2 metric")
+            ("lcd-metric-2", "Reading 2")
         };
         self.select(
             id,
@@ -2601,9 +2651,11 @@ impl Shell {
         let open = self.popover == Some(Popover::Swatches { field });
         let id = SharedString::from(format!("lcd-color-{}", field.key()));
 
+        // The role rather than the full name: the group beside the field
+        // already carries the slot it belongs to.
         let control = ColorField::new(
             id.clone(),
-            field.label(),
+            field.role(),
             self.lcd.editor().color_text(field),
         )
         .tab_index(tab_index)
@@ -3230,8 +3282,9 @@ mod tests {
         // A mode whose Apply could only ever refuse is absent, not disabled,
         // which is the same rule the Lighting screen applies to an unproven
         // effect. Static images stay in the vocabulary and in the renderer.
-        assert_eq!(SCREEN_MODES.len(), 2);
+        assert_eq!(SCREEN_MODES.len(), 3);
         assert!(SCREEN_MODES.contains(&DisplayMode::DualInfographic));
+        assert!(SCREEN_MODES.contains(&DisplayMode::SingleReading));
         assert!(SCREEN_MODES.contains(&DisplayMode::Solid));
         assert!(
             !SCREEN_MODES.contains(&DisplayMode::Image),
@@ -3248,25 +3301,37 @@ mod tests {
     }
 
     #[test]
-    fn the_editor_exposes_the_six_color_controls_the_story_names() {
-        assert_eq!(DisplayColorField::ALL.len(), 6);
+    fn the_editor_exposes_every_color_control_the_story_names() {
+        // US-017 names a color per reading, a text color per reading, a
+        // background and a logo. The band's second color is the one addition;
+        // the logo color is the one removal, since the panel carries no
+        // wordmark for it to paint, which AC-6 allows in as many words.
         let labels: Vec<_> = DisplayColorField::ALL
             .map(DisplayColorField::label)
             .to_vec();
         let mut unique = labels.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!(unique.len(), 6, "labels must be distinct: {labels:?}");
+        assert_eq!(
+            unique.len(),
+            labels.len(),
+            "labels must be distinct: {labels:?}"
+        );
         for required in [
-            "Reading 1",
-            "Reading 2",
+            "Band 1",
+            "Band 2",
+            "Fade 1",
+            "Fade 2",
             "Text 1",
             "Text 2",
             "Background",
-            "Logo",
         ] {
             assert!(labels.contains(&required), "{required} is missing");
         }
+        assert!(
+            !labels.iter().any(|label| label.contains("Wordmark")),
+            "nothing draws a wordmark, so nothing colors one: {labels:?}"
+        );
     }
 
     #[test]

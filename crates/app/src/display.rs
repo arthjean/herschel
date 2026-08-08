@@ -21,39 +21,68 @@ use nzxt_core::lighting::{Brightness, Rgb};
 /// Percentage a single press moves the brightness.
 pub const BRIGHTNESS_STEP: u8 = 5;
 
-/// One of the six colors the editor exposes.
+/// One of the colors the editor exposes.
 ///
-/// Reading and Text are per slot because the two halves of the dial are
-/// configured separately: US-017 names Reading 1/2 and Text 1/2, and a shared
-/// color would make one of each pair unreachable.
+/// Band and Text are per slot because the two halves of the dial are configured
+/// separately: US-017 names Reading 1/2 and Text 1/2, and a shared color would
+/// make one of each pair unreachable. Each band also carries the color it fades
+/// to, which only the layouts that draw a band long enough to shade ever ask
+/// for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DisplayColorField {
     ReadingOne,
     ReadingTwo,
+    FadeOne,
+    FadeTwo,
     TextOne,
     TextTwo,
     Background,
-    Logo,
 }
 
 impl DisplayColorField {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::ReadingOne,
+        Self::FadeOne,
         Self::TextOne,
         Self::ReadingTwo,
+        Self::FadeTwo,
         Self::TextTwo,
         Self::Background,
-        Self::Logo,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::ReadingOne => "Reading 1",
-            Self::ReadingTwo => "Reading 2",
+            Self::ReadingOne => "Band 1",
+            Self::ReadingTwo => "Band 2",
+            Self::FadeOne => "Fade 1",
+            Self::FadeTwo => "Fade 2",
             Self::TextOne => "Text 1",
             Self::TextTwo => "Text 2",
             Self::Background => "Background",
-            Self::Logo => "Logo",
+        }
+    }
+
+    /// What this color paints, without the slot it belongs to.
+    ///
+    /// The editor groups the fields under the reading they color, so the slot
+    /// number is already on the group and repeating it on every field inside
+    /// only makes the labels longer. [`Self::label`] keeps the full name,
+    /// because an error names a field with no group around it.
+    pub fn role(self) -> &'static str {
+        match self {
+            Self::ReadingOne | Self::ReadingTwo => "Band",
+            Self::FadeOne | Self::FadeTwo => "Fade to",
+            Self::TextOne | Self::TextTwo => "Text",
+            Self::Background => "Background",
+        }
+    }
+
+    /// The reading slot this color belongs to, if it belongs to one.
+    pub fn slot(self) -> Option<usize> {
+        match self {
+            Self::ReadingOne | Self::FadeOne | Self::TextOne => Some(0),
+            Self::ReadingTwo | Self::FadeTwo | Self::TextTwo => Some(1),
+            Self::Background => None,
         }
     }
 
@@ -62,10 +91,11 @@ impl DisplayColorField {
         match self {
             Self::ReadingOne => "reading-1",
             Self::ReadingTwo => "reading-2",
+            Self::FadeOne => "fade-1",
+            Self::FadeTwo => "fade-2",
             Self::TextOne => "text-1",
             Self::TextTwo => "text-2",
             Self::Background => "background",
-            Self::Logo => "logo",
         }
     }
 
@@ -73,22 +103,29 @@ impl DisplayColorField {
         match self {
             Self::ReadingOne => 0,
             Self::ReadingTwo => 1,
-            Self::TextOne => 2,
-            Self::TextTwo => 3,
-            Self::Background => 4,
-            Self::Logo => 5,
+            Self::FadeOne => 2,
+            Self::FadeTwo => 3,
+            Self::TextOne => 4,
+            Self::TextTwo => 5,
+            Self::Background => 6,
         }
+    }
+
+    /// Whether this color is a band's second color.
+    fn is_fade(self) -> bool {
+        matches!(self, Self::FadeOne | Self::FadeTwo)
     }
 
     /// Whether this color is drawn at all in `mode`.
     ///
-    /// A solid field and a static image use neither reading nor caption color,
-    /// so those fields are absent rather than shown doing nothing.
+    /// A solid field and a static image use neither band nor text color, a
+    /// single reading uses only the first slot's, and a layout that draws its
+    /// bands solid has nothing to fade to. Those fields are absent rather than
+    /// shown doing nothing.
     pub fn is_used_by(self, mode: DisplayMode) -> bool {
-        match self {
-            Self::Background => !mode.uses_image(),
-            Self::Logo => !mode.uses_image(),
-            _ => mode.uses_readings(),
+        match self.slot() {
+            Some(slot) => slot < mode.reading_slots() && (!self.is_fade() || mode.gradates_band()),
+            None => !mode.uses_image(),
         }
     }
 }
@@ -100,7 +137,7 @@ pub struct DisplayEditor {
     /// Metric shown in each reading slot, in the order they are drawn.
     pub metrics: [LcdMetric; 2],
     /// Six hexadecimal digits per color, as typed, without a leading `#`.
-    colors: [String; 6],
+    colors: [String; 7],
     pub orientation: Orientation,
     pub brightness: u8,
     /// Path of the static image, when the operator picked one.
@@ -116,10 +153,11 @@ impl Default for DisplayEditor {
             colors: [
                 preset.readings[0].reading.to_hex(),
                 preset.readings[1].reading.to_hex(),
+                preset.readings[0].band_end().to_hex(),
+                preset.readings[1].band_end().to_hex(),
                 preset.readings[0].text.to_hex(),
                 preset.readings[1].text.to_hex(),
                 preset.background.to_hex(),
-                preset.logo.to_hex(),
             ],
             orientation: preset.orientation,
             brightness: preset.brightness.percent(),
@@ -179,16 +217,18 @@ impl DisplayEditor {
                 ReadingSlot {
                     metric: self.metrics[0],
                     reading: self.parsed_color(DisplayColorField::ReadingOne)?,
+                    reading_end: Some(self.parsed_color(DisplayColorField::FadeOne)?),
                     text: self.parsed_color(DisplayColorField::TextOne)?,
                 },
                 ReadingSlot {
                     metric: self.metrics[1],
                     reading: self.parsed_color(DisplayColorField::ReadingTwo)?,
+                    reading_end: Some(self.parsed_color(DisplayColorField::FadeTwo)?),
                     text: self.parsed_color(DisplayColorField::TextTwo)?,
                 },
             ],
             background: self.parsed_color(DisplayColorField::Background)?,
-            logo: self.parsed_color(DisplayColorField::Logo)?,
+            logo: None,
             orientation: self.orientation,
             brightness: Brightness::new(self.brightness).map_err(|source| DisplayError::Color {
                 field: "Brightness".to_string(),
@@ -212,10 +252,11 @@ impl DisplayEditor {
             colors: [
                 preset.readings[0].reading.to_hex(),
                 preset.readings[1].reading.to_hex(),
+                preset.readings[0].band_end().to_hex(),
+                preset.readings[1].band_end().to_hex(),
                 preset.readings[0].text.to_hex(),
                 preset.readings[1].text.to_hex(),
                 preset.background.to_hex(),
-                preset.logo.to_hex(),
             ],
             orientation: preset.orientation,
             brightness: preset.brightness.percent(),
@@ -314,21 +355,26 @@ mod tests {
         for (index, field) in DisplayColorField::ALL.into_iter().enumerate() {
             editor.set_color_text(field, format!("{index:02X}0000"));
         }
-        // Six fields, six distinct values: nothing shares a slot.
+        // One distinct value per field: nothing shares a slot.
         let values: Vec<String> = DisplayColorField::ALL
             .into_iter()
             .map(|field| editor.color_text(field).to_string())
             .collect();
         let unique: std::collections::HashSet<&String> = values.iter().collect();
-        assert_eq!(unique.len(), 6, "{values:?}");
+        assert_eq!(unique.len(), DisplayColorField::ALL.len(), "{values:?}");
 
         let preset = editor.preset().unwrap();
         assert_eq!(preset.readings[0].reading.r, 0x00);
-        assert_eq!(preset.readings[0].text.r, 0x01);
-        assert_eq!(preset.readings[1].reading.r, 0x02);
-        assert_eq!(preset.readings[1].text.r, 0x03);
-        assert_eq!(preset.background.r, 0x04);
-        assert_eq!(preset.logo.r, 0x05);
+        assert_eq!(preset.readings[0].band_end().r, 0x01);
+        assert_eq!(preset.readings[0].text.r, 0x02);
+        assert_eq!(preset.readings[1].reading.r, 0x03);
+        assert_eq!(preset.readings[1].band_end().r, 0x04);
+        assert_eq!(preset.readings[1].text.r, 0x05);
+        assert_eq!(preset.background.r, 0x06);
+        assert_eq!(
+            preset.logo, None,
+            "the panel carries no wordmark, so the preset writes no color for one"
+        );
     }
 
     #[test]
@@ -393,8 +439,8 @@ mod tests {
             LcdMetric::LiquidTemperature
         );
 
-        screen.edit(|editor| editor.set_color_text(DisplayColorField::Logo, "123456"));
-        assert_eq!(screen.preview().logo, Rgb::new(0x12, 0x34, 0x56));
+        screen.edit(|editor| editor.set_color_text(DisplayColorField::Background, "123456"));
+        assert_eq!(screen.preview().background, Rgb::new(0x12, 0x34, 0x56));
 
         screen.edit(DisplayEditor::rotate);
         assert_eq!(screen.preview().orientation, Orientation::Deg90);
@@ -477,15 +523,30 @@ mod tests {
 
     #[test]
     fn each_mode_exposes_only_the_colors_it_draws() {
+        // The paired layout draws both slots and shades neither, so it asks for
+        // every color except the two a band would fade to.
         for field in DisplayColorField::ALL {
-            assert!(
+            assert_eq!(
                 field.is_used_by(DisplayMode::DualInfographic),
-                "{field:?} should be editable on the infographic"
+                !matches!(
+                    field,
+                    DisplayColorField::FadeOne | DisplayColorField::FadeTwo
+                ),
+                "{field:?} on the infographic"
             );
         }
-        // A solid field has no reading and no caption to color.
+        // A single reading draws the first slot and not the second, and shades
+        // its band, so the second slot is absent and the first fade is not.
+        assert!(DisplayColorField::ReadingOne.is_used_by(DisplayMode::SingleReading));
+        assert!(DisplayColorField::FadeOne.is_used_by(DisplayMode::SingleReading));
+        assert!(DisplayColorField::TextOne.is_used_by(DisplayMode::SingleReading));
+        assert!(!DisplayColorField::ReadingTwo.is_used_by(DisplayMode::SingleReading));
+        assert!(!DisplayColorField::FadeTwo.is_used_by(DisplayMode::SingleReading));
+        assert!(!DisplayColorField::TextTwo.is_used_by(DisplayMode::SingleReading));
+        assert!(DisplayColorField::Background.is_used_by(DisplayMode::SingleReading));
+        // A solid field has no reading and no caption to color, only its own
+        // color, which is the whole picture.
         assert!(DisplayColorField::Background.is_used_by(DisplayMode::Solid));
-        assert!(DisplayColorField::Logo.is_used_by(DisplayMode::Solid));
         assert!(!DisplayColorField::ReadingOne.is_used_by(DisplayMode::Solid));
         assert!(!DisplayColorField::TextTwo.is_used_by(DisplayMode::Solid));
         // A static image covers the whole panel, so none of them are.
@@ -497,10 +558,36 @@ mod tests {
     }
 
     #[test]
-    fn the_six_fields_are_ordered_so_each_pair_sits_together() {
-        // Reading 1 with Text 1, Reading 2 with Text 2, then the two that
-        // belong to the panel rather than to a slot. The screen renders them in
-        // this order, so it is the order that is asserted.
+    fn every_field_names_both_the_slot_it_belongs_to_and_what_it_paints() {
+        // The editor groups the fields by slot and labels each one with its
+        // role, so the two have to agree: a field that belongs to a slot names
+        // it, and one that does not is named by its role alone.
+        for field in DisplayColorField::ALL {
+            let label = field.label();
+            match field.slot() {
+                Some(slot) => {
+                    assert!(
+                        label.ends_with(&(slot + 1).to_string()),
+                        "{label} belongs to slot {slot} but does not say so"
+                    );
+                    assert!(
+                        matches!(field.role(), "Band" | "Fade to" | "Text"),
+                        "{label}"
+                    );
+                }
+                None => assert_eq!(field.role(), label, "{label} has no slot to qualify it"),
+            }
+        }
+        assert_eq!(DisplayColorField::ReadingOne.role(), "Band");
+        assert_eq!(DisplayColorField::FadeOne.role(), "Fade to");
+        assert_eq!(DisplayColorField::TextTwo.role(), "Text");
+    }
+
+    #[test]
+    fn the_fields_are_ordered_so_each_slot_sits_together() {
+        // Each slot's three colors in a row, then the two that belong to the
+        // panel rather than to a slot. The screen renders them in this order,
+        // so it is the order that is asserted.
         let labels: Vec<&str> = DisplayColorField::ALL
             .into_iter()
             .map(DisplayColorField::label)
@@ -508,12 +595,13 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "Reading 1",
+                "Band 1",
+                "Fade 1",
                 "Text 1",
-                "Reading 2",
+                "Band 2",
+                "Fade 2",
                 "Text 2",
-                "Background",
-                "Logo"
+                "Background"
             ]
         );
     }

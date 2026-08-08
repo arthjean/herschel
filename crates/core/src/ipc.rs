@@ -24,7 +24,14 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 /// Version 2 added the lighting command and the per-channel lighting state.
 ///
 /// Version 3 added the panel preset and the state the daemon reports for it.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// Version 4 changed the shape of that preset in both directions: a reading
+/// slot gained the color its band fades to, and the wordmark color it no longer
+/// draws stopped being written. A preset refuses unknown fields, so a client of
+/// this version and a daemon of the last cannot exchange one either way. The
+/// bump is what turns that into a refusal at the handshake, naming both
+/// versions, instead of a parse failure the first time a frame is applied.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Largest frame either side will read.
 ///

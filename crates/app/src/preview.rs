@@ -23,23 +23,24 @@ use crate::theme::{Color, color, space};
 
 /// Side of the preview, in logical pixels.
 ///
-/// Slightly under the panel's own 240 so the whole editor fits a 920 by 640
-/// window beside its controls. The frame is rendered at the panel's size and
-/// scaled here, so nothing is laid out against this number.
-pub const PREVIEW_SIDE: Pixels = px(220.0);
+/// The frame is rendered at the panel's own 240 and scaled here, so nothing is
+/// laid out against this number.
+pub const PREVIEW_SIDE: Pixels = px(252.0);
 
 /// Lowest contrast the small text on the panel accepts without warning.
 ///
-/// The captions and the wordmark are drawn from a five by seven face at a few
-/// pixels per cell, so they are small text and take the full ratio.
+/// The captions and the wordmark are set at a dozen pixels and under, so they
+/// are small text and take the full ratio.
 pub const MIN_SMALL_TEXT_CONTRAST: f32 = 4.5;
 
-/// Lowest contrast a reading and its gauge accept.
+/// Lowest contrast a band and the caption it labels accept.
 ///
-/// The readings are forty pixels tall and their gauges are not text at all,
-/// which is the large-text and non-text threshold rather than the small-text
-/// one. Holding them to 4.5:1 would rule out most saturated accents for no
-/// legibility gain.
+/// The bands are not text at all, and the captions they color are set in
+/// semibold at around twenty-two pixels, which WCAG counts as large text from
+/// 14pt bold upward. Both take the large-element threshold rather than the
+/// small-text one; holding them to 4.5:1 would rule out most saturated accents
+/// for no legibility gain. The values, which are larger still, take the same
+/// bar through the text colors below.
 pub const MIN_LARGE_ELEMENT_CONTRAST: f32 = 3.0;
 
 /// The geometry the preview falls back to before a panel has answered.
@@ -72,37 +73,38 @@ pub fn panel_preview(
         .and_then(|frame| frame.to_png())
         .ok();
     let warning = readability_warning(preset);
-    let round = panel.shape == LcdPanelShape::Circular;
 
     div()
         .flex()
         .flex_col()
         .items_center()
-        .gap(space::SM)
+        .gap(space::MD)
         .child(
+            // Round, always: the screen is square but the window in the cooler
+            // is not, and the corners of the framebuffer are behind the housing
+            // rather than on the glass. Showing them would be showing pixels
+            // the operator cannot see. The disc is the preview, with nothing
+            // behind it: a square plate under a round window read as a picture
+            // file sitting on the work surface.
             div()
                 .w(PREVIEW_SIDE)
                 .h(PREVIEW_SIDE)
-                .when(round, |this| this.rounded(PREVIEW_SIDE / 2.0))
+                .rounded(PREVIEW_SIDE / 2.0)
                 .overflow_hidden()
                 .bg(Color::rgb(pack(preset.background)).hsla())
                 .border_1()
                 .border_color(color::SEPARATOR.hsla())
                 .children(rendered.map(|png| {
-                    // Clipped to the glass, not to the framebuffer. This panel
-                    // turned out to be square, so nothing is clipped here and
-                    // the corners the operator can see are the corners shown.
-                    // A round panel would hide them, and the shape is what
-                    // decides rather than the buffer being square either way.
                     img(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
                         .w(PREVIEW_SIDE)
                         .h(PREVIEW_SIDE)
-                        .when(round, |this| this.rounded(PREVIEW_SIDE / 2.0))
+                        .rounded(PREVIEW_SIDE / 2.0)
                 })),
         )
         .child(
             div()
                 .text_xs()
+                .text_center()
                 .text_color(color::TEXT_MUTED.hsla())
                 .child(if confirmed {
                     format!(
@@ -140,6 +142,12 @@ pub fn readability_warning(preset: &DisplayPreset) -> Option<String> {
 
 /// The element furthest below its own minimum, if any is.
 ///
+/// Both ends of every band are checked, not just the color it starts on: a fade
+/// into something the background swallows is a gauge that disappears halfway.
+/// A band's first color is also the color of its caption in the paired layout,
+/// which is why it is named as a band rather than as a caption: the threshold
+/// that applies to both is the same one.
+///
 /// Each element is measured against the threshold that applies to it rather
 /// than against one blanket ratio, which is the same split the project's
 /// accessibility budget already makes between text and everything else.
@@ -148,15 +156,24 @@ pub fn worst_contrast(preset: &DisplayPreset) -> Option<(&'static str, f32, f32)
     [
         ("Text 1", preset.readings[0].text, MIN_SMALL_TEXT_CONTRAST),
         ("Text 2", preset.readings[1].text, MIN_SMALL_TEXT_CONTRAST),
-        ("Logo", preset.logo, MIN_SMALL_TEXT_CONTRAST),
         (
-            "Reading 1",
+            "Band 1",
             preset.readings[0].reading,
             MIN_LARGE_ELEMENT_CONTRAST,
         ),
         (
-            "Reading 2",
+            "Fade 1",
+            preset.readings[0].band_end(),
+            MIN_LARGE_ELEMENT_CONTRAST,
+        ),
+        (
+            "Band 2",
             preset.readings[1].reading,
+            MIN_LARGE_ELEMENT_CONTRAST,
+        ),
+        (
+            "Fade 2",
+            preset.readings[1].band_end(),
             MIN_LARGE_ELEMENT_CONTRAST,
         ),
     ]
@@ -196,14 +213,50 @@ mod tests {
     }
 
     #[test]
-    fn the_default_preview_keeps_every_element_above_its_own_threshold() {
+    fn the_default_preset_is_the_reference_palette_and_its_violet_is_dim() {
+        // The default is the palette of the reference screens, chosen so the
+        // panel looks like the thing it is imitating. One of its colors does
+        // not clear this project's own bar: the violet band reads 2.68:1
+        // against black, under the 3:1 a non-text element takes.
+        //
+        // Pinned rather than hidden. The editor shows its readability warning
+        // for that band, which is the guard doing its job, and this test is
+        // what would catch the value drifting further or a second element
+        // joining it.
         let preset = DisplayPreset::default_infographic();
-        assert_eq!(
-            worst_contrast(&preset),
-            None,
-            "the default preset ships with an element below its threshold"
+        let (label, ratio, minimum) =
+            worst_contrast(&preset).expect("the reference violet is under the bar");
+        assert_eq!(label, "Band 1");
+        assert_eq!(minimum, MIN_LARGE_ELEMENT_CONTRAST);
+        assert!(
+            (2.6..2.8).contains(&ratio),
+            "the reference violet measures {ratio:.2}:1, not the 2.68:1 recorded"
         );
-        assert_eq!(readability_warning(&preset), None);
+        assert!(readability_warning(&preset).is_some());
+
+        // Everything else clears its own threshold, including the same violet
+        // as the second slot's fade and the white the values are set in.
+        let background = Color::rgb(pack(preset.background));
+        for (name, color, floor) in [
+            (
+                "Band 2",
+                preset.readings[1].reading,
+                MIN_LARGE_ELEMENT_CONTRAST,
+            ),
+            (
+                "Fade 1",
+                preset.readings[0].band_end(),
+                MIN_LARGE_ELEMENT_CONTRAST,
+            ),
+            ("Text 1", preset.readings[0].text, MIN_SMALL_TEXT_CONTRAST),
+            ("Text 2", preset.readings[1].text, MIN_SMALL_TEXT_CONTRAST),
+        ] {
+            let measured = contrast(color, background);
+            assert!(
+                measured >= floor,
+                "{name} is {measured:.2}:1, under its own {floor:.1}:1"
+            );
+        }
     }
 
     #[test]

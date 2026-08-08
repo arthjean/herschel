@@ -39,6 +39,30 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2020-2026 Paweł Kuna"
 SPDX-License-Identifier = "MIT"
 
+# The panel's typeface is Noto Sans SemiBold 2.015, cut down to 98 glyphs with
+# `pyftsubset` so that ten kilobytes ship instead of six hundred. Subsetting
+# makes it a Modified Version under OFL 1.1 section 2; the family carries no
+# Reserved Font Name (its copyright line is "Copyright 2022 The Noto Project
+# Authors" with no RFN clause), so the name is kept and the provenance stays
+# checkable. The file is not renamed, remains under OFL 1.1, and section 5's
+# condition is met by LICENSES/OFL-1.1.txt beside it.
+#
+# OFL 1.1 into GPL-3.0-or-later is a compatible direction: the OFL FAQ states an
+# OFL font may be bundled with software under any license, including copyleft,
+# and the font is aggregated with this program rather than derived from it.
+#
+# Rebuilt with:
+#   pyftsubset NotoSans-SemiBold.ttf \
+#     --output-file=crates/lcd-renderer/assets/NotoSans-SemiBold-subset.ttf \
+#     --unicodes="U+0020-007E,U+00B0,U+00B7" --layout-features='' \
+#     --no-hinting --desubroutinize --drop-tables+=DSIG --name-IDs='*' \
+#     --notdef-outline
+[[annotations]]
+path = "crates/lcd-renderer/assets/*.ttf"
+precedence = "closest"
+SPDX-FileCopyrightText = "2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)"
+SPDX-License-Identifier = "OFL-1.1"
+
 # The caption glyphs are this project's own, drawn on Tabler's 16-pixel grid
 # because they sit next to its icons. They are listed after the table above for
 # the same reason it is listed after the wildcard: the last matching table wins,
