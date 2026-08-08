@@ -19,7 +19,7 @@ use gpui::{Div, Image, ImageFormat, Pixels, div, img, prelude::*, px};
 use nzxt_core::capability::{LcdPanel, LcdPanelShape};
 use nzxt_core::display::{DisplayPreset, MetricSample};
 
-use crate::theme::{Color, color, space};
+use crate::theme::{Color, color};
 
 /// Side of the preview, in logical pixels.
 ///
@@ -45,8 +45,9 @@ pub const MIN_LARGE_ELEMENT_CONTRAST: f32 = 3.0;
 
 /// The geometry the preview falls back to before a panel has answered.
 ///
-/// A preview has to have a size. This one is labeled as unconfirmed wherever it
-/// is shown, so it never passes for evidence that a panel was found.
+/// A preview has to have a size. The row above it says "no panel has answered"
+/// until one does, so this geometry never passes for evidence that a panel was
+/// found.
 pub fn assumed_panel() -> LcdPanel {
     LcdPanel {
         width: 240,
@@ -63,81 +64,33 @@ pub fn assumed_panel() -> LcdPanel {
 ///
 /// `samples` are the readings the frame will carry, so the preview ages with
 /// telemetry exactly as the panel does.
-pub fn panel_preview(
-    preset: &DisplayPreset,
-    samples: &[MetricSample; 2],
-    panel: &LcdPanel,
-    confirmed: bool,
-) -> Div {
+pub fn panel_preview(preset: &DisplayPreset, samples: &[MetricSample; 2], panel: &LcdPanel) -> Div {
     let rendered = nzxt_lcd_renderer::render(preset, samples, panel)
         .and_then(|frame| frame.to_png())
         .ok();
-    let warning = readability_warning(preset);
 
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap(space::MD)
-        .child(
-            // Round, always: the screen is square but the window in the cooler
-            // is not, and the corners of the framebuffer are behind the housing
-            // rather than on the glass. Showing them would be showing pixels
-            // the operator cannot see. The disc is the preview, with nothing
-            // behind it: a square plate under a round window read as a picture
-            // file sitting on the work surface.
-            div()
-                .w(PREVIEW_SIDE)
-                .h(PREVIEW_SIDE)
-                .rounded(PREVIEW_SIDE / 2.0)
-                .overflow_hidden()
-                .bg(Color::rgb(pack(preset.background)).hsla())
-                .border_1()
-                .border_color(color::SEPARATOR.hsla())
-                .children(rendered.map(|png| {
-                    img(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
-                        .w(PREVIEW_SIDE)
-                        .h(PREVIEW_SIDE)
-                        .rounded(PREVIEW_SIDE / 2.0)
-                })),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_center()
-                .text_color(color::TEXT_MUTED.hsla())
-                .child(if confirmed {
-                    format!(
-                        "{}x{} {}, exactly as the panel receives it.",
-                        panel.width, panel.height, panel.pixel_format
-                    )
-                } else {
-                    format!(
-                        "Assumed {}x{}. No panel has answered, so this geometry is unconfirmed.",
-                        panel.width, panel.height
-                    )
-                }),
-        )
-        .children(warning.map(|warning| {
-            div()
-                .text_xs()
-                .text_color(color::WARNING.hsla())
-                .child(warning)
-        }))
-}
-
-/// Warn when the chosen text and background cannot be told apart.
-///
-/// The panel is small and read at a distance, so a pair below the AA threshold
-/// is unreadable in practice, not merely low contrast. Both captions are
-/// checked, because they are colored separately and only one of them being
-/// legible is still a broken panel.
-pub fn readability_warning(preset: &DisplayPreset) -> Option<String> {
-    let (label, ratio, minimum) = worst_contrast(preset)?;
-    Some(format!(
-        "{label} against the background is {ratio:.1}:1, below the {minimum:.1}:1 it needs. \
-         Choose a lighter or darker pair to stay readable on the panel."
-    ))
+    div().flex().flex_col().items_center().child(
+        // Round, always: the screen is square but the window in the cooler
+        // is not, and the corners of the framebuffer are behind the housing
+        // rather than on the glass. Showing them would be showing pixels
+        // the operator cannot see. The disc is the preview, with nothing
+        // behind it: a square plate under a round window read as a picture
+        // file sitting on the work surface.
+        div()
+            .w(PREVIEW_SIDE)
+            .h(PREVIEW_SIDE)
+            .rounded(PREVIEW_SIDE / 2.0)
+            .overflow_hidden()
+            .bg(Color::rgb(pack(preset.background)).hsla())
+            .border_1()
+            .border_color(color::SEPARATOR.hsla())
+            .children(rendered.map(|png| {
+                img(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
+                    .w(PREVIEW_SIDE)
+                    .h(PREVIEW_SIDE)
+                    .rounded(PREVIEW_SIDE / 2.0)
+            })),
+    )
 }
 
 /// The element furthest below its own minimum, if any is.
@@ -219,10 +172,9 @@ mod tests {
         // not clear this project's own bar: the violet band reads 2.68:1
         // against black, under the 3:1 a non-text element takes.
         //
-        // Pinned rather than hidden. The editor shows its readability warning
-        // for that band, which is the guard doing its job, and this test is
-        // what would catch the value drifting further or a second element
-        // joining it.
+        // Pinned rather than hidden. The screen no longer prints a readability
+        // warning, so this test is the whole guard: it is what would catch the
+        // value drifting further or a second element joining it.
         let preset = DisplayPreset::default_infographic();
         let (label, ratio, minimum) =
             worst_contrast(&preset).expect("the reference violet is under the bar");
@@ -232,8 +184,6 @@ mod tests {
             (2.6..2.8).contains(&ratio),
             "the reference violet measures {ratio:.2}:1, not the 2.68:1 recorded"
         );
-        assert!(readability_warning(&preset).is_some());
-
         // Everything else clears its own threshold, including the same violet
         // as the second slot's fade and the white the values are set in.
         let background = Color::rgb(pack(preset.background));
@@ -260,14 +210,14 @@ mod tests {
     }
 
     #[test]
-    fn a_low_contrast_choice_warns_and_names_the_element_at_fault() {
+    fn a_low_contrast_choice_names_the_element_at_fault() {
         let mut preset = DisplayPreset::default_infographic();
         preset.readings[1].text = preset.background;
 
-        let warning = readability_warning(&preset).unwrap();
-        assert!(warning.contains("Text 2"), "{warning}");
-        assert!(warning.contains("1.0:1"), "{warning}");
-        assert!(warning.contains("4.5:1"), "{warning}");
+        let (label, ratio, minimum) = worst_contrast(&preset).unwrap();
+        assert_eq!(label, "Text 2");
+        assert_eq!(ratio, 1.0);
+        assert_eq!(minimum, MIN_SMALL_TEXT_CONTRAST);
     }
 
     #[test]

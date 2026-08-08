@@ -2017,7 +2017,7 @@ impl Shell {
                     ),
             )
             .when(open, |this| {
-                this.child(self.lcd_detail(base, &editor, &panel, confirmed, frame, cx))
+                this.child(self.lcd_detail(base, &editor, &panel, frame, cx))
             })
     }
 
@@ -2028,7 +2028,6 @@ impl Shell {
         base: isize,
         editor: &DisplayEditor,
         panel: &nzxt_core::capability::LcdPanel,
-        confirmed: bool,
         frame: ControlState,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -2168,7 +2167,6 @@ impl Shell {
                         self.lcd.preview(),
                         &samples,
                         panel,
-                        confirmed,
                     )),
             )
     }
