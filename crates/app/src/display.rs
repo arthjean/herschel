@@ -4,9 +4,9 @@
 //! The pending state of the LCD screen.
 //!
 //! Mirrors [`crate::lighting`]: everything here is an edit that has not
-//! happened yet. Typing a color, picking a metric or activating Rotate changes
-//! this structure and nothing else. The panel is only touched when Apply is
-//! activated and the daemon accepts the preset.
+//! happened yet. Typing a color or picking a metric changes this structure and
+//! nothing else. The panel is only touched when Apply is activated and the
+//! daemon accepts the preset.
 //!
 //! Colors are held as the six digits the operator typed rather than as parsed
 //! values. That is what lets an incomplete entry stay on screen with its own
@@ -40,12 +40,15 @@ pub enum DisplayColorField {
 }
 
 impl DisplayColorField {
+    /// Paired by role rather than by slot: the editor lays the fields out two
+    /// to a line, slot 1 left and slot 2 right, so the same role is read across
+    /// and the slot is read down. This order is the traversal order.
     pub const ALL: [Self; 7] = [
         Self::ReadingOne,
-        Self::FadeOne,
-        Self::TextOne,
         Self::ReadingTwo,
+        Self::FadeOne,
         Self::FadeTwo,
+        Self::TextOne,
         Self::TextTwo,
         Self::Background,
     ];
@@ -58,21 +61,6 @@ impl DisplayColorField {
             Self::FadeTwo => "Fade 2",
             Self::TextOne => "Text 1",
             Self::TextTwo => "Text 2",
-            Self::Background => "Background",
-        }
-    }
-
-    /// What this color paints, without the slot it belongs to.
-    ///
-    /// The editor groups the fields under the reading they color, so the slot
-    /// number is already on the group and repeating it on every field inside
-    /// only makes the labels longer. [`Self::label`] keeps the full name,
-    /// because an error names a field with no group around it.
-    pub fn role(self) -> &'static str {
-        match self {
-            Self::ReadingOne | Self::ReadingTwo => "Band",
-            Self::FadeOne | Self::FadeTwo => "Fade to",
-            Self::TextOne | Self::TextTwo => "Text",
             Self::Background => "Background",
         }
     }
@@ -183,11 +171,6 @@ impl DisplayEditor {
             field: field.label().to_string(),
             source,
         })
-    }
-
-    /// Advance the rotation by one validated increment.
-    pub fn rotate(&mut self) {
-        self.orientation = self.orientation.rotated();
     }
 
     /// Move the brightness by whole steps, staying inside 0-100.
@@ -363,14 +346,33 @@ mod tests {
         let unique: std::collections::HashSet<&String> = values.iter().collect();
         assert_eq!(unique.len(), DisplayColorField::ALL.len(), "{values:?}");
 
+        // Each field's value is read back from the slot of the preset it is
+        // supposed to feed. Derived from where the field sits in `ALL` rather
+        // than from a literal, so reordering the grid cannot silently swap two
+        // colors and still pass.
+        let position = |wanted: DisplayColorField| {
+            DisplayColorField::ALL
+                .into_iter()
+                .position(|field| field == wanted)
+                .unwrap() as u8
+        };
         let preset = editor.preset().unwrap();
-        assert_eq!(preset.readings[0].reading.r, 0x00);
-        assert_eq!(preset.readings[0].band_end().r, 0x01);
-        assert_eq!(preset.readings[0].text.r, 0x02);
-        assert_eq!(preset.readings[1].reading.r, 0x03);
-        assert_eq!(preset.readings[1].band_end().r, 0x04);
-        assert_eq!(preset.readings[1].text.r, 0x05);
-        assert_eq!(preset.background.r, 0x06);
+        for (field, written) in [
+            (DisplayColorField::ReadingOne, preset.readings[0].reading),
+            (DisplayColorField::FadeOne, preset.readings[0].band_end()),
+            (DisplayColorField::TextOne, preset.readings[0].text),
+            (DisplayColorField::ReadingTwo, preset.readings[1].reading),
+            (DisplayColorField::FadeTwo, preset.readings[1].band_end()),
+            (DisplayColorField::TextTwo, preset.readings[1].text),
+            (DisplayColorField::Background, preset.background),
+        ] {
+            assert_eq!(
+                written.r,
+                position(field),
+                "{} reached the wrong slot of the preset",
+                field.label()
+            );
+        }
         assert_eq!(
             preset.logo, None,
             "the panel carries no wordmark, so the preset writes no color for one"
@@ -442,7 +444,7 @@ mod tests {
         screen.edit(|editor| editor.set_color_text(DisplayColorField::Background, "123456"));
         assert_eq!(screen.preview().background, Rgb::new(0x12, 0x34, 0x56));
 
-        screen.edit(DisplayEditor::rotate);
+        screen.edit(|editor| editor.orientation = Orientation::Deg90);
         assert_eq!(screen.preview().orientation, Orientation::Deg90);
 
         screen.edit(|editor| editor.adjust_brightness(-2));
@@ -453,19 +455,6 @@ mod tests {
 
         // Whatever the route in, the preview is the preset Apply would send.
         assert_eq!(&screen.preset().unwrap(), screen.preview());
-    }
-
-    #[test]
-    fn rotation_walks_the_validated_increment_and_returns_to_zero() {
-        let mut editor = DisplayEditor::default();
-        let mut seen = Vec::new();
-        for _ in 0..4 {
-            seen.push(editor.orientation.degrees());
-            editor.rotate();
-        }
-        assert_eq!(seen, vec![0, 90, 180, 270]);
-        assert_eq!(editor.orientation, Orientation::Deg0);
-        assert_eq!(editor.preset().unwrap().orientation, Orientation::Deg0);
     }
 
     #[test]
@@ -559,35 +548,33 @@ mod tests {
 
     #[test]
     fn every_field_names_both_the_slot_it_belongs_to_and_what_it_paints() {
-        // The editor groups the fields by slot and labels each one with its
-        // role, so the two have to agree: a field that belongs to a slot names
-        // it, and one that does not is named by its role alone.
+        // Each field carries its whole name, because nothing around it says
+        // which slot it belongs to any more: the grid puts slot 1 left and slot
+        // 2 right, and the label is what tells the two apart when read aloud or
+        // by a screen reader.
         for field in DisplayColorField::ALL {
             let label = field.label();
             match field.slot() {
-                Some(slot) => {
-                    assert!(
-                        label.ends_with(&(slot + 1).to_string()),
-                        "{label} belongs to slot {slot} but does not say so"
-                    );
-                    assert!(
-                        matches!(field.role(), "Band" | "Fade to" | "Text"),
-                        "{label}"
-                    );
-                }
-                None => assert_eq!(field.role(), label, "{label} has no slot to qualify it"),
+                Some(slot) => assert!(
+                    label.ends_with(&(slot + 1).to_string()),
+                    "{label} belongs to slot {slot} but does not say so"
+                ),
+                None => assert!(
+                    !label.ends_with('1') && !label.ends_with('2'),
+                    "{label} belongs to no slot but is numbered like one"
+                ),
             }
         }
-        assert_eq!(DisplayColorField::ReadingOne.role(), "Band");
-        assert_eq!(DisplayColorField::FadeOne.role(), "Fade to");
-        assert_eq!(DisplayColorField::TextTwo.role(), "Text");
+        assert_eq!(DisplayColorField::ReadingOne.label(), "Band 1");
+        assert_eq!(DisplayColorField::FadeOne.label(), "Fade 1");
+        assert_eq!(DisplayColorField::TextTwo.label(), "Text 2");
     }
 
     #[test]
-    fn the_fields_are_ordered_so_each_slot_sits_together() {
-        // Each slot's three colors in a row, then the two that belong to the
-        // panel rather than to a slot. The screen renders them in this order,
-        // so it is the order that is asserted.
+    fn the_fields_are_ordered_so_each_role_pairs_across_one_line() {
+        // Two fields to a line, the same role on both: the grid is read across
+        // for the role and down for the slot. The screen renders them in this
+        // order and Tab follows it, so it is the order that is asserted.
         let labels: Vec<&str> = DisplayColorField::ALL
             .into_iter()
             .map(DisplayColorField::label)
@@ -596,14 +583,22 @@ mod tests {
             labels,
             vec![
                 "Band 1",
-                "Fade 1",
-                "Text 1",
                 "Band 2",
+                "Fade 1",
                 "Fade 2",
+                "Text 1",
                 "Text 2",
                 "Background"
             ]
         );
+        // Every line but the last holds one slot-1 field and its slot-2 twin.
+        for pair in labels[..6].chunks(2) {
+            assert_eq!(
+                pair[0].trim_end_matches('1'),
+                pair[1].trim_end_matches('2'),
+                "{pair:?} are not the same role"
+            );
+        }
     }
 
     #[test]

@@ -34,8 +34,8 @@ use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 use crate::assets::Icon;
 use crate::components::{
     Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceRow, ICON_SIZE, Metric,
-    Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron, focus_visible, group,
-    icon, node_at, panel_surface, set_focus_visible,
+    Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron, focus_visible, icon,
+    node_at, panel_surface, set_focus_visible,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
@@ -199,8 +199,7 @@ pub const CHANNEL_OFFSET_OFF: isize = 7;
 pub const LCD_OFFSET_METRIC_ONE: isize = 3;
 pub const LCD_OFFSET_METRIC_TWO: isize = 4;
 pub const LCD_OFFSET_COLOR_BASE: isize = 5;
-pub const LCD_OFFSET_ROTATE: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
-pub const LCD_OFFSET_APPLY: isize = LCD_OFFSET_ROTATE + 1;
+pub const LCD_OFFSET_APPLY: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
 
 /// First tab stop of the channel row at `index` in the rendered list.
 pub fn lighting_row_tab(index: usize) -> isize {
@@ -231,13 +230,6 @@ pub const ROW_HEAD_MIN_WIDTH: Pixels = px(180.0);
 /// Width of one field in an open row's detail, two of which fit side by side
 /// in the column left of the preview.
 pub const FIELD_WIDTH: Pixels = px(168.0);
-/// Width of one color field, and of the label naming the slot a pair belongs to.
-///
-/// The pair sits on one line with its slot name, so the two are sized together:
-/// a field wide enough for a swatch and six digits, and a label wide enough for
-/// "Reading 1" without wrapping under its own fields.
-pub const COLOR_FIELD_WIDTH: Pixels = px(132.0);
-pub const SLOT_LABEL_WIDTH: Pixels = px(72.0);
 /// Side of the appearance thumbnail at the head of a device row.
 pub const ROW_THUMBNAIL: Pixels = px(34.0);
 
@@ -2051,6 +2043,41 @@ impl Shell {
             _ => frame.clone(),
         };
 
+        // One grid, two columns wide: slot 1 on the left, slot 2 on the right,
+        // one line per thing being chosen. Built here rather than inside the
+        // element tree because a `map` closure would have to hold the mutable
+        // context borrow across calls, which the 2024 edition's capture rules
+        // reject.
+        let mut lines: Vec<Div> = Vec::new();
+        if editor.mode.uses_readings() {
+            let mut controls = Vec::new();
+            for slot in 0..editor.mode.reading_slots() {
+                controls.push(self.metric_select(
+                    slot,
+                    base + LCD_OFFSET_METRIC_ONE + slot as isize,
+                    cx,
+                ));
+            }
+            lines.push(field_line(controls));
+        }
+        // The colors follow in the same grid, paired by role: the band of both
+        // readings on one line, then what each fades to, then their text, then
+        // the panel's own background. A line the current mode draws nothing for
+        // is absent rather than empty.
+        for (line, fields) in DisplayColorField::ALL.chunks(2).enumerate() {
+            let mut controls = Vec::new();
+            for (column, field) in fields.iter().enumerate() {
+                if !field.is_used_by(editor.mode) {
+                    continue;
+                }
+                let index = (line * 2 + column) as isize;
+                controls.push(self.color_field(*field, base + LCD_OFFSET_COLOR_BASE + index, cx));
+            }
+            if !controls.is_empty() {
+                lines.push(field_line(controls));
+            }
+        }
+
         div()
             .flex()
             .flex_wrap()
@@ -2066,87 +2093,29 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(space::LG)
-                    // What the panel shows, then how it is colored, then what
-                    // sends it. Grouped that way the six colors stop reading as
-                    // one undifferentiated wall of fields: each one sits under
-                    // the thing it paints.
-                    .when(editor.mode.uses_readings(), |this| {
-                        this.child(group(
-                            "Readings",
-                            div().flex().flex_wrap().gap(space::MD).children(
-                                (0..editor.mode.reading_slots()).map(|slot| {
-                                    div().flex_none().w(FIELD_WIDTH).child(self.metric_select(
-                                        slot,
-                                        base + LCD_OFFSET_METRIC_ONE + slot as isize,
-                                        cx,
-                                    ))
-                                }),
-                            ),
-                        ))
-                    })
-                    .child(group(
-                        "Colors",
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(space::MD)
-                            // One line per reading, then the pair that belongs
-                            // to the panel itself rather than to a reading.
-                            .children((0..editor.mode.reading_slots()).map(|slot| {
-                                self.color_group(
-                                    Some(format!("Reading {}", slot + 1)),
-                                    slot,
-                                    base,
-                                    cx,
-                                )
-                            }))
-                            .children(
-                                DisplayColorField::ALL
-                                    .into_iter()
-                                    .any(|field| {
-                                        field.slot().is_none() && field.is_used_by(editor.mode)
-                                    })
-                                    .then(|| self.color_group(None, usize::MAX, base, cx)),
-                            ),
-                    ))
+                    // Every field is the same width and every line the same
+                    // gap, so the labels line up down both columns and the
+                    // screen reads as one form rather than as three panels.
+                    .gap(space::MD)
+                    .children(lines)
                     .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(space::SM)
-                            .child(
-                                Button::new(
-                                    "lcd-rotate",
-                                    format!("Rotate display ({})", editor.orientation.label()),
-                                )
-                                .tab_index(base + LCD_OFFSET_ROTATE)
+                        div().flex().flex_wrap().pt(space::SM).gap(space::SM).child(
+                            Button::new("lcd-apply", "Apply")
+                                .variant(ButtonVariant::Primary)
+                                .state(apply)
+                                .tab_index(base + LCD_OFFSET_APPLY)
                                 .render()
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        // Acting on the editor dismisses any open
-                                        // popover, so a swatch list never hides the
-                                        // result.
-                                        this.popover = None;
-                                        this.lcd.edit(DisplayEditor::rotate);
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                            .child(
-                                Button::new("lcd-apply", "Apply")
-                                    .variant(ButtonVariant::Primary)
-                                    .state(apply)
-                                    .tab_index(base + LCD_OFFSET_APPLY)
-                                    .render()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.popover = None;
-                                        if let Ok(preset) = this.lcd.preset() {
-                                            this.feed.send(Command::ApplyDisplay(preset));
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    // Acting on the editor dismisses any open
+                                    // popover, so a swatch list never hides the
+                                    // result.
+                                    this.popover = None;
+                                    if let Ok(preset) = this.lcd.preset() {
+                                        this.feed.send(Command::ApplyDisplay(preset));
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
                     )
                     .children(frame.message().map(|reason| {
                         div()
@@ -2156,10 +2125,10 @@ impl Shell {
                     })),
             )
             .child(
-                // Fixed rather than sized to content: the caption under the
-                // preview is a sentence, and letting it set the column width
-                // squeezed the fields until their buttons were clipped at 920
-                // logical pixels.
+                // Fixed rather than sized to content, so the two field columns
+                // beside it keep their width: at 920 logical pixels there is
+                // room for both and the disc, and nothing has to be clipped to
+                // decide which.
                 div()
                     .flex_none()
                     .w(PREVIEW_COLUMN_WIDTH)
@@ -2169,49 +2138,6 @@ impl Shell {
                         panel,
                     )),
             )
-    }
-
-    /// The colors belonging to one reading slot, or the two belonging to the
-    /// panel itself when `slot` names none.
-    ///
-    /// The fields keep a fixed tab stop per field rather than per rendered
-    /// control, so a mode that hides a slot does not renumber the rest.
-    fn color_group(
-        &self,
-        title: Option<String>,
-        slot: usize,
-        base: isize,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let fields = DisplayColorField::ALL
-            .into_iter()
-            .enumerate()
-            .filter(|(_, field)| field.slot() == (slot != usize::MAX).then_some(slot));
-
-        div()
-            .flex()
-            .flex_wrap()
-            .items_end()
-            .gap(space::MD)
-            .children(title.map(|title| {
-                div()
-                    .flex_none()
-                    .w(SLOT_LABEL_WIDTH)
-                    .pb(space::SM)
-                    .text_xs()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child(title)
-            }))
-            .children(fields.map(|(index, field)| {
-                div()
-                    .flex_none()
-                    .w(COLOR_FIELD_WIDTH)
-                    .child(self.color_field(
-                        field,
-                        base + LCD_OFFSET_COLOR_BASE + index as isize,
-                        cx,
-                    ))
-            }))
     }
 
     /// The head of a device row: chevron, thumbnail and two lines of text, as
@@ -2386,8 +2312,8 @@ impl Shell {
     /// The metric select for one reading slot.
     fn metric_select(&self, slot: usize, tab_index: isize, cx: &mut Context<Self>) -> Div {
         let selected = self.lcd.editor().metrics[slot];
-        // The group above already says these are the readings, so the label
-        // names the slot and nothing more.
+        // The metric line heads the grid and the colors under it are named by
+        // role, so the slot alone is enough to say what this select chooses.
         let (id, label) = if slot == 0 {
             ("lcd-metric-1", "Reading 1")
         } else {
@@ -2649,11 +2575,11 @@ impl Shell {
         let open = self.popover == Some(Popover::Swatches { field });
         let id = SharedString::from(format!("lcd-color-{}", field.key()));
 
-        // The role rather than the full name: the group beside the field
-        // already carries the slot it belongs to.
+        // The full name: nothing beside the field carries the slot any more,
+        // so the label is the only thing that tells the two columns apart.
         let control = ColorField::new(
             id.clone(),
-            field.role(),
+            field.label(),
             self.lcd.editor().color_text(field),
         )
         .tab_index(tab_index)
@@ -2964,6 +2890,19 @@ fn swatch_grid(mut swatches: Vec<AnyElement>) -> Div {
     div().flex().flex_col().gap(space::SM).children(rows)
 }
 
+/// One line of the panel editor's grid.
+///
+/// Each control keeps the same fixed width whatever it holds, so the second
+/// column starts at the same offset on every line and a line that carries one
+/// control leaves the other column empty instead of stretching across it.
+fn field_line(controls: Vec<Div>) -> Div {
+    div().flex().flex_wrap().gap(space::MD).children(
+        controls
+            .into_iter()
+            .map(|control| div().flex_none().w(FIELD_WIDTH).child(control)),
+    )
+}
+
 /// A row of metric tiles that wraps rather than scrolling sideways.
 fn metric_row() -> Div {
     div().flex().flex_wrap().gap(space::XL).w_full().min_w_0()
@@ -3245,7 +3184,7 @@ mod tests {
             (0..DisplayColorField::ALL.len() as isize)
                 .map(|index| base + LCD_OFFSET_COLOR_BASE + index),
         );
-        stops.extend([base + LCD_OFFSET_ROTATE, base + LCD_OFFSET_APPLY]);
+        stops.push(base + LCD_OFFSET_APPLY);
         stops
     }
 
