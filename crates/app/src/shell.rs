@@ -2807,25 +2807,42 @@ impl Render for Shell {
             .child(self.rail(reserved_top, cx))
             .child(
                 div()
-                    .id("work-surface")
                     .flex_1()
                     // Without this the rail plus an unwrapped sentence can
                     // exceed the window width instead of wrapping.
                     .min_w_0()
                     .h_full()
-                    // No fill: the window's own surface is the ground the
-                    // panels and the rail card sit on.
-                    .overflow_y_scroll()
-                    // One gap of its own on top of the row's, so a screen keeps
-                    // a little more air than the rail card takes.
-                    .px(space::SM)
-                    .pb(space::SM)
-                    .pt(reserved_top)
                     .flex()
                     .flex_col()
-                    .gap(space::LG)
-                    .children(self.banner())
-                    .child(content),
+                    // The caption strip carries nothing on this side, and the
+                    // band is reserved anyway: it is the window's own bar, so
+                    // it stays a place to drag the window from rather than a
+                    // place a heading can reach. Rigid and outside the scroll,
+                    // as Paneflow reserves it, so a scrolled screen passes
+                    // under nothing.
+                    .child(div().flex_none().h(reserved_top))
+                    .child(
+                        div()
+                            .id("work-surface")
+                            .flex_1()
+                            // A flex child floors at its content height unless
+                            // it is told it may shrink, which is what turns the
+                            // overflow below into a scroll instead of a spill.
+                            .min_h_0()
+                            // No fill: the window's own surface is the ground
+                            // the panels and the rail card sit on.
+                            .overflow_y_scroll()
+                            // One gap of its own on top of the row's, so a
+                            // screen keeps a little more air than the rail card
+                            // takes.
+                            .px(space::SM)
+                            .pb(space::SM)
+                            .flex()
+                            .flex_col()
+                            .gap(space::LG)
+                            .children(self.banner())
+                            .child(content),
+                    ),
             );
 
         // The chrome color fills the window, so the transparent title bar, the
