@@ -66,6 +66,14 @@ impl Paths {
         self.runtime_dir.join(format!("{device}.lock"))
     }
 
+    /// Lock file for the daemon itself, held for the length of the process.
+    ///
+    /// Named after the application rather than a device, so it cannot collide
+    /// with `device_lock`, which always contains a colon.
+    pub fn instance_lock(&self) -> PathBuf {
+        self.runtime_dir.join("nzxt-control.lock")
+    }
+
     /// Create both directories with owner-only permissions.
     pub fn ensure(&self) -> std::io::Result<()> {
         create_private_dir(&self.runtime_dir)?;
@@ -108,6 +116,8 @@ mod tests {
         assert!(paths.device_lock(KRAKEN_BASE).ends_with("1e71:300e.lock"));
         assert!(paths.socket.ends_with("nzxt-control.sock"));
         assert!(paths.config_file().ends_with("config.toml"));
+        assert!(paths.instance_lock().ends_with("nzxt-control.lock"));
+        assert_ne!(paths.instance_lock(), paths.device_lock(KRAKEN_BASE));
     }
 
     #[test]

@@ -327,6 +327,22 @@ fn serve() -> Result<(), String> {
     let paths = Paths::from_env();
     let sysfs = SysfsRoot::from_env();
 
+    paths
+        .ensure()
+        .map_err(|error| format!("could not create {}: {error}", paths.runtime_dir.display()))?;
+
+    // Single instance is decided here, before sysfs is read and before any
+    // device is asked for. The lock, not the socket, is the arbiter, and it is
+    // released by the kernel if this process is killed.
+    let _instance = nzxt_daemon::ownership::acquire_instance(&paths)
+        .map_err(|conflict| format!("could not start: {}", conflict.detail))?;
+
+    // Bound before the hardware is touched, so nothing is acquired by a
+    // process that is about to exit, and before anything is printed, so the
+    // banner cannot announce a socket that was never taken.
+    let listener = nzxt_daemon::server::bind_socket(&paths.socket)
+        .map_err(|error| format!("could not bind {}: {error}", paths.socket.display()))?;
+
     let daemon = Daemon::start(paths.clone(), &sysfs)
         .map_err(|error| format!("could not start: {error}"))?;
 
@@ -350,8 +366,7 @@ fn serve() -> Result<(), String> {
         eprintln!("  {message}");
     }
 
-    let server = Server::bind(&paths.socket, daemon)
-        .map_err(|error| format!("could not bind {}: {error}", paths.socket.display()))?;
+    let server = Server::attach(listener, daemon);
     server.run();
     Ok(())
 }

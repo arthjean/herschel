@@ -29,34 +29,35 @@ pub struct Server {
     frame_interval: Duration,
 }
 
+/// Bind the socket with owner-only permissions.
+///
+/// The caller holds the single-instance lock, so a file already at `path` was
+/// left behind by a dead daemon and is removed. Probing it with a connect
+/// first would not make this safer: the probe and the bind cannot be made
+/// atomic, and two starters racing that sequence can both unlink and both
+/// bind, which leaves one of them accepting on an inode no client can reach
+/// (`unix(7)`). The lock removes the race the probe only narrowed.
+pub fn bind_socket(path: &Path) -> std::io::Result<UnixListener> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
 impl Server {
-    /// Bind the socket with owner-only permissions.
-    ///
-    /// A socket left behind by a dead daemon is removed first. A socket owned
-    /// by a live daemon cannot be taken over, because that daemon still holds
-    /// the per-device locks and this one would have failed to acquire them.
-    pub fn bind(path: &Path, daemon: Daemon) -> std::io::Result<Self> {
-        if path.exists() {
-            match UnixStream::connect(path) {
-                Ok(_) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::AddrInUse,
-                        format!("another daemon is already listening on {}", path.display()),
-                    ));
-                }
-                Err(_) => std::fs::remove_file(path)?,
-            }
-        }
-
-        let listener = UnixListener::bind(path)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-
-        Ok(Self {
+    /// Serve `daemon` on a listener that is already bound and reachable.
+    pub fn attach(listener: UnixListener, daemon: Daemon) -> Self {
+        Self {
             listener,
             daemon: Arc::new(Mutex::new(daemon)),
             shutdown: Arc::new(AtomicBool::new(false)),
             frame_interval: Duration::from_millis(FRAME_INTERVAL_MS),
-        })
+        }
     }
 
     /// Redraw the panel at `interval` instead of once a second.

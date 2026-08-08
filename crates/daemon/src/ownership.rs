@@ -7,6 +7,12 @@
 //! which processes already hold the device's HID nodes. Neither forces access
 //! away from another program: a conflict downgrades this application to
 //! read-only, it never detaches a driver or kills a holder.
+//!
+//! The same `flock` guards the daemon instance itself, and that lock is the
+//! arbiter rather than the socket: binding a path cannot decide who runs,
+//! because the stale-socket cleanup preceding the bind cannot be made atomic
+//! (`unix(7)`). A lock held on an open file description is released by the
+//! kernel even when the holder is killed (`flock(2)`), so it never goes stale.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -38,35 +44,80 @@ impl DeviceLock {
     }
 }
 
+/// The daemon's single-instance lock, released when dropped.
+#[derive(Debug)]
+pub struct InstanceLock {
+    path: PathBuf,
+    // Held for its lifetime: closing the descriptor releases the lock.
+    _file: File,
+}
+
+impl InstanceLock {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// Try to become the single writer for `device`.
 ///
 /// Returns the conflict instead of an error when another holder exists, so the
 /// caller can report it rather than retry.
 pub fn acquire(paths: &Paths, device: DeviceId) -> Result<DeviceLock, OwnershipConflict> {
     let path = paths.device_lock(device);
+    let file = lock_exclusive(&path, Some(device))?;
+    Ok(DeviceLock {
+        device,
+        path,
+        _file: file,
+    })
+}
+
+/// Try to become the only daemon for this user.
+///
+/// Taken before the socket is bound and before any device is reached, so the
+/// instance that wins the socket is the same one that goes on to ask for the
+/// hardware. The reverse order lets the holder of the device locks lose the
+/// bind and release them, leaving the surviving daemon read-only for no
+/// reason an operator could act on.
+pub fn acquire_instance(paths: &Paths) -> Result<InstanceLock, OwnershipConflict> {
+    let path = paths.instance_lock();
+    let file = lock_exclusive(&path, None)?;
+    Ok(InstanceLock { path, _file: file })
+}
+
+/// Take the advisory exclusive lock on `path` and record the holder's pid.
+///
+/// The pid is written after the lock is taken and is a diagnostic only: the
+/// lock is the file description, never the file's content.
+fn lock_exclusive(path: &Path, device: Option<DeviceId>) -> Result<File, OwnershipConflict> {
+    let subject = match device {
+        Some(_) => "the device lock",
+        None => "the daemon lock",
+    };
+
     let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
         .mode(0o600)
-        .open(&path)
+        .open(path)
         .map_err(|error| OwnershipConflict {
-            device: Some(device),
+            device,
             resource: path.display().to_string(),
             detail: format!("Lock file could not be opened: {error}"),
         })?;
 
     if let Err(error) = flock(&file, FlockOperation::NonBlockingLockExclusive) {
-        let holder = std::fs::read_to_string(&path).unwrap_or_default();
+        let holder = std::fs::read_to_string(path).unwrap_or_default();
         let holder = holder.trim();
         let detail = if holder.is_empty() {
-            format!("Another process holds the device lock ({error}).")
+            format!("Another process holds {subject} ({error}).")
         } else {
-            format!("Another instance holds the device lock (pid {holder}).")
+            format!("Another instance holds {subject} (pid {holder}).")
         };
         return Err(OwnershipConflict {
-            device: Some(device),
+            device,
             resource: path.display().to_string(),
             detail,
         });
@@ -78,11 +129,7 @@ pub fn acquire(paths: &Paths, device: DeviceId) -> Result<DeviceLock, OwnershipC
     let _ = writeln!(file, "{}", std::process::id());
     let _ = file.flush();
 
-    Ok(DeviceLock {
-        device,
-        path,
-        _file: file,
-    })
+    Ok(file)
 }
 
 /// HID device nodes belonging to `sysfs_path`.
@@ -216,6 +263,31 @@ mod tests {
 
         drop(first);
         acquire(&paths, KRAKEN_BASE).expect("lock is released on drop");
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_second_daemon_is_refused_before_it_reaches_a_device() {
+        let (base, paths) = temp_paths("instance");
+
+        let first = acquire_instance(&paths).expect("first daemon starts");
+        assert_eq!(first.path(), paths.instance_lock());
+
+        let conflict = acquire_instance(&paths).expect_err("second daemon is refused");
+        assert_eq!(conflict.device, None);
+        assert!(
+            conflict.detail.contains(&std::process::id().to_string()),
+            "{}",
+            conflict.detail
+        );
+
+        // The refusal must not depend on the device locks: a daemon degraded to
+        // read-only still holds the instance and still owns the socket.
+        acquire(&paths, KRAKEN_BASE).expect("the instance lock is not a device lock");
+
+        drop(first);
+        acquire_instance(&paths).expect("the daemon lock is released on drop");
 
         std::fs::remove_dir_all(&base).unwrap();
     }

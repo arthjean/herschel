@@ -157,7 +157,8 @@ impl Harness {
             lcd,
         )
         .unwrap();
-        let server = Server::bind(&paths.socket, daemon).unwrap();
+        let listener = nzxt_daemon::server::bind_socket(&paths.socket).unwrap();
+        let server = Server::attach(listener, daemon);
         let shutdown = server.shutdown_handle();
         let thread = std::thread::spawn(move || server.run());
 
