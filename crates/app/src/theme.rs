@@ -79,8 +79,22 @@ pub mod color {
     pub const PANEL: Color = Color::rgb(0x23272f);
     /// Input and control fill.
     pub const CONTROL: Color = Color::rgb(0x2a2f38);
+    /// The same fill under the pointer.
+    ///
+    /// [`CONTROL`] darkened by 0.04 in luminance rather than lightened, as
+    /// Paneflow's `select_trigger` does: on a dark surface a control that sinks
+    /// under the pointer reads as pressable, while one that brightens reads as
+    /// already selected.
+    pub const CONTROL_HOVER: Color = Color::rgb(0x21252c);
     /// Low-contrast separator.
     pub const SEPARATOR: Color = Color::rgb(0x333944);
+    /// Surface a floating menu is drawn on.
+    ///
+    /// [`PANEL`] lifted by 0.035 in luminance, which is how Paneflow's
+    /// `select_menu_surface` separates a menu from the panel under it: a menu
+    /// hovering over a surface of its own color reads as part of it, and the
+    /// lift is what says the menu is in front rather than in the page.
+    pub const MENU: Color = Color::rgb(0x2b2f39);
 
     /// The single selection accent.
     ///
@@ -137,6 +151,40 @@ pub const CARD_RADIUS: Pixels = px(10.0);
 pub const CARD_INSET: Pixels = px(4.0);
 /// Width of the visible focus ring, in logical pixels.
 pub const FOCUS_RING: Pixels = px(2.0);
+
+/// Side of a color swatch, and the radius that goes with it.
+///
+/// One size wherever a color is shown as a square: inside a color field and in
+/// the list that field opens. A swatch is a sample of a color rather than a
+/// control shaped like one, so the list matches the field it belongs to instead
+/// of growing to [`TARGET_MIN`].
+pub const SWATCH_SIZE: Pixels = px(22.0);
+pub const SWATCH_RADIUS: Pixels = px(4.0);
+
+/// Geometry of a floating menu, taken from Paneflow's `select_menu`.
+///
+/// A menu is not a card and not a control: it is its own object, so it carries
+/// its own radius rather than borrowing [`RADIUS`] or [`CARD_RADIUS`] and
+/// following whichever of them moves next. The width clamp is what keeps a menu
+/// from being as narrow as a short option or as wide as a long one.
+pub const MENU_RADIUS: Pixels = px(10.0);
+pub const MENU_MIN_WIDTH: Pixels = px(200.0);
+pub const MENU_MAX_WIDTH: Pixels = px(280.0);
+pub const MENU_MAX_HEIGHT: Pixels = px(320.0);
+/// Side of the glyph on a menu trigger, smaller than a content icon.
+pub const MENU_GLYPH_SIZE: Pixels = px(12.0);
+/// Gap between the control a menu belongs to and the menu itself.
+///
+/// A menu flush against its trigger reads as part of the control rather than as
+/// a layer over it, and the two rounded edges meet in a line neither of them
+/// owns.
+pub const MENU_OFFSET: Pixels = px(6.0);
+/// Gap between two rows of a menu: a hairline, so the highlights of two
+/// neighbouring rows do not touch.
+pub const MENU_ROW_GAP: Pixels = px(1.0);
+/// Height of one menu row. Below [`TARGET_MIN`] on purpose, because that is the
+/// row height of the menus this one is matched to.
+pub const MENU_ROW_HEIGHT: Pixels = px(28.0);
 
 /// Window size the layout is designed for.
 pub const WINDOW_WIDTH: Pixels = px(920.0);
@@ -200,7 +248,7 @@ mod tests {
 
     #[test]
     fn body_text_meets_aa_on_every_surface() {
-        for surface in [RAIL, SURFACE, PANEL, CONTROL] {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU] {
             let ratio = TEXT.contrast(surface);
             assert!(ratio >= TEXT_MIN, "TEXT on {surface:?} is {ratio:.2}:1");
         }
@@ -208,7 +256,7 @@ mod tests {
 
     #[test]
     fn muted_text_meets_aa_on_every_surface() {
-        for surface in [RAIL, SURFACE, PANEL, CONTROL] {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU] {
             let ratio = TEXT_MUTED.contrast(surface);
             assert!(
                 ratio >= TEXT_MIN,
@@ -240,7 +288,7 @@ mod tests {
 
     #[test]
     fn the_focus_ring_is_visible_against_every_background_it_sits_on() {
-        for surface in [RAIL, SURFACE, PANEL, CONTROL, ACCENT] {
+        for surface in [RAIL, SURFACE, PANEL, CONTROL, MENU, ACCENT] {
             let ratio = FOCUS.contrast(surface);
             assert!(
                 ratio >= NON_TEXT_MIN,
@@ -253,6 +301,23 @@ mod tests {
     fn disabled_text_is_visibly_dimmer_but_still_perceivable() {
         assert!(TEXT_DISABLED.contrast(CONTROL) < TEXT.contrast(CONTROL));
         assert!(TEXT_DISABLED.contrast(CONTROL) >= 2.0);
+    }
+
+    #[test]
+    fn a_menu_reads_as_lifted_off_the_panel_it_covers() {
+        // The lift is small on purpose: enough to see the edge of the menu
+        // where it overlaps the panel, not so much that the menu reads as a
+        // separate window. It only has to be lighter, and by less than a
+        // separator is.
+        assert!(
+            MENU.luminance() > PANEL.luminance(),
+            "the menu is not lifted"
+        );
+        let ratio = MENU.contrast(PANEL);
+        assert!(
+            (1.05..1.4).contains(&ratio),
+            "menu over panel is {ratio:.3}:1"
+        );
     }
 
     #[test]

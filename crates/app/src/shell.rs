@@ -15,8 +15,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels, Point,
-    SharedString, Stateful, Window, actions, div, prelude::*, px,
+    AnyElement, App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels,
+    Point, SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
 use nzxt_core::capability::CapabilityId;
 use nzxt_core::display::{DisplayMode, LcdMetric, MetricSample};
@@ -44,8 +44,9 @@ use crate::lighting::{LightingEditor, LightingMode};
 use crate::link::{DeviceSummary, LinkState};
 use crate::metrics::MetricBook;
 use crate::theme::{
-    CARD_INSET, CARD_RADIUS, Color, FOCUS_RING, RADIUS, RAIL_WIDTH, TARGET_MIN, UNOFFICIAL_NOTICE,
-    color, space,
+    CARD_INSET, CARD_RADIUS, Color, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH, MENU_MIN_WIDTH,
+    MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, RAIL_WIDTH, SWATCH_RADIUS,
+    SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE, color, space,
 };
 use crate::window_chrome::{self, DragLatch};
 
@@ -2512,6 +2513,7 @@ impl Shell {
         // than a matter of styling.
         let enabled = state.is_enabled();
         let open = enabled && self.popover == Some(Popover::Options { select: id.clone() });
+        let current = selected.clone();
         let control = Select::new(id.clone(), label)
             .options(options.clone())
             .selected(selected)
@@ -2528,33 +2530,52 @@ impl Shell {
         let on_select = Rc::new(on_select);
 
         div().relative().child(control).when(open, |this| {
-            this.child(popover_surface(
+            this.child(option_menu(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(space::XS)
+                    .gap(MENU_ROW_GAP)
                     .children(options.into_iter().map(|option| {
                         let value = option.value.clone();
+                        let chosen = option.value == current;
                         let on_select = Rc::clone(&on_select);
+                        // Whisper highlights, the selected row a step stronger
+                        // than a hovered one: a menu that marks its current
+                        // value with the selection accent reads as if choosing
+                        // had already happened.
+                        let resting = if chosen {
+                            color::TEXT.alpha(0.10)
+                        } else {
+                            color::TEXT.alpha(0.0)
+                        };
+                        let hovered = if chosen {
+                            color::TEXT.alpha(0.10)
+                        } else {
+                            color::TEXT.alpha(0.05)
+                        };
                         div()
                             .id(SharedString::from(format!("{id}-{}", option.value)))
                             .tab_index(tab_index)
                             .tab_stop(true)
+                            .flex_none()
                             .w_full()
-                            .min_h(TARGET_MIN)
+                            .h(MENU_ROW_HEIGHT)
                             .flex()
                             .items_center()
-                            .px(space::MD)
+                            .gap(space::SM)
+                            .px(space::SM)
                             .rounded(RADIUS)
                             .cursor_pointer()
+                            .text_xs()
                             .text_color(color::TEXT.hsla())
-                            .hover(|this| this.bg(color::ACCENT.alpha(0.25)))
+                            .bg(resting)
+                            .hover(|this| this.bg(hovered))
                             .when(focus_visible(), |this| {
                                 this.focus(|this| {
                                     this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
                                 })
                             })
-                            .child(option.label)
+                            .child(div().flex_1().min_w_0().truncate().child(option.label))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 on_select(this, &value, cx);
                                 this.popover = None;
@@ -2604,26 +2625,12 @@ impl Shell {
             }));
 
         div().relative().child(control).when(open, |this| {
-            this.child(popover_surface(
-                div().flex().flex_wrap().gap(space::SM).children(
-                    SWATCHES.into_iter().enumerate().map(|(index, swatch)| {
-                        div()
-                            .id(SharedString::from(format!("{id}-swatch-{index}")))
-                            .tab_index(tab_index)
-                            .tab_stop(true)
-                            .w(TARGET_MIN)
-                            .h(TARGET_MIN)
-                            .rounded(RADIUS)
-                            .cursor_pointer()
-                            .border_1()
-                            .border_color(color::SEPARATOR.hsla())
-                            .bg(swatch.hsla())
-                            .hover(|this| this.border_color(color::FOCUS.hsla()))
-                            .when(focus_visible(), |this| {
-                                this.focus(|this| {
-                                    this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
-                                })
-                            })
+            this.child(swatch_menu(swatch_grid(
+                SWATCHES
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, swatch)| {
+                        swatch_cell(format!("{id}-swatch-{index}"), swatch, tab_index)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(editor) = this.lighting.channel_mut(channel) {
                                     editor.color = format!("{:06X}", swatch.0);
@@ -2631,9 +2638,10 @@ impl Shell {
                                 this.popover = None;
                                 cx.notify();
                             }))
-                    }),
-                ),
-            ))
+                            .into_any_element()
+                    })
+                    .collect(),
+            )))
         })
     }
 
@@ -2665,26 +2673,12 @@ impl Shell {
         );
 
         div().relative().child(control).when(open, |this| {
-            this.child(popover_surface(
-                div().flex().flex_wrap().gap(space::SM).children(
-                    SWATCHES.into_iter().enumerate().map(|(index, swatch)| {
-                        div()
-                            .id(SharedString::from(format!("{id}-swatch-{index}")))
-                            .tab_index(tab_index)
-                            .tab_stop(true)
-                            .w(TARGET_MIN)
-                            .h(TARGET_MIN)
-                            .rounded(RADIUS)
-                            .cursor_pointer()
-                            .border_1()
-                            .border_color(color::SEPARATOR.hsla())
-                            .bg(swatch.hsla())
-                            .hover(|this| this.border_color(color::FOCUS.hsla()))
-                            .when(focus_visible(), |this| {
-                                this.focus(|this| {
-                                    this.border(FOCUS_RING).border_color(color::FOCUS.hsla())
-                                })
-                            })
+            this.child(swatch_menu(swatch_grid(
+                SWATCHES
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, swatch)| {
+                        swatch_cell(format!("{id}-swatch-{index}"), swatch, tab_index)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.lcd.edit(|editor| {
                                     editor.set_color_text(field, format!("{:06X}", swatch.0))
@@ -2692,9 +2686,10 @@ impl Shell {
                                 this.popover = None;
                                 cx.notify();
                             }))
-                    }),
-                ),
-            ))
+                            .into_any_element()
+                    })
+                    .collect(),
+            )))
         })
     }
 }
@@ -2738,6 +2733,12 @@ impl Render for Shell {
                 if focus_visible() {
                     set_focus_visible(false);
                     cx.notify();
+                }
+                // An open popover owns the press: it is being dismissed, and a
+                // press that lands over a slider or a curve on the way out must
+                // not also move a value the operator was not aiming at.
+                if this.popover.is_some() {
+                    return;
                 }
                 // A press on a brightness track starts a drag. It is
                 // decided here, from where the tracks were painted, rather
@@ -2837,6 +2838,32 @@ impl Render for Shell {
                 .relative()
                 .size_full()
                 .child(shell)
+                // While a list is open, the rest of the window is a way out of
+                // it. Painted under the popover and over everything else, so a
+                // press anywhere else closes the list and stops there: the
+                // control underneath is not also operated by the press that
+                // dismissed the list, which is how a menu behaves everywhere
+                // else on the desktop. Escape does the same from the keyboard.
+                .children(self.popover.is_some().then(|| {
+                    div()
+                        .id("popover-dismiss")
+                        // Takes the press rather than letting it through, so
+                        // the control that opened the list does not reopen it
+                        // on the release and no other control is operated by
+                        // the press that closed it.
+                        .occlude()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.popover = None;
+                                cx.notify();
+                            }),
+                        )
+                }))
                 .child(div().absolute().top_0().left_0().w_full().child(title_bar)),
             window,
             color::RAIL.hsla(),
@@ -2878,12 +2905,56 @@ fn row_thumbnail(color_value: Option<Color>, round: bool) -> Div {
         .w(ROW_THUMBNAIL)
         .h(ROW_THUMBNAIL)
         .rounded(if round { ROW_THUMBNAIL / 2.0 } else { RADIUS })
-        .border_1()
-        .border_color(color::SEPARATOR.hsla())
         .bg(match color_value {
             Some(value) => value.hsla(),
             None => color::SURFACE.hsla(),
         })
+}
+
+/// How many swatches a color list puts on one line.
+pub const SWATCH_COLUMNS: usize = 3;
+
+/// One offered color, without what choosing it does.
+///
+/// Shared by the two lists that offer colors, so a swatch in the panel's list
+/// and one in a channel's are the same object rather than two that happen to
+/// match today.
+fn swatch_cell(id: String, swatch: Color, tab_index: isize) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .tab_index(tab_index)
+        .tab_stop(true)
+        .flex_none()
+        .w(SWATCH_SIZE)
+        .h(SWATCH_SIZE)
+        .rounded(SWATCH_RADIUS)
+        .cursor_pointer()
+        // Nothing outlines the color at rest: the swatch is the color and an
+        // edge around it is one more thing to read. The ring is reserved rather
+        // than added, so pointing at a swatch or focusing it does not move the
+        // row it sits in.
+        .border(FOCUS_RING)
+        .border_color(color::PANEL.alpha(0.0))
+        .bg(swatch.hsla())
+        .hover(|this| this.border_color(color::FOCUS.alpha(0.6)))
+        .when(focus_visible(), |this| {
+            this.focus(|this| this.border_color(color::FOCUS.hsla()))
+        })
+}
+
+/// The offered colors, [`SWATCH_COLUMNS`] to a line.
+///
+/// Laid out in fixed rows rather than wrapped on the available width, so the
+/// shape of the list is the same wherever it opens and however wide the menu
+/// around it happens to be.
+fn swatch_grid(mut swatches: Vec<AnyElement>) -> Div {
+    let mut rows = Vec::new();
+    while !swatches.is_empty() {
+        let taken = SWATCH_COLUMNS.min(swatches.len());
+        let line: Vec<AnyElement> = swatches.drain(..taken).collect();
+        rows.push(div().flex().gap(space::SM).children(line));
+    }
+    div().flex().flex_col().gap(space::SM).children(rows)
 }
 
 /// A row of metric tiles that wraps rather than scrolling sideways.
@@ -3040,27 +3111,65 @@ fn setting_row_owned(label: String, value: String) -> Div {
         )
 }
 
-/// The floating surface a popover renders on.
+/// A list of options: the menu skin plus the width clamp a row of text needs.
 ///
-/// `anchored` is what keeps a popover opened near a window edge fully visible:
-/// it repositions itself rather than being clipped. `deferred` paints it above
-/// panels laid out after it, so a popover is never covered by its neighbor.
-fn popover_surface(content: impl IntoElement) -> impl IntoElement {
+/// Rows are as wide as the menu, so without the floor a menu of short options
+/// would be a sliver and one long option would set the width for every other.
+fn option_menu(content: impl IntoElement) -> impl IntoElement {
+    popover_surface(menu_surface(content).min_w(MENU_MIN_WIDTH))
+}
+
+/// A list of swatches: the same skin, sized to the grid inside it.
+///
+/// The clamp of [`option_menu`] would leave the menu wider than its own
+/// content, which is empty surface beside the colors. Paneflow makes the same
+/// split, for the same reason: a menu that must size to its content takes the
+/// skin without the container.
+fn swatch_menu(content: impl IntoElement) -> impl IntoElement {
+    popover_surface(menu_surface(content))
+}
+
+/// The menu skin: radius, lifted surface, hairline, and the geometry every menu
+/// shares. What sets the width stays with the caller.
+fn menu_surface(content: impl IntoElement) -> Stateful<Div> {
+    div()
+        .id("popover-surface")
+        // The list keeps the presses that land on it. Without this the
+        // dismissal layer under it would also hear the press, close the
+        // list on the way down, and the option the operator was
+        // pressing would be gone before the release reached it.
+        .occlude()
+        .flex()
+        .flex_col()
+        .gap(MENU_ROW_GAP)
+        .max_w(MENU_MAX_WIDTH)
+        .max_h(MENU_MAX_HEIGHT)
+        .overflow_y_scroll()
+        .p(space::XS)
+        .rounded(MENU_RADIUS)
+        // Lifted surface and a hairline at 0.6, no drop shadow: the menu is
+        // told apart from the panel by its luminance, which is how Paneflow's
+        // menus read in front without casting anything.
+        .bg(color::MENU.hsla())
+        .border_1()
+        .border_color(color::SEPARATOR.alpha(0.6))
+        .child(content)
+}
+
+/// Float a built menu over the screen.
+///
+/// `anchored` is what keeps a menu opened near a window edge fully visible: it
+/// repositions itself rather than being clipped. `deferred` paints it above
+/// panels laid out after it, so a menu is never covered by its neighbor.
+fn popover_surface(menu: Stateful<Div>) -> impl IntoElement {
     gpui::deferred(
-        gpui::anchored().snap_to_window_with_margin(px(8.0)).child(
-            div()
-                .id("popover-surface")
-                .w(px(280.0))
-                .max_h(px(240.0))
-                .overflow_y_scroll()
-                .p(space::SM)
-                .rounded(RADIUS)
-                .bg(color::PANEL.hsla())
-                .border_1()
-                .border_color(color::FOCUS.alpha(0.45))
-                .shadow_lg()
-                .child(content),
-        ),
+        gpui::anchored()
+            // Off the control rather than against it. Applied before the snap,
+            // so a menu opened near the bottom edge still folds back into the
+            // window instead of being pushed out of it by the offset.
+            .offset(gpui::point(px(0.0), MENU_OFFSET))
+            .snap_to_window_with_margin(px(8.0))
+            .child(menu),
     )
     .with_priority(1)
 }

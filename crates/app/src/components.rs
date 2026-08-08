@@ -20,7 +20,8 @@ use nzxt_core::telemetry::{History, MetricView};
 
 use crate::assets::Icon;
 use crate::theme::{
-    Color, FOCUS_RING, META_SEPARATOR, RADIUS, TARGET_MIN, color, numeric_font, space,
+    Color, FOCUS_RING, MENU_GLYPH_SIZE, META_SEPARATOR, RADIUS, SWATCH_RADIUS, SWATCH_SIZE,
+    TARGET_MIN, color, numeric_font, space,
 };
 
 /// What a control is allowed to do right now.
@@ -119,6 +120,54 @@ pub fn focus_visible() -> bool {
 /// Record how focus last moved. The shell sets this; controls only read it.
 pub fn set_focus_visible(visible: bool) {
     FOCUS_VISIBLE.with(|flag| flag.set(visible));
+}
+
+/// The pill a menu opens from, matched to Paneflow's `select_trigger`.
+///
+/// A subtle-gray pill with no outline, 10 by 6 of padding, and a fill that
+/// sinks rather than lifts under the pointer. The focus ring is taken out of
+/// that padding rather than added to it, so reserving the ring leaves the pill
+/// exactly the size of the one it matches and focusing it moves nothing.
+///
+/// An outline comes back for one state only: a control holding a value that
+/// cannot be parsed. Nothing else on the pill says so, and the message under it
+/// is not in the same place the eye is.
+fn menu_trigger(id: impl Into<ElementId>, state: &ControlState, tab_index: isize) -> Stateful<Div> {
+    let enabled = state.is_enabled() || matches!(state, ControlState::Error { .. });
+    let resting = match state {
+        ControlState::Error { .. } => color::DANGER.hsla(),
+        _ => color::CONTROL.alpha(0.0),
+    };
+    let base = div()
+        .id(id)
+        .relative()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(space::SM)
+        .px(space::SM)
+        .py(space::XS)
+        .border(FOCUS_RING)
+        .border_color(resting)
+        .rounded(RADIUS)
+        .bg(color::CONTROL.hsla())
+        .text_xs()
+        .text_color(state.text_color());
+
+    if enabled {
+        base.tab_index(tab_index)
+            .tab_stop(true)
+            .cursor_pointer()
+            .hover(|this| this.bg(color::CONTROL_HOVER.hsla()))
+            .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
+            .when(focus_visible(), |this| {
+                this.focus(|this| this.border_color(color::FOCUS.hsla()))
+            })
+    } else {
+        // A disabled control is not a tab stop: keyboard traversal must not
+        // stop on something that cannot be operated.
+        base.cursor_default().opacity(0.6)
+    }
 }
 
 /// A base interactive surface with the shared focus, hover and active states.
@@ -321,13 +370,10 @@ impl Select {
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(field_id, label, message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index, None)
+            menu_trigger(self.key.clone(), &state, self.tab_index)
                 .w_full()
-                .justify_between()
-                .px(space::MD)
-                .bg(color::CONTROL.hsla())
-                .child(div().truncate().child(value))
-                .child(icon(Icon::ChevronDown, ICON_SIZE, color::TEXT_MUTED.hsla()))
+                .child(div().min_w_0().truncate().child(value))
+                .child(select_chevron())
         })
     }
 }
@@ -602,21 +648,36 @@ impl ColorField {
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(field_id, self.label.clone(), message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index, None)
+            // The swatch and its digits read as one thing on the left, and the
+            // chevron sits at the right edge like the select's does: both
+            // controls open a list, so both say so the same way.
+            menu_trigger(self.key.clone(), &state, self.tab_index)
                 .w_full()
-                .gap(space::MD)
-                .px(space::MD)
-                .bg(color::CONTROL.hsla())
                 .child(
                     div()
-                        .w(px(22.0))
-                        .h(px(22.0))
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(color::SEPARATOR.hsla())
-                        .bg(swatch.hsla()),
+                        .flex()
+                        .items_center()
+                        .min_w_0()
+                        .gap(space::SM)
+                        .child(
+                            // No outline: the control's own edge already
+                            // separates the swatch from the surface, and a
+                            // second edge inside it only crops the color.
+                            div()
+                                .flex_none()
+                                .w(SWATCH_SIZE)
+                                .h(SWATCH_SIZE)
+                                .rounded(SWATCH_RADIUS)
+                                .bg(swatch.hsla()),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .font(numeric_font())
+                                .child(format!("#{}", self.value)),
+                        ),
                 )
-                .child(div().font(numeric_font()).child(format!("#{}", self.value)))
+                .child(select_chevron())
         })
     }
 }
@@ -691,6 +752,20 @@ pub const ICON_SIZE: Pixels = px(16.0);
 /// color in this interface.
 pub fn icon(icon: Icon, size: Pixels, color: Hsla) -> Svg {
     svg().path(icon.path()).size(size).text_color(color)
+}
+
+/// The glyph at the right edge of a menu trigger.
+///
+/// Smaller than [`ICON_SIZE`] and dimmer than the value beside it, as Paneflow's
+/// `select_chevron` is: it says the control opens, and says it under the value
+/// rather than beside it in the same weight.
+pub fn select_chevron() -> Svg {
+    icon(
+        Icon::ChevronDown,
+        MENU_GLYPH_SIZE,
+        color::TEXT_MUTED.alpha(0.7),
+    )
+    .flex_none()
 }
 
 /// The disclosure chevron of a collapsible row.
