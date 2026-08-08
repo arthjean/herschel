@@ -39,12 +39,18 @@ const USBFS_GROUP: u8 = b'U';
 
 /// Largest payload handed to one `USBDEVFS_BULK` call.
 ///
-/// The kernel would accept far more, but a single call allocates a contiguous
-/// kernel buffer of exactly this size. 16 KiB is the same ceiling libusb uses
-/// for its own bulk buffers, and it is a whole multiple of every max packet
-/// size this device publishes, so splitting a frame across calls never inserts
-/// a short packet the receiver would read as the end of a transfer.
-pub const MAX_BULK_CHUNK: usize = 16 * 1024;
+/// Large enough that a whole panel frame is one call. It was 16 KiB, which
+/// split a 115 200 byte frame across eight `ioctl`s with a user-space return
+/// between each, and the panel painted only a band of what it was sent. No
+/// short packet is involved either way, since 16 KiB is a whole multiple of the
+/// endpoint's 512 byte maximum, but the gaps are real and the reference
+/// implementation does not have them: liquidctl's `bulk_buffer_size` for the
+/// 2023 and 2024 models is 2 MiB, so it writes the frame whole.
+///
+/// The kernel's own ceiling for one transfer is far above this. The value is a
+/// bound on the contiguous buffer a single call asks the kernel to hold, and
+/// this product's largest transfer by a wide margin is one frame.
+pub const MAX_BULK_CHUNK: usize = 2 * 1024 * 1024;
 
 /// How long one bulk call may block before the kernel gives up.
 const BULK_TIMEOUT: Duration = Duration::from_millis(2_000);

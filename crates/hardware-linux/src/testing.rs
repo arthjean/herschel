@@ -575,6 +575,32 @@ impl BulkRecorder {
     }
 }
 
+/// Every report a fake device received, shared with the test.
+///
+/// Mirrors [`BulkRecorder`] and exists for the same reason: the HID half is
+/// boxed into the link under test, so a caller asking "did that report actually
+/// go out?" has to hold the log rather than the device.
+#[derive(Default)]
+pub struct ReportRecorder {
+    reports: std::sync::Mutex<Vec<[u8; crate::hid::REPORT_BYTES]>>,
+}
+
+impl ReportRecorder {
+    /// Every report received, in order.
+    pub fn reports(&self) -> Vec<[u8; crate::hid::REPORT_BYTES]> {
+        self.reports.lock().map(|r| r.clone()).unwrap_or_default()
+    }
+
+    /// The ones carrying `identifier`, which is how a caller asks whether one
+    /// particular command reached the device.
+    pub fn matching(&self, identifier: [u8; 2]) -> Vec<[u8; crate::hid::REPORT_BYTES]> {
+        self.reports()
+            .into_iter()
+            .filter(|report| report[0] == identifier[0] && report[1] == identifier[1])
+            .collect()
+    }
+}
+
 /// The [`crate::usbfs::BulkTransport`] half of a fake device.
 struct RecordingBulk(std::sync::Arc<BulkRecorder>);
 
@@ -606,7 +632,7 @@ pub struct FakeKraken {
     panel: Option<nzxt_core::capability::LcdDisplaySettings>,
     pending: std::collections::VecDeque<[u8; crate::hid::REPORT_BYTES]>,
     /// Every report the device received, in order.
-    pub reports: Vec<[u8; crate::hid::REPORT_BYTES]>,
+    reports: std::sync::Arc<ReportRecorder>,
     /// When set, every write fails with this error instead of landing.
     pub write_failure: Option<crate::hid::HidError>,
     bulk: std::sync::Arc<BulkRecorder>,
@@ -622,7 +648,7 @@ impl FakeKraken {
                 quarter_turns: 0,
             }),
             pending: std::collections::VecDeque::new(),
-            reports: Vec::new(),
+            reports: std::sync::Arc::new(ReportRecorder::default()),
             write_failure: None,
             bulk: std::sync::Arc::new(BulkRecorder::default()),
         }
@@ -654,6 +680,11 @@ impl FakeKraken {
         std::sync::Arc::clone(&self.bulk)
     }
 
+    /// Handle on the reports written, taken before the device is boxed away.
+    pub fn report_recorder(&self) -> std::sync::Arc<ReportRecorder> {
+        std::sync::Arc::clone(&self.reports)
+    }
+
     /// Consume the device into the link the LCD code drives.
     pub fn link(self) -> crate::lcd::LcdLink {
         let bulk = RecordingBulk(std::sync::Arc::clone(&self.bulk));
@@ -662,11 +693,7 @@ impl FakeKraken {
 
     /// Reports received whose identifier matches `identifier`.
     pub fn reports_matching(&self, identifier: [u8; 2]) -> Vec<[u8; crate::hid::REPORT_BYTES]> {
-        self.reports
-            .iter()
-            .filter(|report| report[0] == identifier[0] && report[1] == identifier[1])
-            .copied()
-            .collect()
+        self.reports.matching(identifier)
     }
 
     fn firmware_answer(&self) -> [u8; crate::hid::REPORT_BYTES] {
@@ -700,7 +727,9 @@ impl crate::hid::HidTransport for FakeKraken {
         if let Some(failure) = &self.write_failure {
             return Err(failure.clone());
         }
-        self.reports.push(*report);
+        if let Ok(mut reports) = self.reports.reports.lock() {
+            reports.push(*report);
+        }
         match [report[0], report[1]] {
             crate::hid::FIRMWARE_REQUEST => {
                 let answer = self.firmware_answer();
@@ -711,6 +740,14 @@ impl crate::hid::HidTransport for FakeKraken {
                     let answer = self.display_answer(settings);
                     self.pending.push_back(answer);
                 }
+            }
+            // A panel acknowledges both transfer commands, which is what the
+            // frame path waits for before it puts pixels on the endpoint.
+            [0x36, sub] if self.panel.is_some() => {
+                let mut answer = [0u8; crate::hid::REPORT_BYTES];
+                answer[0] = crate::lcd::packet::TRANSFER_ANSWER;
+                answer[1] = sub;
+                self.pending.push_back(answer);
             }
             _ => {}
         }

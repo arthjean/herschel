@@ -35,6 +35,7 @@
 //! why [`VALIDATED_FIRMWARE`] gates every frame.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use nzxt_core::capability::{Evidenced, LcdDisplaySettings, LcdPanel, LcdPanelShape, LcdTopology};
 use nzxt_core::display::Orientation;
@@ -146,6 +147,13 @@ pub mod packet {
     pub const TRANSFER_START: [u8; 2] = [0x36, 0x01];
     /// Close one.
     pub const TRANSFER_END: [u8; 2] = [0x36, 0x02];
+    /// Identifier the panel answers both of them with.
+    ///
+    /// The device pairs every command with the next identifier up, which its
+    /// own report descriptor spells out: `0x30`/`0x31`, `0x32`/`0x33`,
+    /// `0x36`/`0x37`, `0x38`/`0x39`. The second byte comes back unchanged, so
+    /// an answer names which of the two commands it belongs to.
+    pub const TRANSFER_ANSWER: u8 = 0x37;
 
     /// Offsets inside a `0x31 0x01` answer.
     const BRIGHTNESS_OFFSET: usize = 0x18;
@@ -273,36 +281,41 @@ pub fn query<T: HidTransport + ?Sized>(transport: &mut T) -> Result<LcdInventory
     Ok(inventory)
 }
 
+/// How many times one picture is put on the wire.
+///
+/// Two, always. The panel double-buffers and swaps on the transfer *after* the
+/// one that filled it, so a picture sent once lands in the buffer nothing is
+/// showing and only reaches the glass when some later frame happens to push it
+/// there.
+///
+/// This was `1` after the first frame of a link, from liquidctl's comment that
+/// sending it twice "is only required once after initialization". The comment
+/// is a guess: it ends in a question mark, and the code beneath it calls
+/// `_send_2023_data_fw2` twice for *every* static image on 2.x firmware
+/// ([`kraken3.py`](https://github.com/liquidctl/liquidctl/blob/main/liquidctl/driver/kraken3.py)).
+/// Reading the comment rather than the code produced exactly the behavior the
+/// panel then showed on 2026-08-08: the first picture after a daemon start
+/// appeared at once, and every later one stayed a frame behind, half swapped,
+/// until the next transfer pushed it through.
+const SEQUENCES_PER_FRAME: u8 = 2;
+
+/// How long a frame waits for the panel to acknowledge a transfer command.
+///
+/// Two orders of magnitude under [`ANSWER_TIMEOUT`], which is sized for a
+/// topology query measured taking 699 ms. This wait sits inside every frame, so
+/// a panel that stays silent has to cost almost nothing: at one frame a second,
+/// a two second ceiling here would be a stall rather than a timeout.
+const TRANSFER_ACK_TIMEOUT: Duration = Duration::from_millis(50);
+
 /// Both halves of the transport, held together because a frame needs both.
 pub struct LcdLink {
     hid: Box<dyn HidTransport>,
     bulk: Box<dyn BulkTransport>,
-    /// False until one frame has been through the panel's buffer swap.
-    ///
-    /// The panel double-buffers, and the first transfer after it is opened
-    /// fills the back buffer without swapping it to the glass. Measured on the
-    /// owned unit, firmware `2.0.0`, 2026-08-07: the first of five frames never
-    /// appeared and every later one did, which is the behavior liquidctl
-    /// describes as "only required once after initialization".
-    primed: bool,
 }
 
 impl LcdLink {
     pub fn new(hid: Box<dyn HidTransport>, bulk: Box<dyn BulkTransport>) -> Self {
-        Self {
-            hid,
-            bulk,
-            primed: false,
-        }
-    }
-
-    /// Forget that the panel's buffers have been swapped once.
-    ///
-    /// Called when the device goes away: a panel that comes back is a panel
-    /// that needs priming again, and a first frame silently swallowed after a
-    /// reconnect would be indistinguishable from a transfer that failed.
-    pub fn unprime(&mut self) {
-        self.primed = false;
+        Self { hid, bulk }
     }
 
     pub fn source(&self) -> String {
@@ -327,12 +340,10 @@ impl LcdLink {
     /// partial is ever sent, because the size is checked before the first byte
     /// leaves.
     ///
-    /// The very first frame on a link goes out twice. The panel swaps buffers
-    /// on the transfer *after* the one that filled them, so a single first
-    /// frame lands in a buffer nothing ever shows. Sending it twice costs one
-    /// extra transfer once per connection, and it is the difference between a
-    /// panel that updates and a panel that appears to ignore the first thing it
-    /// is told.
+    /// Every frame goes out twice: see [`SEQUENCES_PER_FRAME`]. It costs one
+    /// extra transfer of 13.7 ms per picture, and it is the difference between
+    /// a panel that shows what it was last told and one that trails a frame
+    /// behind whatever it was told before.
     pub fn send_frame(&mut self, payload: &[u8]) -> Result<FrameReport, LcdError> {
         if payload.len() != FRAME_BYTES {
             return Err(LcdError::FrameSize {
@@ -345,22 +356,57 @@ impl LcdLink {
         let header = packet::bulk_header(payload.len() as u32);
         let end = packet::transfer_end();
 
-        let sequences = if self.primed { 1 } else { 2 };
-        for _ in 0..sequences {
+        let mut acknowledged = 0u8;
+        for _ in 0..SEQUENCES_PER_FRAME {
             self.hid.write_report(&start)?;
+            acknowledged += u8::from(self.await_ack(packet::TRANSFER_START));
             self.bulk.write_bulk(BULK_ENDPOINT, &header)?;
             self.bulk.write_bulk(BULK_ENDPOINT, payload)?;
             self.hid.write_report(&end)?;
+            acknowledged += u8::from(self.await_ack(packet::TRANSFER_END));
         }
-        self.primed = true;
 
         Ok(FrameReport {
             start,
             header,
             payload_bytes: payload.len(),
             end,
-            sequences,
+            sequences: SEQUENCES_PER_FRAME,
+            acknowledged,
         })
+    }
+
+    /// Wait for the panel to acknowledge one `0x36` command.
+    ///
+    /// liquidctl reads the answer to every transfer command before it moves on
+    /// (`_write_then_read` is `_write` followed by `_read`), and skipping that
+    /// read is what left frames half painted on this machine: the pixels went
+    /// to the bulk endpoint before the panel had said it was ready to take
+    /// them, so only a band of each frame reached the glass and the rest of the
+    /// picture stayed as it was. Photographed 2026-08-08.
+    ///
+    /// Best effort, and deliberately so. The identifier is matched over as many
+    /// reports as fit in the budget, because `kraken2023` polls the same
+    /// interface and its own reports interleave with these. A panel that never
+    /// answers still gets its frame, which is what this did before, rather than
+    /// becoming a panel that cannot be drawn on at all.
+    fn await_ack(&mut self, command: [u8; 2]) -> bool {
+        let deadline = Instant::now() + TRANSFER_ACK_TIMEOUT;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            match self.hid.read_report(deadline - now) {
+                Ok(Some(report))
+                    if report[0] == packet::TRANSFER_ANSWER && report[1] == command[1] =>
+                {
+                    return true;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return false,
+            }
+        }
     }
 
     /// Read one report, so a probe can record what came back.
@@ -383,11 +429,17 @@ pub struct FrameReport {
     pub start: [u8; REPORT_BYTES],
     pub header: [u8; packet::BULK_HEADER_BYTES],
     pub payload_bytes: usize,
-    /// How many times the whole sequence went out, one or two.
+    /// How many times the whole sequence went out.
     ///
-    /// Two only on the first frame of a link, for the buffer swap. Recorded so
+    /// Always [`SEQUENCES_PER_FRAME`], for the panel's buffer swap. Recorded so
     /// a probe's byte count adds up rather than looking like a duplicate.
     pub sequences: u8,
+    /// How many `0x36` commands the panel answered, of the two per sequence.
+    ///
+    /// Recorded rather than enforced: the transfer proceeds either way, and a
+    /// probe that shows a silent panel is evidence about this firmware rather
+    /// than a failure.
+    pub acknowledged: u8,
     pub end: [u8; REPORT_BYTES],
 }
 
@@ -569,22 +621,25 @@ mod tests {
         let bulk = kraken.bulk_recorder();
         let mut link = kraken.link();
 
-        // The first frame is the primed one, so the second is what shows the
-        // steady-state sequence.
         link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap();
         let report = link.send_frame(&vec![1u8; FRAME_BYTES]).unwrap();
 
         assert_eq!(&report.start[0..5], &[0x36, 0x01, 0x00, 0x01, 0x06]);
         assert_eq!(&report.end[0..2], &[0x36, 0x02]);
         assert_eq!(report.payload_bytes, FRAME_BYTES);
-        assert_eq!(report.sequences, 1);
+        assert_eq!(report.sequences, 2);
 
         // The header is its own transfer, ahead of the pixels, and nothing else
         // reaches the endpoint. The HID reports bracket it.
         let steady: Vec<Vec<u8>> = bulk.transfers().split_off(4);
-        assert_eq!(steady.len(), 2, "one header, one payload");
+        assert_eq!(steady.len(), 4, "one header and one payload per sequence");
         assert_eq!(steady[0], packet::bulk_header(FRAME_BYTES as u32).to_vec());
         assert_eq!(steady[1].len(), FRAME_BYTES);
+        assert_eq!(
+            steady[2], steady[0],
+            "the second sequence repeats the first"
+        );
+        assert_eq!(steady[3], steady[1], "the same picture, sent twice");
         assert!(
             bulk.endpoints().iter().all(|end| *end == BULK_ENDPOINT),
             "every byte went to the vendor interface's OUT endpoint"
@@ -592,33 +647,55 @@ mod tests {
     }
 
     #[test]
-    fn the_first_frame_of_a_link_goes_out_twice_and_no_later_one_does() {
-        // Measured on the owned unit: the first of five frames never reached
-        // the glass and every later one did. The panel swaps buffers on the
-        // transfer after the one that filled them, so a lone first frame lands
-        // where nothing shows it.
+    fn every_frame_goes_out_twice_and_not_only_the_first() {
+        // The panel swaps buffers on the transfer after the one that filled
+        // them, so a picture sent once lands where nothing shows it. Sending
+        // only the first frame twice is what this used to do, from liquidctl's
+        // comment rather than from its code, and on the glass it left every
+        // picture after the first one a frame behind.
         let kraken = FakeKraken::new("2.0.0");
         let bulk = kraken.bulk_recorder();
         let mut link = kraken.link();
 
-        let first = link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap();
-        assert_eq!(first.sequences, 2);
-        assert_eq!(bulk.transfers().len(), 4, "two headers, two payloads");
-
-        for _ in 0..3 {
-            let later = link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap();
-            assert_eq!(later.sequences, 1, "priming must happen once, not always");
+        for sent in 1..=4 {
+            let report = link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap();
+            assert_eq!(report.sequences, 2, "frame {sent} went out once");
+            assert_eq!(
+                bulk.transfers().len(),
+                sent * 4,
+                "two headers and two payloads per picture"
+            );
         }
-        assert_eq!(bulk.transfers().len(), 4 + 3 * 2);
+    }
 
-        // A panel that went away and came back needs priming again, because a
-        // first frame swallowed after a reconnect looks exactly like a
-        // transfer that failed.
-        link.unprime();
+    #[test]
+    fn a_frame_waits_for_the_panel_to_acknowledge_each_transfer_command() {
+        // Not decoration: sending the pixels before the panel answered its
+        // transfer-start report is what left frames half painted on the glass,
+        // and reading that answer is what liquidctl's `_write_then_read` does
+        // around every `0x36`.
+        let kraken = FakeKraken::new("2.0.0");
+        let mut link = kraken.link();
+
+        let report = link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap();
         assert_eq!(
-            link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap().sequences,
-            2
+            report.acknowledged, 4,
+            "two sequences, each opened and closed, each answered"
         );
+    }
+
+    #[test]
+    fn a_panel_that_never_answers_still_gets_its_frame() {
+        // The wait is best effort. A firmware that acknowledges nothing must
+        // end up with a panel that is drawn on late, not one that is read-only.
+        let kraken = FakeKraken::without_panel("2.0.0");
+        let bulk = kraken.bulk_recorder();
+        let mut link = kraken.link();
+
+        let report = link.send_frame(&vec![0u8; FRAME_BYTES]).unwrap();
+        assert_eq!(report.acknowledged, 0);
+        assert_eq!(report.sequences, 2);
+        assert_eq!(bulk.transfers().len(), 4, "the pixels went out regardless");
     }
 
     #[test]

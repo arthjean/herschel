@@ -533,11 +533,10 @@ mod tests {
             assert_eq!(step.payload_bytes, lcd::FRAME_BYTES);
         }
 
-        // Four probe frames plus the restoration, each a header and a payload,
-        // and the first one twice for the panel's buffer swap.
-        assert_eq!(report.steps[0].sequences, 2);
-        assert!(report.steps[1..].iter().all(|step| step.sequences == 1));
-        assert_eq!(bulk.transfers().len(), (PROBE_COLORS.len() + 1 + 1) * 2);
+        // Four probe frames plus the restoration, each sent twice for the
+        // panel's buffer swap, and each sequence a header and a payload.
+        assert!(report.steps.iter().all(|step| step.sequences == 2));
+        assert_eq!(bulk.transfers().len(), (PROBE_COLORS.len() + 1) * 2 * 2);
     }
 
     #[test]
@@ -552,24 +551,30 @@ mod tests {
             .into_iter()
             .filter(|transfer| transfer.len() == lcd::FRAME_BYTES)
             .collect();
-        // Four colors plus the restoration, with the first sent twice.
-        assert_eq!(frames.len(), PROBE_COLORS.len() + 1 + 1);
-        assert_eq!(frames[0], frames[1], "the primed frame is the same picture");
+        // Four colors plus the restoration, every one of them sent twice for
+        // the panel's buffer swap, so the pairs are what carry the colors.
+        assert_eq!(frames.len(), (PROBE_COLORS.len() + 1) * 2);
+        let pictures: Vec<&Vec<u8>> = frames
+            .chunks(2)
+            .map(|pair| {
+                assert_eq!(pair[0], pair[1], "a picture goes out twice, identically");
+                &pair[0]
+            })
+            .collect();
 
         // Every distinct picture is distinct: a step that re-sent the previous
         // one would prove nothing about the color it claims to test.
-        let pictures = &frames[1..];
-        let unique: std::collections::HashSet<&Vec<u8>> = pictures.iter().collect();
+        let unique: std::collections::HashSet<&&Vec<u8>> = pictures.iter().collect();
         assert_eq!(
             unique.len(),
             pictures.len(),
             "two probe steps sent the same picture, so one of them proves nothing"
         );
 
-        // Red is the top five bits of the format, and the primed pair is red.
-        assert_eq!(&frames[0][0..2], &[0xf8, 0x00]);
-        assert_eq!(&frames[2][0..2], &[0x07, 0xe0], "green");
-        assert_eq!(&frames[3][0..2], &[0x00, 0x1f], "blue");
+        // Red is the top five bits of the format.
+        assert_eq!(&pictures[0][0..2], &[0xf8, 0x00]);
+        assert_eq!(&pictures[1][0..2], &[0x07, 0xe0], "green");
+        assert_eq!(&pictures[2][0..2], &[0x00, 0x1f], "blue");
     }
 
     #[test]

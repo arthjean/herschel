@@ -132,10 +132,9 @@ lands where nothing shows it. liquidctl sends static images twice with the
 comment "sending it twice is only required once after initialization", which is
 the same observation from the other side.
 
-`LcdLink` now primes: the first frame of a link goes out twice, every later one
-once, and `unprime()` rearms after a disconnect because a frame swallowed on
-reconnect would be indistinguishable from a transfer that failed. The second run
-confirms it, and its record carries the count per step:
+`LcdLink` therefore sends the sequence twice. It first did so only for the first
+frame of a link, which was wrong and is corrected below under *Every frame, not
+only the first*. The second run's record carries the count per step:
 
 ```
 solid red at 50%     sequences=2   27426 us   "J'obtiens un écran rouge avec écrit KRAKEN CONTROL"
@@ -144,10 +143,86 @@ solid blue at 50%    sequences=1   13743 us   "un écran bleu"
 solid white at 50%   sequences=1   14074 us   "un écran blanc"
 ```
 
-27.4 ms for the primed frame is two 13.7 ms sequences, which is what the
-doubling costs: once per connection.
-`the_first_frame_of_a_link_goes_out_twice_and_no_later_one_does` pins both
-halves, and it was written from this measurement rather than from the comment.
+27.4 ms for the doubled frame is two 13.7 ms sequences, which is what the
+doubling costs.
+
+### Every frame, not only the first, 2026-08-08
+
+The run above was read as "prime once", because after the doubled red the three
+single-sequence frames each appeared. That reading was wrong, and the operator
+found it on the glass: with the client's queueing delay removed, the first Apply
+after a daemon start was instant and **every later one trailed a frame behind**,
+showing a piece of the new picture over the one still displayed until the next
+transfer pushed it through.
+
+The probe could not have caught this. It sets the brightness before every frame
+and then stops to ask the operator what they see, so each of its pictures is
+followed by more traffic before anyone judges the next one; a steady 1 Hz stream
+of deduplicated frames is not.
+
+The reference implementation settles it. liquidctl calls `_send_2023_data_fw2`
+**twice for every static image** on 2.x firmware, unconditionally:
+
+```python
+elif mode == "static":
+    if _is_2023_fw_version2():
+        data = self._prepare_static_file_rgb16(value, self.orientation)
+        self._send_2023_data_fw2(data, ...)
+        # sending it twice is only required once after initialization
+        # the same behaviour is observed in manufacturer at init
+        # some soft of framebuffer swapping?
+        self._send_2023_data_fw2(data, ...)
+```
+
+This project read that comment and implemented it; the code beneath it says
+something else, and the comment ends in a question mark. `SEQUENCES_PER_FRAME`
+is now a constant 2 with no priming state, `unprime()` is gone along with the
+executor call that rearmed it, and `every_frame_goes_out_twice_and_not_only_the_first`
+pins it. The cost is one extra 13.7 ms transfer per picture, on an interface no
+driver holds and that carries nothing else.
+
+The lesson worth keeping: an adapted implementation's *comments* are not
+evidence, and neither is a probe whose own steps mask the behavior being probed.
+
+### The frames were arriving in pieces, 2026-08-08
+
+Neither of the two sections above was the operator's actual problem. A photograph
+of the glass settled it: a **solid magenta** frame, sent and reported
+`confirmed`, painted a narrow **band** while the rest of the panel kept the
+previous picture, readings and all. `confirmed` was honest about what it claims,
+which is that the `ioctl` returned without error for all 115 200 bytes. The
+panel was taking a fraction of them.
+
+Two deviations from the reference implementation, both in the transfer itself:
+
+1. **The panel's acknowledgment was never read.** liquidctl brackets every
+   `0x36` command in `_write_then_read`, which is `_write` followed by `_read`:
+   it waits for the device to answer before it moves on. This product wrote the
+   transfer-start report and put the framebuffer on the bulk endpoint
+   immediately. The device pairs commands with the next identifier up, so the
+   answer is `0x37` carrying the same second byte.
+2. **The frame was split across eight transfers.** `MAX_BULK_CHUNK` was 16 KiB,
+   which is a whole multiple of the endpoint's 512 byte maximum and therefore
+   inserts no short packet, but it does put a user-space return between each
+   piece. liquidctl's `bulk_buffer_size` for the 2023 and 2024 models is 2 MiB:
+   the frame goes out whole.
+
+With both corrected, a solid magenta frame fills the panel, confirmed on the
+glass by the operator.
+
+The timing says which one mattered. Four successive applies measured from a
+client, release daemon: **79.2, 78.9, 79.9, 80.0 ms**, against 34.7 ms for the
+racing version. The spread is under 1 ms and nothing lands near a multiple of
+`TRANSFER_ACK_TIMEOUT`, so no wait is hitting its 50 ms ceiling: the panel
+answers every `0x36` in roughly 12 ms, and those are the milliseconds the old
+code spent pushing pixels at a device that had not yet said it was ready.
+
+The wait is best effort by construction, pinned by
+`a_panel_that_never_answers_still_gets_its_frame`: a firmware that acknowledges
+nothing gets its frame late rather than becoming a panel that cannot be drawn
+on. `FrameReport::acknowledged` records how many of the two commands per
+sequence came back, so a probe run on another firmware reports what that one
+does instead of assuming this one.
 
 ### What "restore" means here
 

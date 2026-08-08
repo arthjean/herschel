@@ -143,11 +143,6 @@ impl DisplayExecutor {
         self.committed = None;
         self.brightness = None;
         self.faulted = None;
-        // A panel that comes back has swapped nothing yet, so the next frame
-        // must prime it again.
-        if let Some(link) = self.link.as_mut() {
-            link.unprime();
-        }
     }
 
     /// Render `preset` against `samples` and send the result.

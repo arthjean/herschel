@@ -89,10 +89,24 @@ cargo test --workspace
   the operator watching the hardware.
 - `--lcd-write-probe` is the same for the panel: the only command that puts an
   unvalidated frame on the glass. It also takes the per-device lock.
-- The first frame on a link goes out twice. The panel double-buffers and swaps
-  on the transfer *after* the one that filled it, so a lone first frame lands
-  where nothing shows it. `LcdLink` handles this; `unprime()` rearms it after a
-  disconnect. Measured, not assumed: see `docs/ep-004-evidence.md`.
+- A frame is not just bytes on an endpoint. Three rules, all measured on the
+  glass and all in `LcdLink::send_frame`:
+  - **Wait for the panel's answer to every `0x36` command** before moving on.
+    It replies `0x37` with the same second byte, in about 12 ms. Streaming the
+    framebuffer without waiting made the panel paint a band of each frame and
+    keep the rest of the previous picture, while every transfer still reported
+    success. liquidctl brackets these commands in `_write_then_read` for this
+    reason.
+  - **Send the payload in one bulk transfer.** `usbfs::MAX_BULK_CHUNK` is sized
+    so a frame is never split; the reference uses a 2 MiB buffer for this
+    generation.
+  - **Every frame goes out twice**, not just the first. The panel swaps on the
+    transfer after the one that filled it. liquidctl's comment saying the
+    doubling is "only required once after initialization" ends in a question
+    mark, and its code doubles every static image.
+
+  Evidence, including the photograph that found the first rule:
+  `docs/ep-004-evidence.md`.
 
 ## Workspace shape
 
