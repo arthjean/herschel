@@ -33,9 +33,9 @@ use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::assets::Icon;
 use crate::components::{
-    Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceHealth, DeviceRow,
-    ICON_SIZE, Metric, Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron,
-    focus_visible, group, icon, node_at, panel_surface, set_focus_visible,
+    Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceRow, ICON_SIZE, Metric,
+    Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron, focus_visible, group,
+    icon, node_at, panel_surface, set_focus_visible,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
@@ -1603,11 +1603,13 @@ impl Shell {
             .child(self.lcd_row(lcd_row_tab(channel_count), cx))
     }
 
-    /// The card one device gets: what it is, what state it is in, and its rows.
+    /// The card one device gets: what it is, and its rows.
     ///
     /// The name is the product string the device itself reported, not one this
     /// client invented, and the second line is the firmware and kernel binding
-    /// the Devices panel already shows for it.
+    /// the Devices panel already shows for it. That panel is also where the
+    /// device's state is read; the header here names the device and nothing
+    /// more.
     fn device_card(&self, device: DeviceId, fallback_name: &str) -> Div {
         let summary = self
             .link
@@ -1618,10 +1620,6 @@ impl Shell {
             .as_ref()
             .map(|summary| summary.name.clone())
             .unwrap_or_else(|| fallback_name.to_string());
-        let health = summary
-            .as_ref()
-            .map(|summary| summary.health)
-            .unwrap_or(DeviceHealth::Unavailable);
         let detail = summary
             .as_ref()
             .map(DeviceSummary::detail)
@@ -1640,8 +1638,13 @@ impl Shell {
                 .border_b_1()
                 .border_color(color::SEPARATOR.hsla())
                 .child(
+                    // Claims the line rather than being sized by its own text.
+                    // Left to measure itself, the block collapsed to its
+                    // narrowest column and set the device name one letter per
+                    // line down the side of the card.
                     div()
                         .flex()
+                        .flex_1()
                         .flex_col()
                         .min_w_0()
                         .gap(px(2.0))
@@ -1657,17 +1660,6 @@ impl Shell {
                                 .text_color(color::TEXT_MUTED.hsla())
                                 .child(detail),
                         ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(space::XS)
-                        .text_sm()
-                        .text_color(health.color())
-                        .child(icon(health.icon(), ICON_SIZE, health.color()))
-                        .child(health.label()),
                 ),
         )
     }
