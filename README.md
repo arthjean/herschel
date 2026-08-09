@@ -1,8 +1,8 @@
-# NZXT Control Linux
+# Herschel
 
 Native open source Linux application to monitor and control NZXT hardware.
 
-> Status: foundation implemented (EP-001), in review. The daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. No hardware write is implemented yet. Working technical name. This project is neither affiliated with nor endorsed by NZXT.
+> Status: foundation implemented (EP-001), in review. The daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. No hardware write is implemented yet. This project is neither affiliated with nor endorsed by NZXT.
 
 ## Measured footprint
 
@@ -157,7 +157,7 @@ The first story validates GPUI under Wayland and X11 with a representative LCD s
 
 ## Research
 
-The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./herschel-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
+The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
 
 ## License
 
