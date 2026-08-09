@@ -394,7 +394,12 @@ pub struct Shell {
     metrics: MetricBook,
     cooling: CoolingEditor,
     /// Plot area of the curve editor, published during paint for hit testing.
-    curve_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Painted rectangle of each channel's plot, published during paint.
+    ///
+    /// One per channel, because both rows can be open: a single cell would
+    /// hold whichever plot painted last and send every press to that curve.
+    pump_curve_bounds: Rc<Cell<Bounds<Pixels>>>,
+    fan_curve_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The curve node the pointer is currently dragging, if any.
     curve_drag: Option<CurveDrag>,
     /// When the current cooling edit should be written, once it settles.
@@ -419,7 +424,7 @@ pub struct Shell {
     /// One at a time, as on Cooling: an open row's controls sit above the next
     /// row, and two open at once would put the panel's editor an arm's length
     /// below the line it belongs to.
-    lighting_open: Option<LightingRow>,
+    lighting_open: Vec<LightingRow>,
     /// The brightness slider the pointer is currently dragging, if any.
     brightness_drag: Option<BrightnessDrag>,
     /// Where this frame painted each operable brightness track.
@@ -459,7 +464,8 @@ impl Shell {
             link: LinkState::connecting(),
             metrics: MetricBook::new(),
             cooling: CoolingEditor::new(),
-            curve_bounds: Rc::new(Cell::new(Bounds::default())),
+            pump_curve_bounds: Rc::new(Cell::new(Bounds::default())),
+            fan_curve_bounds: Rc::new(Cell::new(Bounds::default())),
             curve_drag: None,
             autosave_at: None,
             sent: None,
@@ -472,7 +478,7 @@ impl Shell {
             // The panel opens first: it is the row with something to look at,
             // and a screen where every row is shut hides the editor the last
             // arrangement put on its own destination.
-            lighting_open: Some(LightingRow::Lcd),
+            lighting_open: vec![LightingRow::Lcd],
             brightness_drag: None,
             tracks: Rc::new(TrackMap::default()),
             window_drag: DragLatch::default(),
@@ -540,13 +546,23 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open one row of the Lighting screen, closing whichever was open.
+    /// Open one row of the Lighting screen, or close it if it is open.
+    ///
+    /// Rows open independently: a controller with three channels and a panel is
+    /// four appearances of one machine, and comparing two of them means having
+    /// both on screen. Nothing in a lighting detail is shared between rows, so
+    /// there is nothing for a second open row to make ambiguous.
     ///
     /// Opening a channel is also what selects it, so every control the detail
     /// renders acts on the channel whose line it sits under and none of them
     /// has to name a channel of its own.
     fn toggle_lighting_row(&mut self, row: LightingRow, cx: &mut Context<Self>) {
-        self.lighting_open = (self.lighting_open != Some(row)).then_some(row);
+        match self.lighting_open.iter().position(|open| *open == row) {
+            Some(index) => {
+                self.lighting_open.remove(index);
+            }
+            None => self.lighting_open.push(row),
+        }
         if let LightingRow::Channel(channel) = row {
             self.lighting.select(channel);
         }
@@ -1121,13 +1137,21 @@ impl Shell {
             .into_iter()
             .cloned()
             .collect();
-        let open = self.cooling.expanded == Some(channel);
+        let open = self.cooling.is_expanded(channel);
 
         div()
             .flex()
             .flex_col()
             .w_full()
             .min_w_0()
+            .p(space::XS)
+            // Between the line and what it opened. Only ever applies when a
+            // detail is there, since a closed row has a single child.
+            .gap(space::SM)
+            .rounded(ROW_RADIUS)
+            // The same open state the Lighting rows carry: one fill under the
+            // line and the curve it revealed, so the two read as one channel.
+            .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -1312,7 +1336,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let nodes = *self.cooling.curve(channel);
-        let node = self.cooling.node;
+        let node = self.cooling.node(channel);
         let editable = state.is_enabled();
         let refusal = state.message().map(str::to_string);
         let liquid_c = self
@@ -1336,7 +1360,7 @@ impl Shell {
                     .selected(node)
                     .state(state.clone())
                     .tab_index(tab_index)
-                    .bounds_sink(Rc::clone(&self.curve_bounds))
+                    .bounds_sink(Rc::clone(self.curve_bounds(channel)))
                     .liquid(liquid_c)
                     .render()
                     // The pointer part of the drag is not handled here. It is
@@ -1351,11 +1375,11 @@ impl Shell {
                                 let mut edited = false;
                                 let handled = match event.keystroke.key.as_str() {
                                     "left" => {
-                                        shell.cooling.step_node(-1);
+                                        shell.cooling.step_node(channel, -1);
                                         true
                                     }
                                     "right" => {
-                                        shell.cooling.step_node(1);
+                                        shell.cooling.step_node(channel, 1);
                                         true
                                     }
                                     "up" => {
@@ -1392,25 +1416,33 @@ impl Shell {
         if self.destination != Destination::Cooling {
             return None;
         }
-        let channel = self.cooling.expanded?;
-        if !self
-            .link
-            .cooling_state(KRAKEN_BASE, channel.curve_capability(), self.now_unix_ms)
-            .is_enabled()
-        {
-            return None;
+        // Every open row is asked, because more than one can be: the press
+        // belongs to the plot it landed on, not to the row that opened last.
+        self.cooling.expanded().iter().copied().find(|channel| {
+            if !self
+                .link
+                .cooling_state(KRAKEN_BASE, channel.curve_capability(), self.now_unix_ms)
+                .is_enabled()
+            {
+                return false;
+            }
+            let bounds = self.curve_bounds(*channel).get();
+            if bounds.size.width <= px(0.0) {
+                return false;
+            }
+            // The plot is inset inside the frame that carries the two axes. A
+            // press on a label is not an edit, so it is ignored rather than
+            // clamped onto the nearest node.
+            bounds.dilate(px(6.0)).contains(&position)
+        })
+    }
+
+    /// Where `channel`'s plot was last painted.
+    fn curve_bounds(&self, channel: Channel) -> &Rc<Cell<Bounds<Pixels>>> {
+        match channel {
+            Channel::Pump => &self.pump_curve_bounds,
+            Channel::Fan => &self.fan_curve_bounds,
         }
-        let bounds = self.curve_bounds.get();
-        if bounds.size.width <= px(0.0) {
-            return None;
-        }
-        // The plot is inset inside the frame that carries the two axes. A press
-        // on a label is not an edit, so it is ignored rather than clamped onto
-        // the nearest node.
-        bounds
-            .dilate(px(6.0))
-            .contains(&position)
-            .then_some(channel)
     }
 
     /// Grab the node nearest a pointer press and start a drag on it.
@@ -1418,14 +1450,14 @@ impl Shell {
         let Some(channel) = self.curve_under(position) else {
             return;
         };
-        let (node, duty) = node_at(self.curve_bounds.get(), position);
+        let (node, duty) = node_at(self.curve_bounds(channel).get(), position);
         let drag = CurveDrag {
             channel,
             node,
             base: *self.cooling.curve(channel),
         };
         self.curve_drag = Some(drag);
-        self.cooling.select_node(node);
+        self.cooling.select_node(channel, node);
         self.cooling.set_node_from(channel, drag.base, node, duty);
         self.touch_cooling();
         cx.notify();
@@ -1443,7 +1475,7 @@ impl Shell {
         let Some(drag) = self.curve_drag else {
             return;
         };
-        let bounds = self.curve_bounds.get();
+        let bounds = self.curve_bounds(drag.channel).get();
         if bounds.size.width <= px(0.0) {
             return;
         }
@@ -1743,7 +1775,7 @@ impl Shell {
             .uses_color()
             .then(|| crate::components::parse_hex_color(&editor.color).ok())
             .flatten();
-        let open = self.lighting_open == Some(LightingRow::Channel(channel));
+        let open = self.lighting_open.contains(&LightingRow::Channel(channel));
         let brightness = editor.brightness;
         let mode_value = editor.mode.value();
 
@@ -1997,7 +2029,7 @@ impl Shell {
             None => "no panel has answered".to_string(),
         };
 
-        let open = self.lighting_open == Some(LightingRow::Lcd);
+        let open = self.lighting_open.contains(&LightingRow::Lcd);
         let background = crate::components::parse_hex_color(
             self.lcd.editor().color_text(DisplayColorField::Background),
         )
@@ -2229,7 +2261,7 @@ impl Shell {
         subtitle: String,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let open = self.lighting_open == Some(row);
+        let open = self.lighting_open.contains(&row);
         let id = match row {
             LightingRow::Channel(channel) => format!("lighting-row-{channel}"),
             LightingRow::Lcd => "lighting-row-lcd".to_string(),

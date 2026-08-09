@@ -57,14 +57,19 @@ pub struct CoolingEditor {
     pub fan_duty: u8,
     pump_curve: CurveNodes,
     fan_curve: CurveNodes,
-    /// Channel whose row is open, and the only one its controls can edit.
+    /// Channels whose rows are open, each editable on its own.
     ///
-    /// An `Option` rather than a selection that always points somewhere: with
-    /// every row closed the screen renders no editing control at all, so there
-    /// is no channel an edit could silently land on.
-    pub expanded: Option<Channel>,
-    /// Selected curve node, the one keyboard edits move.
-    pub node: usize,
+    /// A list rather than a selection that always points somewhere: with every
+    /// row closed the screen renders no editing control at all, so there is no
+    /// channel an edit could silently land on. Rows open independently, so the
+    /// pump curve and the fan curve can be compared side by side.
+    expanded: Vec<Channel>,
+    /// Selected curve node per channel, the one keyboard edits move.
+    ///
+    /// One per channel rather than one for the screen: with both rows open, a
+    /// shared index would move a node on whichever plot was focused last.
+    pump_node: usize,
+    fan_node: usize,
     /// The last program this client saw confirmed on the hardware.
     applied: Option<CoolingProgram>,
 }
@@ -87,8 +92,9 @@ impl CoolingEditor {
             fan_duty: duty_from_percent(50),
             pump_curve: CurveNodes::starting_ramp(),
             fan_curve: CurveNodes::starting_ramp(),
-            expanded: None,
-            node: 0,
+            expanded: Vec::new(),
+            pump_node: 0,
+            fan_node: 0,
             applied: None,
         }
     }
@@ -156,22 +162,53 @@ impl CoolingEditor {
     }
 
     /// Move the selection along the curve.
-    pub fn step_node(&mut self, delta: isize) {
-        let next = self.node as isize + delta;
-        self.node = next.clamp(0, CURVE_NODE_COUNT as isize - 1) as usize;
+    /// The node keyboard edits move on `channel`.
+    pub fn node(&self, channel: Channel) -> usize {
+        match channel {
+            Channel::Pump => self.pump_node,
+            Channel::Fan => self.fan_node,
+        }
     }
 
-    pub fn select_node(&mut self, index: usize) {
-        self.node = index.min(CURVE_NODE_COUNT - 1);
+    fn node_mut(&mut self, channel: Channel) -> &mut usize {
+        match channel {
+            Channel::Pump => &mut self.pump_node,
+            Channel::Fan => &mut self.fan_node,
+        }
     }
 
-    /// Open a channel's row, or close it when it is already the open one.
+    pub fn step_node(&mut self, channel: Channel, delta: isize) {
+        let next = self.node(channel) as isize + delta;
+        *self.node_mut(channel) = next.clamp(0, CURVE_NODE_COUNT as isize - 1) as usize;
+    }
+
+    pub fn select_node(&mut self, channel: Channel, index: usize) {
+        *self.node_mut(channel) = index.min(CURVE_NODE_COUNT - 1);
+    }
+
+    /// Whether `channel`'s row is open.
+    pub fn is_expanded(&self, channel: Channel) -> bool {
+        self.expanded.contains(&channel)
+    }
+
+    /// Every open channel, in the order the screen draws them.
+    pub fn expanded(&self) -> &[Channel] {
+        &self.expanded
+    }
+
+    /// Open a channel's row, or close it when it is already open.
     ///
-    /// Opening one closes the other: the curve editor is a single plot, and two
-    /// open at once would leave the selected node meaning two things.
+    /// The rows are independent: each plot publishes its own rectangle and
+    /// carries its own selected node, so two open at once edit two curves
+    /// rather than one meaning two things.
     pub fn toggle(&mut self, channel: Channel) {
-        self.expanded = (self.expanded != Some(channel)).then_some(channel);
-        self.node = 0;
+        match self.expanded.iter().position(|open| *open == channel) {
+            Some(index) => {
+                self.expanded.remove(index);
+            }
+            None => self.expanded.push(channel),
+        }
+        *self.node_mut(channel) = 0;
     }
 
     /// Set one node of a channel's curve.
@@ -211,9 +248,9 @@ impl CoolingEditor {
     /// Move the selected node by `steps` percentage points, as
     /// [`CoolingEditor::adjust_duty`] does and for the same reason.
     pub fn adjust_node(&mut self, channel: Channel, steps: i16) {
-        let current = duty_to_percent(self.curve(channel).duty[self.node]) as i16;
+        let current = duty_to_percent(self.curve(channel).duty[self.node(channel)]) as i16;
         let next = (current + steps).clamp(0, MAX_DUTY_PERCENT as i16);
-        let node = self.node;
+        let node = self.node(channel);
         self.set_node(channel, node, duty_from_percent(next as u8));
     }
 
@@ -358,7 +395,7 @@ mod tests {
             assert_eq!(duty_to_percent(editor.duty(Channel::Fan)), expected);
         }
 
-        editor.select_node(4);
+        editor.select_node(Channel::Fan, 4);
         editor.set_node(Channel::Fan, 4, duty_from_percent(60));
         editor.adjust_node(Channel::Fan, 1);
         assert_eq!(duty_to_percent(editor.curve(Channel::Fan).duty[4]), 61);
@@ -431,7 +468,7 @@ mod tests {
         editor.set_mode(CoolingMode::Curve);
 
         for (index, duty) in [(0, 0), (9, 30), (4, 255), (7, 60)] {
-            editor.select_node(index);
+            editor.select_node(Channel::Pump, index);
             editor.set_node(Channel::Pump, index, duty);
             assert_eq!(
                 editor.validation_error(),
@@ -448,7 +485,7 @@ mod tests {
     #[test]
     fn a_pump_curve_node_cannot_be_edited_below_the_pump_floor() {
         let mut editor = CoolingEditor::new();
-        editor.select_node(3);
+        editor.select_node(Channel::Pump, 3);
         editor.set_node(Channel::Pump, 3, 0);
         assert!(
             editor
@@ -462,12 +499,16 @@ mod tests {
     #[test]
     fn node_selection_stays_inside_the_curve() {
         let mut editor = CoolingEditor::new();
-        editor.step_node(-5);
-        assert_eq!(editor.node, 0);
-        editor.step_node(100);
-        assert_eq!(editor.node, CURVE_NODE_COUNT - 1);
-        editor.select_node(999);
-        assert_eq!(editor.node, CURVE_NODE_COUNT - 1);
+        editor.step_node(Channel::Pump, -5);
+        assert_eq!(editor.node(Channel::Pump), 0);
+        editor.step_node(Channel::Pump, 100);
+        assert_eq!(editor.node(Channel::Pump), CURVE_NODE_COUNT - 1);
+        editor.select_node(Channel::Pump, 999);
+        assert_eq!(editor.node(Channel::Pump), CURVE_NODE_COUNT - 1);
+
+        // Each channel keeps its own selection: with both rows open, walking
+        // the nodes of one plot must not move the point selected on the other.
+        assert_eq!(editor.node(Channel::Fan), 0, "the fan kept its own node");
     }
 
     #[test]
@@ -502,7 +543,7 @@ mod tests {
         assert!(!editor.pending(Some(&kraken(PwmMode::Curve, 200, 200))));
 
         // Touching a node makes it pending again.
-        editor.select_node(2);
+        editor.select_node(Channel::Pump, 2);
         editor.adjust_node(Channel::Pump, 1);
         assert!(editor.pending(Some(&kraken(PwmMode::Curve, 200, 200))));
     }
@@ -575,7 +616,7 @@ mod tests {
         let applied = editor.program();
         editor.record_applied(applied.clone());
 
-        editor.select_node(5);
+        editor.select_node(Channel::Fan, 5);
         editor.adjust_node(Channel::Fan, 6);
         assert_ne!(editor.program(), applied);
 
@@ -592,25 +633,32 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_row_closes_the_other_and_edits_stay_on_their_own_channel() {
+    fn rows_open_independently_and_edits_stay_on_their_own_channel() {
         let mut editor = CoolingEditor::new();
-        assert_eq!(editor.expanded, None, "every row starts closed");
+        assert!(editor.expanded().is_empty(), "every row starts closed");
 
         editor.toggle(Channel::Pump);
-        assert_eq!(editor.expanded, Some(Channel::Pump));
+        assert!(editor.is_expanded(Channel::Pump));
 
         editor.toggle(Channel::Fan);
-        assert_eq!(editor.expanded, Some(Channel::Fan), "only one row is open");
+        assert!(
+            editor.is_expanded(Channel::Pump) && editor.is_expanded(Channel::Fan),
+            "opening one row does not close the other"
+        );
 
         editor.toggle(Channel::Fan);
-        assert_eq!(
-            editor.expanded, None,
-            "the open row closes on a second press"
+        assert!(
+            !editor.is_expanded(Channel::Fan),
+            "a second press closes it"
+        );
+        assert!(
+            editor.is_expanded(Channel::Pump),
+            "and leaves the other row alone"
         );
 
         // The channel an edit lands on is the one it names, not the open row.
         let pump_before = *editor.curve(Channel::Pump);
-        editor.select_node(4);
+        editor.select_node(Channel::Fan, 4);
         editor.adjust_node(Channel::Fan, 3);
         assert_eq!(*editor.curve(Channel::Pump), pump_before);
         assert_ne!(editor.curve(Channel::Fan).duty[4], pump_before.duty[4]);
@@ -621,14 +669,14 @@ mod tests {
         let mut editor = CoolingEditor::new();
         assert_eq!(editor.mode, CoolingMode::Onboard);
 
-        editor.select_node(6);
+        editor.select_node(Channel::Fan, 6);
         editor.adjust_node(Channel::Fan, 2);
         assert_eq!(editor.mode, CoolingMode::Curve);
         assert!(matches!(editor.program(), CoolingProgram::Curve { .. }));
 
         // Selecting a node is not editing one, so it commits to nothing.
         let mut editor = CoolingEditor::new();
-        editor.step_node(3);
+        editor.step_node(Channel::Pump, 3);
         assert_eq!(editor.mode, CoolingMode::Onboard);
     }
 
