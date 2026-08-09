@@ -20,8 +20,8 @@ use nzxt_core::telemetry::{History, MetricView};
 
 use crate::assets::Icon;
 use crate::theme::{
-    Color, FOCUS_RING, MENU_GLYPH_SIZE, META_SEPARATOR, RADIUS, SWATCH_RADIUS, SWATCH_SIZE,
-    TARGET_MIN, color, numeric_font, space,
+    CONTROL_HEIGHT, Color, FOCUS_RING, MENU_GLYPH_SIZE, META_SEPARATOR, RADIUS, SWATCH_RADIUS,
+    SWATCH_SIZE, color, numeric_font, space,
 };
 
 /// What a control is allowed to do right now.
@@ -75,14 +75,6 @@ impl ControlState {
             Self::Error { .. } => color::TEXT.hsla(),
         }
     }
-
-    fn border_color(&self) -> Hsla {
-        match self {
-            Self::Enabled => color::SEPARATOR.hsla(),
-            Self::Disabled { .. } => color::SEPARATOR.alpha(0.5),
-            Self::Error { .. } => color::DANGER.hsla(),
-        }
-    }
 }
 
 /// Visual weight of a [`Button`].
@@ -122,17 +114,45 @@ pub fn set_focus_visible(visible: bool) {
     FOCUS_VISIBLE.with(|flag| flag.set(visible));
 }
 
-/// The pill a menu opens from, matched to Paneflow's `select_trigger`.
+/// The pill every value control is built on, matched to Paneflow's
+/// `select_trigger`.
 ///
 /// A subtle-gray pill with no outline, 10 by 6 of padding, and a fill that
 /// sinks rather than lifts under the pointer. The focus ring is taken out of
 /// that padding rather than added to it, so reserving the ring leaves the pill
 /// exactly the size of the one it matches and focusing it moves nothing.
 ///
+/// Shared by the select, the color field and the slider rather than copied into
+/// each: they sit on the same lines as each other, and a pill that is a pixel
+/// taller in one of them is visible as a step in the row.
+///
 /// An outline comes back for one state only: a control holding a value that
 /// cannot be parsed. Nothing else on the pill says so, and the message under it
 /// is not in the same place the eye is.
-fn menu_trigger(id: impl Into<ElementId>, state: &ControlState, tab_index: isize) -> Stateful<Div> {
+fn control_pill(id: impl Into<ElementId>, state: &ControlState, tab_index: isize) -> Stateful<Div> {
+    pill(id, state, tab_index, true)
+}
+
+/// The same pill, unfilled: a slider's own surface.
+///
+/// A track needs the height and the reserved ring, so it stays on the baseline
+/// of the control beside it, but not the fill. A slider already draws a shape
+/// of its own, and a fill behind it reads as a second card parked inside the
+/// row rather than as part of it.
+fn slider_surface(
+    id: impl Into<ElementId>,
+    state: &ControlState,
+    tab_index: isize,
+) -> Stateful<Div> {
+    pill(id, state, tab_index, false)
+}
+
+fn pill(
+    id: impl Into<ElementId>,
+    state: &ControlState,
+    tab_index: isize,
+    filled: bool,
+) -> Stateful<Div> {
     let enabled = state.is_enabled() || matches!(state, ControlState::Error { .. });
     let resting = match state {
         ControlState::Error { .. } => color::DANGER.hsla(),
@@ -145,12 +165,17 @@ fn menu_trigger(id: impl Into<ElementId>, state: &ControlState, tab_index: isize
         .items_center()
         .justify_between()
         .gap(space::SM)
+        .min_h(CONTROL_HEIGHT)
         .px(space::SM)
         .py(space::XS)
         .border(FOCUS_RING)
         .border_color(resting)
         .rounded(RADIUS)
-        .bg(color::CONTROL.hsla())
+        .bg(if filled {
+            color::CONTROL.hsla()
+        } else {
+            color::CONTROL.alpha(0.0)
+        })
         .text_xs()
         .text_color(state.text_color());
 
@@ -158,55 +183,15 @@ fn menu_trigger(id: impl Into<ElementId>, state: &ControlState, tab_index: isize
         base.tab_index(tab_index)
             .tab_stop(true)
             .cursor_pointer()
-            .hover(|this| this.bg(color::CONTROL_HOVER.hsla()))
-            .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
+            // An unfilled surface has no fill to change: pointing at it would
+            // make a card appear that was not there, which says the wrong
+            // thing about what is under the pointer.
+            .when(filled, |this| {
+                this.hover(|this| this.bg(color::CONTROL_HOVER.hsla()))
+                    .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
+            })
             .when(focus_visible(), |this| {
                 this.focus(|this| this.border_color(color::FOCUS.hsla()))
-            })
-    } else {
-        // A disabled control is not a tab stop: keyboard traversal must not
-        // stop on something that cannot be operated.
-        base.cursor_default().opacity(0.6)
-    }
-}
-
-/// A base interactive surface with the shared focus, hover and active states.
-///
-/// Every primitive builds on this, so focus looks and behaves the same
-/// everywhere and no control can accidentally ship without a focus ring.
-///
-/// `hover_bg` overrides the shared hover fill for a control that carries its
-/// own accent. It is a parameter rather than a second `hover` call on the
-/// returned element because GPUI refuses to replace a hover style once set.
-fn interactive(
-    id: impl Into<ElementId>,
-    state: &ControlState,
-    tab_index: isize,
-    hover_bg: Option<Hsla>,
-) -> Stateful<Div> {
-    let enabled = state.is_enabled() || matches!(state, ControlState::Error { .. });
-    let base = div()
-        .id(id)
-        .flex()
-        .items_center()
-        .min_h(TARGET_MIN)
-        .rounded(RADIUS)
-        .border_1()
-        .border_color(state.border_color())
-        .text_color(state.text_color());
-
-    if enabled {
-        base.tab_index(tab_index)
-            .tab_stop(true)
-            .cursor_pointer()
-            .hover(|this| this.bg(hover_bg.unwrap_or_else(|| color::CONTROL.alpha(0.75))))
-            .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
-            .when(focus_visible(), |this| {
-                this.focus(|this| {
-                    this.border_color(color::FOCUS.hsla())
-                        .border(FOCUS_RING)
-                        .bg(color::CONTROL.alpha(0.6))
-                })
             })
     } else {
         // A disabled control is not a tab stop: keyboard traversal must not
@@ -272,22 +257,65 @@ impl Button {
         }
     }
 
+    /// The fill under the pointer.
+    ///
+    /// A button lifts where a field sinks, so the two share a resting fill and
+    /// part ways on hover. The accent has a lift of its own; the other two take
+    /// the raised control fill.
+    fn hover_fill(&self) -> Hsla {
+        match self.variant {
+            ButtonVariant::Primary => color::ACCENT_HOVER.hsla(),
+            ButtonVariant::Secondary => color::CONTROL_RAISED.hsla(),
+            ButtonVariant::Danger => color::DANGER.alpha(0.28),
+        }
+    }
+
     pub fn render(self) -> Stateful<Div> {
         let fill = self.fill();
         let label_color = self.label_color();
-        let primary = self.variant == ButtonVariant::Primary && self.state.is_enabled();
+        let hover_fill = self.hover_fill();
+        let enabled = self.state.is_enabled();
+        let pressed = match self.variant {
+            ButtonVariant::Primary => color::ACCENT_ACTIVE.hsla(),
+            ButtonVariant::Secondary => color::CONTROL_HOVER.hsla(),
+            ButtonVariant::Danger => color::DANGER.alpha(0.36),
+        };
 
-        let hover_bg = primary.then(|| color::ACCENT_HOVER.hsla());
-
-        interactive(self.key.clone(), &self.state, self.tab_index, hover_bg)
+        // Paneflow's `secondary_button` geometry, on the pill every control on
+        // the screen is cut from: no outline, the same corner, the same 12px
+        // medium label. Wider than a field is padded, because a button is read
+        // by its label and a label needs air on both sides of it.
+        let base = div()
+            .id(self.key.clone())
+            .flex()
+            .items_center()
             .justify_center()
-            .px(space::LG)
+            .min_h(CONTROL_HEIGHT)
+            .px(space::MD)
+            .py(space::XS)
+            .border(FOCUS_RING)
+            .border_color(color::CONTROL.alpha(0.0))
+            .rounded(RADIUS)
             .bg(fill)
+            .text_xs()
+            .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(label_color)
-            .when(primary, |this| {
-                this.active(|style| style.bg(color::ACCENT_ACTIVE.hsla()))
-            })
-            .child(self.label)
+            .child(self.label);
+
+        if enabled {
+            base.tab_index(self.tab_index)
+                .tab_stop(true)
+                .cursor_pointer()
+                .hover(|this| this.bg(hover_fill))
+                .active(|this| this.bg(pressed))
+                .when(focus_visible(), |this| {
+                    this.focus(|this| this.border_color(color::FOCUS.hsla()))
+                })
+        } else {
+            // A disabled control is not a tab stop: keyboard traversal must not
+            // stop on something that cannot be operated.
+            base.cursor_default().opacity(0.6)
+        }
     }
 }
 
@@ -311,6 +339,7 @@ impl SelectOption {
 pub struct Select {
     key: SharedString,
     label: SharedString,
+    show_label: bool,
     options: Vec<SelectOption>,
     selected: Option<String>,
     state: ControlState,
@@ -322,6 +351,7 @@ impl Select {
         Self {
             key: key.into(),
             label: label.into(),
+            show_label: true,
             options: Vec::new(),
             selected: None,
             state: ControlState::Enabled,
@@ -349,6 +379,16 @@ impl Select {
         self
     }
 
+    /// Drop the caption above the control.
+    ///
+    /// For a control on a device row, where the row already names what is being
+    /// configured. The label is still carried, because an error message names
+    /// the control it came from.
+    pub fn label_hidden(mut self) -> Self {
+        self.show_label = false;
+        self
+    }
+
     /// Label of the selected option, or a placeholder when nothing matches.
     pub fn display_value(&self) -> String {
         self.selected
@@ -364,86 +404,16 @@ impl Select {
 
     pub fn render(self) -> Stateful<Div> {
         let value = self.display_value();
-        let label = self.label.clone();
+        let label = self.show_label.then(|| self.label.clone());
         let message = self.state.message().map(str::to_string);
         let state = self.state.clone();
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(field_id, label, message, state.clone(), {
-            menu_trigger(self.key.clone(), &state, self.tab_index)
+            control_pill(self.key.clone(), &state, self.tab_index)
                 .w_full()
                 .child(div().min_w_0().truncate().child(value))
                 .child(select_chevron())
-        })
-    }
-}
-
-/// A two-state switch.
-pub struct Toggle {
-    key: SharedString,
-    label: SharedString,
-    on: bool,
-    state: ControlState,
-    tab_index: isize,
-}
-
-impl Toggle {
-    pub fn new(key: impl Into<SharedString>, label: impl Into<SharedString>, on: bool) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-            on,
-            state: ControlState::Enabled,
-            tab_index: 0,
-        }
-    }
-
-    pub fn state(mut self, state: ControlState) -> Self {
-        self.state = state;
-        self
-    }
-
-    pub fn tab_index(mut self, index: isize) -> Self {
-        self.tab_index = index;
-        self
-    }
-
-    pub fn render(self) -> Stateful<Div> {
-        let track = if self.on && self.state.is_enabled() {
-            color::ACCENT.hsla()
-        } else {
-            color::CONTROL.hsla()
-        };
-        let knob_side = if self.on { "flex-end" } else { "flex-start" };
-        let state = self.state.clone();
-        let message = state.message().map(str::to_string);
-        let field_id = SharedString::from(format!("{}-field", self.key));
-
-        field(field_id, self.label.clone(), message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index, None)
-                .w_full()
-                .justify_between()
-                .px(space::MD)
-                .bg(color::CONTROL.alpha(0.4))
-                .child(if self.on { "On" } else { "Off" })
-                .child(
-                    div()
-                        .w(px(44.0))
-                        .h(px(24.0))
-                        .rounded(px(12.0))
-                        .bg(track)
-                        .flex()
-                        .items_center()
-                        .when(knob_side == "flex-end", |this| this.justify_end())
-                        .px(px(3.0))
-                        .child(
-                            div()
-                                .w(px(18.0))
-                                .h(px(18.0))
-                                .rounded(px(9.0))
-                                .bg(color::TEXT.hsla()),
-                        ),
-                )
         })
     }
 }
@@ -468,6 +438,7 @@ const HANDLE_HEIGHT: Pixels = px(22.0);
 pub struct Slider {
     key: SharedString,
     label: SharedString,
+    show_label: bool,
     value: f32,
     min: f32,
     max: f32,
@@ -483,6 +454,7 @@ impl Slider {
         Self {
             key: key.into(),
             label: label.into(),
+            show_label: true,
             value,
             min: 0.0,
             max: 100.0,
@@ -512,6 +484,15 @@ impl Slider {
 
     pub fn tab_index(mut self, index: isize) -> Self {
         self.tab_index = index;
+        self
+    }
+
+    /// Drop the caption above the track, and with it the readout it carried.
+    ///
+    /// For a slider on a device row: the row names the device, and the position
+    /// of the handle is the value. See [`Select::label_hidden`].
+    pub fn label_hidden(mut self) -> Self {
+        self.show_label = false;
         self
     }
 
@@ -561,7 +542,11 @@ impl Slider {
         // The value rides on the label rather than beside the track. A readout
         // in the row costs the track a third of its width, and a track too
         // short to aim at is what pushed the last arrangement back to buttons.
-        let label = SharedString::from(format!("{} {:.0}{}", self.label, self.value, self.unit));
+        // A slider with its caption dropped shows no number at all: the handle
+        // is the value, which is what the reference does.
+        let label = self
+            .show_label
+            .then(|| SharedString::from(format!("{} {:.0}{}", self.label, self.value, self.unit)));
         let field_id = SharedString::from(format!("{}-field", self.key));
         let sink = self.bounds_sink.clone();
         let icons = self.icons;
@@ -587,14 +572,18 @@ impl Slider {
         );
 
         field(field_id, label, message, state.clone(), {
-            interactive(self.key.clone(), &state, self.tab_index, None)
+            // No fill of its own: the track and its two glyphs sit straight on
+            // the row, so the line reads as one card rather than as a pill
+            // parked inside it. The pill's height and the reserved focus ring
+            // stay, which is what keeps this control on the same baseline as
+            // the select beside it.
+            slider_surface(self.key.clone(), &state, self.tab_index)
                 .w_full()
-                .gap(space::SM)
-                .px(space::SM)
-                .bg(color::CONTROL.alpha(0.4))
-                .children(icons.map(|(low, _)| icon(low, ICON_SIZE, icon_color).flex_none()))
+                .children(icons.map(|(low, _)| icon(low, MENU_GLYPH_SIZE, icon_color).flex_none()))
                 .child(track)
-                .children(icons.map(|(_, high)| icon(high, ICON_SIZE, icon_color).flex_none()))
+                .children(
+                    icons.map(|(_, high)| icon(high, MENU_GLYPH_SIZE, icon_color).flex_none()),
+                )
         })
     }
 
@@ -647,38 +636,44 @@ impl ColorField {
         let message = state.message().map(str::to_string);
         let field_id = SharedString::from(format!("{}-field", self.key));
 
-        field(field_id, self.label.clone(), message, state.clone(), {
-            // The swatch and its digits read as one thing on the left, and the
-            // chevron sits at the right edge like the select's does: both
-            // controls open a list, so both say so the same way.
-            menu_trigger(self.key.clone(), &state, self.tab_index)
-                .w_full()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .min_w_0()
-                        .gap(space::SM)
-                        .child(
-                            // No outline: the control's own edge already
-                            // separates the swatch from the surface, and a
-                            // second edge inside it only crops the color.
-                            div()
-                                .flex_none()
-                                .w(SWATCH_SIZE)
-                                .h(SWATCH_SIZE)
-                                .rounded(SWATCH_RADIUS)
-                                .bg(swatch.hsla()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font(numeric_font())
-                                .child(format!("#{}", self.value)),
-                        ),
-                )
-                .child(select_chevron())
-        })
+        field(
+            field_id,
+            Some(self.label.clone()),
+            message,
+            state.clone(),
+            {
+                // The swatch and its digits read as one thing on the left, and the
+                // chevron sits at the right edge like the select's does: both
+                // controls open a list, so both say so the same way.
+                control_pill(self.key.clone(), &state, self.tab_index)
+                    .w_full()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .min_w_0()
+                            .gap(space::SM)
+                            .child(
+                                // No outline: the control's own edge already
+                                // separates the swatch from the surface, and a
+                                // second edge inside it only crops the color.
+                                div()
+                                    .flex_none()
+                                    .w(SWATCH_SIZE)
+                                    .h(SWATCH_SIZE)
+                                    .rounded(SWATCH_RADIUS)
+                                    .bg(swatch.hsla()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .font(numeric_font())
+                                    .child(format!("#{}", self.value)),
+                            ),
+                    )
+                    .child(select_chevron())
+            },
+        )
     }
 }
 
@@ -1895,7 +1890,11 @@ fn paint_track(
         },
         size: gpui::size(bounds.size.width, TRACK_HEIGHT),
     };
-    window.paint_quad(gpui::fill(rail, color::SEPARATOR.hsla()).corner_radii(radius));
+    // A channel cut into the pill rather than a line drawn on it. What has to
+    // be legible is the boundary between the filled part and the empty one,
+    // and the darkest surface puts that boundary at 3.5:1 against the accent
+    // where a separator left it at 2.2:1.
+    window.paint_quad(gpui::fill(rail, color::RAIL.hsla()).corner_radii(radius));
 
     let filled = Bounds {
         origin: rail.origin,
@@ -1912,16 +1911,20 @@ fn paint_track(
         },
         size: gpui::size(HANDLE_WIDTH, HANDLE_HEIGHT),
     };
+    // Concentric with the pill around it: the handle sits one padding step
+    // inside a corner of [`RADIUS`], so its own corner is that much tighter.
+    // Matched radii is what keeps a nested shape from reading as a sticker.
+    let handle_radius = RADIUS - space::XS;
     window.paint_quad(
         gpui::quad(
             knob,
-            px(3.0),
+            handle_radius,
             handle,
             px(1.0),
             color::RAIL.hsla(),
             gpui::BorderStyle::Solid,
         )
-        .corner_radii(px(3.0)),
+        .corner_radii(handle_radius),
     );
 }
 
@@ -2051,13 +2054,17 @@ impl Note {
     }
 }
 
-/// A labeled control with its optional state message underneath.
+/// A control with its optional caption above and state message underneath.
 ///
 /// The wrapper carries the element id, so the whole field is one click target
 /// rather than just the control box inside it.
+///
+/// `label` is optional because a control on a device row is named by the row it
+/// is on: repeating the name over every control is a caption that says what the
+/// line already said, and it doubles the height of the line to do it.
 fn field(
     id: impl Into<ElementId>,
-    label: SharedString,
+    label: Option<SharedString>,
     message: Option<String>,
     state: ControlState,
     control: impl IntoElement,
@@ -2074,12 +2081,12 @@ fn field(
         .w_full()
         .min_w_0()
         .gap(space::XS)
-        .child(
+        .children(label.map(|label| {
             div()
                 .text_sm()
                 .text_color(color::TEXT_MUTED.hsla())
-                .child(label),
-        )
+                .child(label)
+        }))
         .child(control)
         .children(message.map(|message| div().text_sm().text_color(message_color).child(message)))
 }

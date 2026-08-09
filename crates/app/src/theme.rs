@@ -86,6 +86,13 @@ pub mod color {
     /// under the pointer reads as pressable, while one that brightens reads as
     /// already selected.
     pub const CONTROL_HOVER: Color = Color::rgb(0x21252c);
+    /// The same fill under the pointer, on a button.
+    ///
+    /// [`CONTROL`] mixed 6% toward [`TEXT`], which is Paneflow's
+    /// `secondary_button`. A button lifts where a field sinks: one is a thing
+    /// to press, the other a thing to open, and the direction of the change is
+    /// what says which.
+    pub const CONTROL_RAISED: Color = Color::rgb(0x353a43);
     /// Low-contrast separator.
     pub const SEPARATOR: Color = Color::rgb(0x333944);
     /// Surface a floating menu is drawn on.
@@ -151,6 +158,13 @@ pub const CARD_RADIUS: Pixels = px(10.0);
 pub const CARD_INSET: Pixels = px(4.0);
 /// Width of the visible focus ring, in logical pixels.
 pub const FOCUS_RING: Pixels = px(2.0);
+
+/// Height of a control pill: a select, a color field, a slider.
+///
+/// One height for all three, so a row that carries two different controls has
+/// them on the same baseline. Set by the tallest thing one can hold, which is a
+/// [`SWATCH_SIZE`] swatch inside the padding and the reserved ring.
+pub const CONTROL_HEIGHT: Pixels = px(34.0);
 
 /// Side of a color swatch, and the radius that goes with it.
 ///
@@ -301,6 +315,21 @@ mod tests {
     fn disabled_text_is_visibly_dimmer_but_still_perceivable() {
         assert!(TEXT_DISABLED.contrast(CONTROL) < TEXT.contrast(CONTROL));
         assert!(TEXT_DISABLED.contrast(CONTROL) >= 2.0);
+    }
+
+    #[test]
+    fn how_much_of_a_track_is_filled_is_visible_without_reading_the_value() {
+        // The one thing a slider says at a glance is where the fill stops, so
+        // the boundary between the filled part and the empty one is a
+        // meaningful non-text element and takes the full 3:1. The handle rides
+        // on the filled side and is held to the same bar against it.
+        let ratio = ACCENT.contrast(RAIL);
+        assert!(ratio >= NON_TEXT_MIN, "fill against track is {ratio:.2}:1");
+        let handle = TEXT.contrast(ACCENT);
+        assert!(
+            handle >= NON_TEXT_MIN,
+            "handle against fill is {handle:.2}:1"
+        );
     }
 
     #[test]
