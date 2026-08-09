@@ -350,6 +350,18 @@ pub enum Popover {
     Options { select: SharedString },
 }
 
+/// Whether a control shows the caption naming it.
+///
+/// A control in an open detail carries its own name, because nothing else
+/// around it does. A control on a device row does not: the row already names
+/// the device and the control is one of two on the line, so a caption over each
+/// one is a second line of text that says what the first line said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caption {
+    Shown,
+    Hidden,
+}
+
 /// Swatches offered by a color popover.
 pub const SWATCHES: [Color; 6] = [
     Color::rgb(0x6f4ef2),
@@ -944,6 +956,7 @@ impl Shell {
                 .child(div().w(COOLING_SELECT_WIDTH).child(self.select(
                     "cooling-mode",
                     "Mode",
+                    Caption::Shown,
                     mode_options,
                     self.cooling.mode.value().to_string(),
                     // Choosing a mode is an edit like any other now, so it
@@ -962,6 +975,7 @@ impl Shell {
                 .child(div().w(COOLING_SELECT_WIDTH).child(self.select(
                     "profile",
                     "Active profile",
+                    Caption::Shown,
                     profiles,
                     active,
                     // Activating a profile is a write. It is disabled for
@@ -1750,6 +1764,7 @@ impl Shell {
                             self.select(
                                 format!("lighting-mode-{channel}"),
                                 "Mode",
+                                Caption::Hidden,
                                 LightingMode::all(effects.is_enabled())
                                     .into_iter()
                                     .map(|mode| SelectOption::new(mode.value(), mode.label()))
@@ -1838,6 +1853,7 @@ impl Shell {
                                 self.select(
                                     format!("lighting-speed-{channel}"),
                                     "Speed",
+                                    Caption::Shown,
                                     EffectSpeed::ALL
                                         .into_iter()
                                         .map(|speed| SelectOption::new(speed.key(), speed.label()))
@@ -1864,6 +1880,7 @@ impl Shell {
                                 self.select(
                                     format!("lighting-direction-{channel}"),
                                     "Direction",
+                                    Caption::Shown,
                                     EffectDirection::ALL
                                         .into_iter()
                                         .map(|direction| {
@@ -1991,6 +2008,7 @@ impl Shell {
                             self.select(
                                 "lcd-mode",
                                 "Display mode",
+                                Caption::Hidden,
                                 SCREEN_MODES
                                     .into_iter()
                                     .map(|mode| SelectOption::new(mode.key(), mode.label()))
@@ -2252,6 +2270,9 @@ impl Shell {
         .range(0.0, max)
         .unit("%")
         .icons(Icon::SunLow, Icon::SunHigh)
+        // The row names the device and the two glyphs name the axis, so the
+        // caption would only repeat the line above it.
+        .label_hidden()
         .state(state)
         .tab_index(tab_index);
         if let Some(sink) = sink {
@@ -2322,6 +2343,7 @@ impl Shell {
         self.select(
             id,
             label,
+            Caption::Shown,
             LcdMetric::ALL
                 .into_iter()
                 .map(|metric| SelectOption::new(metric.key(), metric.label()))
@@ -2413,6 +2435,7 @@ impl Shell {
         &self,
         id: impl Into<SharedString>,
         label: impl Into<SharedString>,
+        caption: Caption,
         options: Vec<SelectOption>,
         selected: String,
         state: ControlState,
@@ -2430,7 +2453,11 @@ impl Shell {
         let enabled = state.is_enabled();
         let open = enabled && self.popover == Some(Popover::Options { select: id.clone() });
         let current = selected.clone();
-        let control = Select::new(id.clone(), label)
+        let mut built = Select::new(id.clone(), label);
+        if caption == Caption::Hidden {
+            built = built.label_hidden();
+        }
+        let control = built
             .options(options.clone())
             .selected(selected)
             .state(state)
