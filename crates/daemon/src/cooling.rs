@@ -24,14 +24,14 @@
 
 use std::time::{Duration, Instant};
 
-use nzxt_core::ipc::{ApplyOutcome, ChannelReadback, HardwareState};
-use nzxt_core::profile::{
+use herschel_core::ipc::{ApplyOutcome, ChannelReadback, HardwareState};
+use herschel_core::profile::{
     CURVE_POINT_COUNT, Channel, CoolingProgram, MIN_PROGRAM_INTERVAL_MS, TemperatureCurve,
 };
-use nzxt_core::telemetry::{KrakenTelemetry, PwmMode};
-use nzxt_hardware_linux::SysfsRoot;
-use nzxt_hardware_linux::control::{Applied, ChannelSnapshot, CoolingControl, WriteFailure};
-use nzxt_hardware_linux::hwmon::KrakenHwmon;
+use herschel_core::telemetry::{KrakenTelemetry, PwmMode};
+use herschel_hardware_linux::SysfsRoot;
+use herschel_hardware_linux::control::{Applied, ChannelSnapshot, CoolingControl, WriteFailure};
+use herschel_hardware_linux::hwmon::KrakenHwmon;
 
 /// How long a curve is left alone before its committed shape is checked against
 /// what the device reports it is running.
@@ -499,8 +499,8 @@ fn accepts_duty(curve: &TemperatureCurve, liquid_c: f32, reported: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::profile::CurveNodes;
-    use nzxt_hardware_linux::testing::{FakeSysfs, running_as_root};
+    use herschel_core::profile::CurveNodes;
+    use herschel_hardware_linux::testing::{FakeSysfs, running_as_root};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
@@ -628,7 +628,7 @@ mod tests {
     }
 
     fn kraken_running(liquid_c: f32, pump_duty: u8, fan_duty: u8) -> KrakenTelemetry {
-        use nzxt_core::telemetry::{ChannelTelemetry, Reading};
+        use herschel_core::telemetry::{ChannelTelemetry, Reading};
         let channel = |channel, duty| ChannelTelemetry {
             channel,
             rpm: Reading::valid(1_800),

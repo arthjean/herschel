@@ -32,7 +32,7 @@ use crate::sysfs::{bound_driver, read_attribute};
 ///
 /// Mirrors [`crate::sysfs::SYSFS_ROOT_ENV`] so a fixture can describe a whole
 /// machine. It cannot grant access the invoking user does not already have.
-pub const USBFS_ROOT_ENV: &str = "NZXT_USBFS_ROOT";
+pub const USBFS_ROOT_ENV: &str = "HERSCHEL_USBFS_ROOT";
 
 /// `ioctl` group of the USB device filesystem, `'U'`.
 const USBFS_GROUP: u8 = b'U';

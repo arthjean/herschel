@@ -8,12 +8,12 @@
 
 use std::path::PathBuf;
 
-use nzxt_core::ipc::{SOCKET_FILE_NAME, runtime_dir_from_env, socket_path_from_env};
+use herschel_core::ipc::{SOCKET_FILE_NAME, runtime_dir_from_env, socket_path_from_env};
 
 /// Overrides the configuration directory. Used by tests.
-pub const CONFIG_DIR_ENV: &str = "NZXT_CONTROL_CONFIG_DIR";
+pub const CONFIG_DIR_ENV: &str = "HERSCHEL_CONFIG_DIR";
 
-const APP_DIR: &str = "nzxt-control";
+const APP_DIR: &str = "herschel";
 
 /// Resolved locations for one daemon instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub struct Paths {
 impl Paths {
     /// Resolve from the environment, following the XDG base directory spec.
     ///
-    /// The runtime directory and the socket come from `nzxt_core::ipc`, which
+    /// The runtime directory and the socket come from `herschel_core::ipc`, which
     /// is the same code the client resolves them with. Two independent
     /// resolutions would let the daemon bind one path while the window looks
     /// for another.
@@ -62,7 +62,7 @@ impl Paths {
     }
 
     /// Lock file for one device, named after its identifiers.
-    pub fn device_lock(&self, device: nzxt_core::DeviceId) -> PathBuf {
+    pub fn device_lock(&self, device: herschel_core::DeviceId) -> PathBuf {
         self.runtime_dir.join(format!("{device}.lock"))
     }
 
@@ -71,7 +71,7 @@ impl Paths {
     /// Named after the application rather than a device, so it cannot collide
     /// with `device_lock`, which always contains a colon.
     pub fn instance_lock(&self) -> PathBuf {
-        self.runtime_dir.join("nzxt-control.lock")
+        self.runtime_dir.join("herschel.lock")
     }
 
     /// Create both directories with owner-only permissions.
@@ -104,35 +104,35 @@ fn home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::KRAKEN_BASE;
+    use herschel_core::KRAKEN_BASE;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn lock_files_are_named_after_the_device() {
-        let paths = Paths::new(
-            "/run/user/1000/nzxt-control",
-            "/home/a/.config/nzxt-control",
-        );
+        let paths = Paths::new("/run/user/1000/herschel", "/home/a/.config/herschel");
         assert!(paths.device_lock(KRAKEN_BASE).ends_with("1e71:300e.lock"));
-        assert!(paths.socket.ends_with("nzxt-control.sock"));
+        assert!(paths.socket.ends_with("herschel.sock"));
         assert!(paths.config_file().ends_with("config.toml"));
-        assert!(paths.instance_lock().ends_with("nzxt-control.lock"));
+        assert!(paths.instance_lock().ends_with("herschel.lock"));
         assert_ne!(paths.instance_lock(), paths.device_lock(KRAKEN_BASE));
     }
 
     #[test]
     fn the_daemon_binds_the_socket_the_client_connects_to() {
-        // Both sides resolve through `nzxt_core::ipc`. This fails the moment
+        // Both sides resolve through `herschel_core::ipc`. This fails the moment
         // either one grows its own fallback again.
         let paths = Paths::from_env();
-        assert_eq!(paths.socket, nzxt_core::ipc::socket_path_from_env());
-        assert_eq!(paths.runtime_dir, nzxt_core::ipc::runtime_dir_from_env());
+        assert_eq!(paths.socket, herschel_core::ipc::socket_path_from_env());
+        assert_eq!(
+            paths.runtime_dir,
+            herschel_core::ipc::runtime_dir_from_env()
+        );
         assert!(!paths.socket.starts_with("/tmp"), "{:?}", paths.socket);
     }
 
     #[test]
     fn directories_are_created_owner_only() {
-        let base = std::env::temp_dir().join(format!("nzxt-paths-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("herschel-paths-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let paths = Paths::new(base.join("run"), base.join("config"));
         paths.ensure().unwrap();

@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use nzxt_core::capability::{CurveChannel, Evidenced, HwmonAttribute, HwmonCapabilities};
-use nzxt_core::profile::{CURVE_POINT_COUNT, Channel, TemperatureCurve};
-use nzxt_core::telemetry::{ChannelTelemetry, KrakenTelemetry, PwmMode, Reading, Unavailable};
-use nzxt_core::{DeviceId, KRAKEN_BASE};
+use herschel_core::capability::{CurveChannel, Evidenced, HwmonAttribute, HwmonCapabilities};
+use herschel_core::profile::{CURVE_POINT_COUNT, Channel, TemperatureCurve};
+use herschel_core::telemetry::{ChannelTelemetry, KrakenTelemetry, PwmMode, Reading, Unavailable};
+use herschel_core::{DeviceId, KRAKEN_BASE};
 
 use crate::sysfs::{
     SysfsRoot, is_readable, is_writable, read_attribute, read_parsed, reading, sorted_entries,
@@ -170,7 +170,7 @@ pub fn mode_attribute(channel: Channel) -> String {
 /// The `tempN_auto_pointM_pwm` file for one curve point.
 ///
 /// Points are one-based in the ABI while `index` is zero-based, matching
-/// [`nzxt_core::profile::TemperatureCurve::points`].
+/// [`herschel_core::profile::TemperatureCurve::points`].
 pub fn curve_point_attribute(channel: Channel, index: usize) -> String {
     format!("temp{}_auto_point{}_pwm", channel_index(channel), index + 1)
 }
@@ -284,7 +284,7 @@ impl KrakenHwmon {
 mod tests {
     use super::*;
     use crate::testing::{FakeSysfs, running_as_root};
-    use nzxt_core::KRAKEN_BASE;
+    use herschel_core::KRAKEN_BASE;
 
     #[test]
     fn discovery_attributes_hwmon_to_the_owning_usb_device() {

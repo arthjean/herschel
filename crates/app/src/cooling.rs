@@ -10,11 +10,11 @@
 //! readback is what lets the screen tell the two apart, and it is the whole
 //! basis for saying a write did not land.
 
-use nzxt_core::profile::{
+use herschel_core::profile::{
     CURVE_NODE_COUNT, Channel, CoolingProgram, CurveNodes, MAX_DUTY, MAX_DUTY_PERCENT,
     ValidationError, duty_from_percent, duty_to_percent, validate_program,
 };
-use nzxt_core::telemetry::{KrakenTelemetry, PwmMode};
+use herschel_core::telemetry::{KrakenTelemetry, PwmMode};
 
 /// What the Cooling screen is asking the hardware to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,8 +339,8 @@ fn confirms_mode(kraken: Option<&KrakenTelemetry>, channel: Channel, mode: PwmMo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::profile::MIN_PUMP_DUTY;
-    use nzxt_core::telemetry::{ChannelTelemetry, Reading};
+    use herschel_core::profile::MIN_PUMP_DUTY;
+    use herschel_core::telemetry::{ChannelTelemetry, Reading};
 
     fn kraken(mode: PwmMode, pump_duty: u8, fan_duty: u8) -> KrakenTelemetry {
         KrakenTelemetry {

@@ -19,8 +19,8 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use nzxt_core::DeviceId;
-use nzxt_core::ipc::OwnershipConflict;
+use herschel_core::DeviceId;
+use herschel_core::ipc::OwnershipConflict;
 use rustix::fs::{FlockOperation, flock};
 
 use crate::paths::Paths;
@@ -236,10 +236,11 @@ fn process_name(pid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::KRAKEN_BASE;
+    use herschel_core::KRAKEN_BASE;
 
     fn temp_paths(name: &str) -> (PathBuf, Paths) {
-        let base = std::env::temp_dir().join(format!("nzxt-lock-{name}-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("herschel-lock-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let paths = Paths::new(base.join("run"), base.join("config"));
         paths.ensure().unwrap();
@@ -296,14 +297,14 @@ mod tests {
     fn locks_are_per_device() {
         let (base, paths) = temp_paths("per-device");
         let kraken = acquire(&paths, KRAKEN_BASE).unwrap();
-        let rgb = acquire(&paths, nzxt_core::RGB_CONTROLLER).unwrap();
+        let rgb = acquire(&paths, herschel_core::RGB_CONTROLLER).unwrap();
         assert_ne!(kraken.path(), rgb.path());
         std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
     fn hid_nodes_are_found_through_interface_directories() {
-        let base = std::env::temp_dir().join(format!("nzxt-hid-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("herschel-hid-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let device = base.join("1-9");
         std::fs::create_dir_all(device.join("1-9:1.1/0003:1E71:300E.000B/hidraw/hidraw3")).unwrap();
@@ -317,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_node_this_process_holds_is_not_reported_as_a_conflict() {
-        let path = std::env::temp_dir().join(format!("nzxt-own-fd-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("herschel-own-fd-{}", std::process::id()));
         let file = File::create(&path).unwrap();
         let canonical = std::fs::canonicalize(&path).unwrap();
 

@@ -16,9 +16,9 @@
 
 use std::ffi::OsStr;
 
+use herschel_core::telemetry::{GpuTelemetry, Reading, Unavailable, clamp_percent};
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
-use nzxt_core::telemetry::{GpuTelemetry, Reading, Unavailable, clamp_percent};
 
 /// Name of the interface, reported alongside the readings.
 pub const SOURCE: &str = "NVML";
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(telemetry.at_unix_ms, 1_700);
         assert_eq!(
             telemetry.source,
-            nzxt_core::telemetry::GPU_SOURCE_UNAVAILABLE
+            herschel_core::telemetry::GPU_SOURCE_UNAVAILABLE
         );
         for reading in [
             telemetry.load_percent.is_valid(),

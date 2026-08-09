@@ -246,7 +246,7 @@ Two nodes, one rule file, numbered below 73 so `73-seat-late.rules` still
 consumes the `uaccess` tag:
 
 ```
-# /etc/udev/rules.d/70-nzxt-control.rules
+# /etc/udev/rules.d/70-herschel.rules
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2021", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300e", TAG+="uaccess"
 SUBSYSTEM=="usb",    ATTR{idVendor}=="1e71",  ATTR{idProduct}=="300e",  TAG+="uaccess"
@@ -498,7 +498,7 @@ cargo clippy --workspace --all-targets -- -D warnings   pass
 cargo test --workspace                                  pass, 467 tests
 ```
 
-Stop `nzxt-controld` first. The fixtures mirror this machine down to the
+Stop `herscheld` first. The fixtures mirror this machine down to the
 `hidraw` numbers and `usb::hidraw_node` maps a fixture node onto the real `/dev`
 path, so a running daemon is detected as a competing writer and the ownership
 assertions in `crates/daemon/tests/ipc.rs` fail. That is the conflict detector
@@ -557,7 +557,7 @@ bound, which is a tick that ran late.
 
 EP-004 is closed as `DONE` on 2026-08-07 with three observations deliberately
 deferred rather than performed. They are recorded here and in
-`tasks/prd-native-nzxt-hardware-control-status.json` under `deferred`, because a
+`tasks/prd-native-herschel-hardware-control-status.json` under `deferred`, because a
 criterion nobody observed is a criterion nobody observed, whatever the tracker
 says next to it. Two of the three are folded into the display polish iteration
 of the PRD, and the third belongs to US-019.

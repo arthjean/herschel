@@ -22,7 +22,7 @@
 use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
-use nzxt_core::lighting::Rgb;
+use herschel_core::lighting::Rgb;
 
 use crate::canvas::Canvas;
 
@@ -243,10 +243,10 @@ mod tests {
         // come out as a blank box, so the set is asserted against what the
         // product can produce rather than against the subset command line.
         let face = face().expect("the face parses");
-        let required: String = nzxt_core::PRODUCT_NAME
+        let required: String = herschel_core::PRODUCT_NAME
             .chars()
             .chain(
-                nzxt_core::display::LcdMetric::ALL
+                herschel_core::display::LcdMetric::ALL
                     .iter()
                     .flat_map(|metric| {
                         metric

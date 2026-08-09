@@ -7,10 +7,10 @@
 //! two things it does not carry: what the last valid value was, so a momentary
 //! read failure does not blank a readout, and the recent series, so a chart has
 //! something to draw. Both live here, in memory, bounded by
-//! [`nzxt_core::telemetry::HISTORY_WINDOW_MS`]. Nothing is written to disk.
+//! [`herschel_core::telemetry::HISTORY_WINDOW_MS`]. Nothing is written to disk.
 
-use nzxt_core::profile::Channel;
-use nzxt_core::telemetry::{
+use herschel_core::profile::Channel;
+use herschel_core::telemetry::{
     History, KrakenTelemetry, MemoryUsage, MetricView, PwmMode, Reading, TelemetrySnapshot, Tracked,
 };
 
@@ -145,7 +145,7 @@ impl MetricBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::telemetry::{
+    use herschel_core::telemetry::{
         ChannelTelemetry, DROP_AFTER_MS, GpuTelemetry, STALE_AFTER_MS, SystemTelemetry, Unavailable,
     };
 

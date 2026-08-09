@@ -2437,6 +2437,63 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "herschel-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gpui",
+ "herschel-core",
+ "herschel-lcd-renderer",
+ "serde_json",
+]
+
+[[package]]
+name = "herschel-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "herschel-daemon"
+version = "0.1.0"
+dependencies = [
+ "herschel-core",
+ "herschel-hardware-linux",
+ "herschel-lcd-renderer",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "toml 1.1.4+spec-1.1.0",
+]
+
+[[package]]
+name = "herschel-hardware-linux"
+version = "0.1.0"
+dependencies = [
+ "herschel-core",
+ "nvml-wrapper",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "herschel-lcd-renderer"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "herschel-core",
+ "image",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3457,63 +3514,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b4d594420fcda43b1c2c4bd44d48974aa3c7a9ab2cbf10dc18e35265767bf0b"
 dependencies = [
  "libloading",
-]
-
-[[package]]
-name = "nzxt-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "gpui",
- "nzxt-core",
- "nzxt-lcd-renderer",
- "serde_json",
-]
-
-[[package]]
-name = "nzxt-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "nzxt-daemon"
-version = "0.1.0"
-dependencies = [
- "nzxt-core",
- "nzxt-hardware-linux",
- "nzxt-lcd-renderer",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "toml 1.1.4+spec-1.1.0",
-]
-
-[[package]]
-name = "nzxt-hardware-linux"
-version = "0.1.0"
-dependencies = [
- "nvml-wrapper",
- "nzxt-core",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "nzxt-lcd-renderer"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "image",
- "nzxt-core",
- "thiserror 2.0.19",
 ]
 
 [[package]]

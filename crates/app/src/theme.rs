@@ -14,7 +14,7 @@ use gpui::{Font, FontFeatures, FontStyle, FontWeight, Hsla, Pixels, Rgba, px};
 use std::sync::Arc;
 
 /// Product name shown in the shell. Deliberately not a vendor trademark.
-pub const PRODUCT_NAME: &str = "Kraken Control";
+pub const PRODUCT_NAME: &str = "Herschel";
 /// Shown wherever the product identifies itself.
 pub const UNOFFICIAL_NOTICE: &str = "Unofficial. Not affiliated with or endorsed by NZXT.";
 

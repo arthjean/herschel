@@ -7,7 +7,7 @@
 //! no pixel format and no protocol byte, so the same value can be rendered into
 //! the GPUI preview and into the framebuffer the daemon sends, which is what
 //! FR-14 requires of the editor. The rendering itself lives in
-//! `nzxt-lcd-renderer`, and both processes call it.
+//! `herschel-lcd-renderer`, and both processes call it.
 //!
 //! Nothing here reads a file or touches a device. A preset naming a static
 //! image carries its path and nothing more: the file is opened by the renderer,

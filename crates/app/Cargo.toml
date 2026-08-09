@@ -1,5 +1,5 @@
 [package]
-name = "nzxt-app"
+name = "herschel-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,12 +8,12 @@ repository.workspace = true
 description = "Native GPUI control surface for allowlisted NZXT hardware"
 
 [[bin]]
-name = "nzxt-control"
+name = "herschel"
 path = "src/main.rs"
 
 [dependencies]
-nzxt-core.workspace = true
-nzxt-lcd-renderer.workspace = true
+herschel-core.workspace = true
+herschel-lcd-renderer.workspace = true
 gpui = "0.2.2"
 serde_json.workspace = true
 anyhow.workspace = true

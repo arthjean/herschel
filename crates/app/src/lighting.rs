@@ -13,7 +13,7 @@
 //! from. The editor therefore keeps the fixed color alive across an Off, which
 //! is what US-014 means by the prior color remaining available for restoration.
 
-use nzxt_core::lighting::{
+use herschel_core::lighting::{
     Brightness, EffectDirection, EffectSpeed, LightingEffect, LightingError, LightingProgram, Rgb,
 };
 
@@ -169,7 +169,7 @@ impl ChannelEditor {
     /// Move the brightness by whole steps, staying inside 0-100.
     pub fn adjust_brightness(&mut self, steps: i16) {
         let next = self.brightness as i16 + steps * BRIGHTNESS_STEP as i16;
-        self.brightness = next.clamp(0, nzxt_core::lighting::MAX_BRIGHTNESS as i16) as u8;
+        self.brightness = next.clamp(0, herschel_core::lighting::MAX_BRIGHTNESS as i16) as u8;
     }
 
     /// Set the brightness outright, staying inside the same range.
@@ -177,7 +177,7 @@ impl ChannelEditor {
     /// This is what a slider needs: a drag names a value rather than a number
     /// of steps, and the range is enforced here so no caller has to know it.
     pub fn set_brightness(&mut self, percent: u8) {
-        self.brightness = percent.min(nzxt_core::lighting::MAX_BRIGHTNESS);
+        self.brightness = percent.min(herschel_core::lighting::MAX_BRIGHTNESS);
     }
 }
 
@@ -311,7 +311,7 @@ mod tests {
         // enforced here rather than trusted from the caller, which is the same
         // rule the daemon applies to this client.
         editor.set_brightness(255);
-        assert_eq!(editor.brightness, nzxt_core::lighting::MAX_BRIGHTNESS);
+        assert_eq!(editor.brightness, herschel_core::lighting::MAX_BRIGHTNESS);
         assert!(editor.program().is_ok());
     }
 
@@ -398,7 +398,7 @@ mod tests {
                 editor.direction = EffectDirection::Backward;
                 let program = editor.program().expect("a default editor is valid");
                 assert!(
-                    nzxt_core::lighting::validate_program(&program).is_ok(),
+                    herschel_core::lighting::validate_program(&program).is_ok(),
                     "{mode:?} at {brightness}% produced {program:?}"
                 );
             }

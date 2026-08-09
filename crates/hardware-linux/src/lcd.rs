@@ -37,9 +37,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use nzxt_core::capability::{Evidenced, LcdDisplaySettings, LcdPanel, LcdPanelShape, LcdTopology};
-use nzxt_core::display::Orientation;
-use nzxt_core::lighting::Brightness;
+use herschel_core::capability::{
+    Evidenced, LcdDisplaySettings, LcdPanel, LcdPanelShape, LcdTopology,
+};
+use herschel_core::display::Orientation;
+use herschel_core::lighting::Brightness;
 
 use crate::hid::{
     ANSWER_TIMEOUT, HidError, HidTransport, Hidraw, MAX_QUERY_READS, REPORT_BYTES, silence,

@@ -9,14 +9,14 @@
 
 use std::path::{Path, PathBuf};
 
-use nzxt_core::telemetry::{Reading, Unavailable};
+use herschel_core::telemetry::{Reading, Unavailable};
 use rustix::fs::{Access, access};
 
 /// Environment variable that relocates the sysfs root.
 ///
 /// Used by tests and by anyone running the daemon against a recorded fixture.
 /// It cannot grant access the invoking user does not already have.
-pub const SYSFS_ROOT_ENV: &str = "NZXT_SYSFS_ROOT";
+pub const SYSFS_ROOT_ENV: &str = "HERSCHEL_SYSFS_ROOT";
 
 /// The sysfs tree the probe reads from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,7 +169,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nzxt-sysfs-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("herschel-sysfs-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

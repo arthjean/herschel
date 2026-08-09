@@ -31,8 +31,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nzxt_core::capability::{Evidenced, RgbAccessory, RgbChannel, RgbTopology};
-use nzxt_core::lighting::{
+use herschel_core::capability::{Evidenced, RgbAccessory, RgbChannel, RgbTopology};
+use herschel_core::lighting::{
     Brightness, EffectDirection, LightingEffect, LightingProgram, MIN_COMMAND_INTERVAL_MS, Rgb,
 };
 
@@ -454,7 +454,7 @@ pub fn minimum_command_interval() -> Duration {
 pub fn probe_program(color: Rgb) -> LightingProgram {
     LightingProgram::Fixed {
         color,
-        brightness: Brightness::new(nzxt_core::lighting::PROBE_BRIGHTNESS)
+        brightness: Brightness::new(herschel_core::lighting::PROBE_BRIGHTNESS)
             .unwrap_or(Brightness::OFF),
     }
 }
@@ -462,7 +462,7 @@ pub fn probe_program(color: Rgb) -> LightingProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::lighting::EffectSpeed;
+    use herschel_core::lighting::EffectSpeed;
 
     fn fixed(color: Rgb, percent: u8) -> LightingProgram {
         LightingProgram::Fixed {
@@ -799,7 +799,10 @@ mod tests {
     fn the_probe_program_is_a_dim_fixed_color() {
         match probe_program(Rgb::new(255, 255, 255)) {
             LightingProgram::Fixed { brightness, .. } => {
-                assert_eq!(brightness.percent(), nzxt_core::lighting::PROBE_BRIGHTNESS);
+                assert_eq!(
+                    brightness.percent(),
+                    herschel_core::lighting::PROBE_BRIGHTNESS
+                );
             }
             other => panic!("the probe must apply a fixed color, got {other:?}"),
         }

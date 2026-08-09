@@ -11,7 +11,7 @@
 //!
 //! Three things separate this from a production write.
 //!
-//! * It runs against a firmware [`nzxt_hardware_linux::lcd::VALIDATED_FIRMWARE`]
+//! * It runs against a firmware [`herschel_hardware_linux::lcd::VALIDATED_FIRMWARE`]
 //!   does not list. That list is what this probe exists to fill.
 //! * It asks the operator what the panel was showing first and what it shows
 //!   after, because no report on this device reads the panel back. A frame is
@@ -20,10 +20,10 @@
 
 use std::io::{BufRead, Write};
 
-use nzxt_core::capability::LcdTopology;
-use nzxt_core::display::{DisplayPreset, MetricSample, Orientation};
-use nzxt_core::lighting::{Brightness, Rgb};
-use nzxt_hardware_linux::lcd::LcdLink;
+use herschel_core::capability::LcdTopology;
+use herschel_core::display::{DisplayPreset, MetricSample, Orientation};
+use herschel_core::lighting::{Brightness, Rgb};
+use herschel_hardware_linux::lcd::LcdLink;
 use serde::{Deserialize, Serialize};
 
 /// What the operator must type to authorize a frame.
@@ -237,8 +237,8 @@ pub fn run<O: Operator>(
             panel.height,
             panel.pixel_format,
             match panel.shape {
-                nzxt_core::capability::LcdPanelShape::Circular => "circular",
-                nzxt_core::capability::LcdPanelShape::Square => "square",
+                herschel_core::capability::LcdPanelShape::Circular => "circular",
+                herschel_core::capability::LcdPanelShape::Square => "square",
             }
         ),
         transport: link.source(),
@@ -253,7 +253,7 @@ fn send_step<O: Operator>(
     link: &mut LcdLink,
     operator: &mut O,
     preset: &DisplayPreset,
-    panel: &nzxt_core::capability::LcdPanel,
+    panel: &herschel_core::capability::LcdPanel,
     description: &str,
     question: &str,
 ) -> ProbeStep {
@@ -262,11 +262,11 @@ fn send_step<O: Operator>(
     // A solid field reads no telemetry, so the samples are unavailable ones:
     // nothing this probe sends can depend on a collector.
     let samples = [
-        MetricSample::unavailable(nzxt_core::display::LcdMetric::CpuTemperature),
-        MetricSample::unavailable(nzxt_core::display::LcdMetric::GpuTemperature),
+        MetricSample::unavailable(herschel_core::display::LcdMetric::CpuTemperature),
+        MetricSample::unavailable(herschel_core::display::LcdMetric::GpuTemperature),
     ];
 
-    let frame = match nzxt_lcd_renderer::render(preset, &samples, panel) {
+    let frame = match herschel_lcd_renderer::render(preset, &samples, panel) {
         Ok(frame) => frame.to_rgb565_be(),
         Err(error) => {
             return ProbeStep {
@@ -324,18 +324,18 @@ fn send_step<O: Operator>(
 fn restore<O: Operator>(
     link: &mut LcdLink,
     operator: &mut O,
-    panel: &nzxt_core::capability::LcdPanel,
+    panel: &herschel_core::capability::LcdPanel,
     prior_state: &str,
 ) -> Restoration {
     operator.note("Restoring the panel to this product's default view.");
 
     let preset = DisplayPreset::default_infographic();
     let samples = [
-        MetricSample::unavailable(nzxt_core::display::LcdMetric::CpuTemperature),
-        MetricSample::unavailable(nzxt_core::display::LcdMetric::GpuTemperature),
+        MetricSample::unavailable(herschel_core::display::LcdMetric::CpuTemperature),
+        MetricSample::unavailable(herschel_core::display::LcdMetric::GpuTemperature),
     ];
 
-    let frame = match nzxt_lcd_renderer::render(&preset, &samples, panel) {
+    let frame = match herschel_lcd_renderer::render(&preset, &samples, panel) {
         Ok(frame) => frame.to_rgb565_be(),
         Err(error) => {
             return Restoration::Failed {
@@ -366,10 +366,10 @@ fn restore<O: Operator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::capability::Evidenced;
-    use nzxt_hardware_linux::lcd;
-    use nzxt_hardware_linux::testing::{BulkRecorder, FakeKraken};
-    use nzxt_hardware_linux::usbfs::UsbfsError;
+    use herschel_core::capability::Evidenced;
+    use herschel_hardware_linux::lcd;
+    use herschel_hardware_linux::testing::{BulkRecorder, FakeKraken};
+    use herschel_hardware_linux::usbfs::UsbfsError;
     use std::sync::Arc;
 
     /// An operator with scripted answers, so ordering is provable.
@@ -407,7 +407,7 @@ mod tests {
             firmware: Evidenced::known(firmware.into(), "report 0x11 0x01"),
             panel: Evidenced::known(lcd::candidate_panel(), "candidate"),
             display: Evidenced::known(
-                nzxt_core::capability::LcdDisplaySettings {
+                herschel_core::capability::LcdDisplaySettings {
                     brightness_percent: 60,
                     quarter_turns: 0,
                 },

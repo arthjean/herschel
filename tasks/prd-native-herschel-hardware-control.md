@@ -7,7 +7,7 @@
 |---------|------|--------|---------|
 | 1.3 | 2026-08-06 | Arthur Jean | Scoped US-014's lighting restoration to a daemon start and moved restoration after a physical unplug to US-019, which already owns hotplug detection for both devices; made US-019 name the lighting side of that recovery explicitly |
 | 1.2 | 2026-08-06 | Arthur Jean | Revised the memory and CPU budgets against measured GPUI behavior; split resident set into a driver-dependent ceiling and an application-controlled figure |
-| 1.1 | 2026-07-30 | Arthur Jean | Renamed repository to `nzxt-control-linux` and aligned project documentation |
+| 1.1 | 2026-07-30 | Arthur Jean | Renamed repository to `herschel` and aligned project documentation |
 | 1.0 | 2026-07-30 | Arthur Jean | Initial hardware-only product definition |
 
 ## Problem Statement
@@ -107,7 +107,7 @@ Two consequences for the budget:
 
 ### Sources
 
-- [Initial NZXT GitHub and Linux ecosystem report](../nzxt-linux-github-research.md)
+- [Initial NZXT GitHub and Linux ecosystem report](../herschel-linux-github-research.md)
 - [GPUI documentation](https://docs.rs/gpui/latest/gpui/index.html)
 - [liquidctl Kraken X3/Z3 guide](https://github.com/liquidctl/liquidctl/blob/main/docs/kraken-x3-z3-guide.md)
 - [Linux kernel nzxt-kraken3 documentation](https://docs.kernel.org/hwmon/nzxt-kraken3.html)
@@ -607,7 +607,7 @@ These questions require engineering confirmation during their validation stories
 - **System telemetry:** Which local interfaces should provide NVIDIA GPU metrics without introducing a daemon-sized dependency? Recommended: compare maintained NVML bindings and available sysfs data during US-007; unsupported metrics remain `N/A`.
 - **Configuration:** Should profiles use TOML or JSON with Serde? Recommended: TOML for operator inspection, with schema version, atomic replacement and last-known-good recovery.
 - **Licensing:** Is GPL-3.0-or-later sufficient for every adapted liquidctl/OpenRGB fragment and GPUI dependency? Recommended: generate a dependency/license inventory and complete legal review before US-020 publishes an RPM.
-- **Migration:** The repository now uses the technical name `nzxt-control-linux` and the research report is retained as historical evidence. Recommended: keep the public product name independent from the repository name. No compatibility migration is required because no application code or user data exists.
+- **Migration:** The repository now uses the technical name `herschel` and the research report is retained as historical evidence. Recommended: keep the public product name independent from the repository name. No compatibility migration is required because no application code or user data exists.
 
 ## Success Metrics
 
@@ -631,6 +631,6 @@ These questions require engineering confirmation during their validation stories
 - Does its LCD endpoint coexist with `kraken2023` without kernel-driver detachment? Owner: US-016; required before US-017.
 - What channel and LED topology does the owned `1e71:2021` expose? Owner: US-013; required before US-014.
 - Does GPUI meet the measured X11/Wayland, focus and resource budgets? Owner: US-001; required before US-004.
-- Which original public product name should replace the technical repository label `nzxt-control-linux`? Owner: Arthur; required before US-020, not before implementation.
+- Which original public product name should replace the technical repository label `herschel`? Owner: Arthur; required before US-020, not before implementation.
 - Does the final dependency graph remain GPL-3.0-or-later compatible? Owner: US-020 license audit; required before public RPM distribution.
 [/PRD]

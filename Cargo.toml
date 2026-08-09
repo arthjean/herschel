@@ -17,12 +17,12 @@ edition = "2024"
 # project builds with is pinned separately in rust-toolchain.toml.
 rust-version = "1.90"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/arthjean/nzxt-control-linux"
+repository = "https://github.com/arthjean/herschel"
 
 [workspace.dependencies]
-nzxt-core = { path = "crates/core" }
-nzxt-hardware-linux = { path = "crates/hardware-linux" }
-nzxt-lcd-renderer = { path = "crates/lcd-renderer" }
+herschel-core = { path = "crates/core" }
+herschel-hardware-linux = { path = "crates/hardware-linux" }
+herschel-lcd-renderer = { path = "crates/lcd-renderer" }
 
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }

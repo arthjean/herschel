@@ -13,10 +13,10 @@
 //! error while the preview keeps showing the last picture that was valid, which
 //! is what US-017 asks for instead of a field that silently reverts.
 
-use nzxt_core::display::{
+use herschel_core::display::{
     DisplayError, DisplayMode, DisplayPreset, LcdMetric, Orientation, ReadingSlot,
 };
-use nzxt_core::lighting::{Brightness, Rgb};
+use herschel_core::lighting::{Brightness, Rgb};
 
 /// Percentage a single press moves the brightness.
 pub const BRIGHTNESS_STEP: u8 = 5;
@@ -176,7 +176,7 @@ impl DisplayEditor {
     /// Move the brightness by whole steps, staying inside 0-100.
     pub fn adjust_brightness(&mut self, steps: i16) {
         let next = self.brightness as i16 + steps * BRIGHTNESS_STEP as i16;
-        self.brightness = next.clamp(0, nzxt_core::lighting::MAX_BRIGHTNESS as i16) as u8;
+        self.brightness = next.clamp(0, herschel_core::lighting::MAX_BRIGHTNESS as i16) as u8;
     }
 
     /// Set the brightness outright, staying inside the same range.
@@ -184,7 +184,7 @@ impl DisplayEditor {
     /// The slider names a value rather than a number of steps, and the range is
     /// enforced here so no caller has to know it.
     pub fn set_brightness(&mut self, percent: u8) {
-        self.brightness = percent.min(nzxt_core::lighting::MAX_BRIGHTNESS);
+        self.brightness = percent.min(herschel_core::lighting::MAX_BRIGHTNESS);
     }
 
     /// The preset Apply would send, or the first reason it cannot be built.
@@ -472,7 +472,7 @@ mod tests {
         editor.set_brightness(63);
         assert_eq!(editor.brightness, 63);
         editor.set_brightness(200);
-        assert_eq!(editor.brightness, nzxt_core::lighting::MAX_BRIGHTNESS);
+        assert_eq!(editor.brightness, herschel_core::lighting::MAX_BRIGHTNESS);
         assert!(editor.preset().is_ok());
     }
 

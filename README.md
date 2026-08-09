@@ -72,12 +72,12 @@ The daemon stays independent from the window in order to serialize commands, det
 
 ## Access
 
-Neither binary ever runs as root, so writing needs the kernel files to be reachable as your own user. `packaging/udev/70-nzxt-control.rules` grants exactly that, on the two allowlisted devices and nothing else:
+Neither binary ever runs as root, so writing needs the kernel files to be reachable as your own user. `packaging/udev/70-herschel.rules` grants exactly that, on the two allowlisted devices and nothing else:
 
 ```bash
-sudo groupadd --system nzxt-control
-sudo usermod --append --groups nzxt-control "$USER"
-sudo install -m 0644 packaging/udev/70-nzxt-control.rules /etc/udev/rules.d/
+sudo groupadd --system herschel
+sudo usermod --append --groups herschel "$USER"
+sudo install -m 0644 packaging/udev/70-herschel.rules /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo udevadm trigger --action=change --subsystem-match=hwmon
 ```
@@ -92,11 +92,11 @@ The two `hidraw` nodes and the Kraken's `usbfs` node are handed to the logged-in
 cargo build --release
 
 # Record the real capabilities of the machine (read only, no socket).
-./target/release/nzxt-controld --capabilities > docs/capability-record.json
+./target/release/herscheld --capabilities > docs/capability-record.json
 
 # Start the service, then the interface.
-./target/release/nzxt-controld &
-./target/release/nzxt-control
+./target/release/herscheld &
+./target/release/herschel
 ```
 
 The daemon refuses to start as root. Without the udev rule above, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
@@ -105,13 +105,13 @@ Environment variables read:
 
 | Variable | Role |
 |---|---|
-| `NZXT_CONTROL_SOCKET` | Unix socket path |
-| `NZXT_CONTROL_CONFIG_DIR` | Configuration directory |
-| `NZXT_CONTROL_RUNTIME_DIR` | Lock and socket directory |
-| `NZXT_SYSFS_ROOT` | sysfs root, for tests against a fake tree |
-| `NZXT_PROC_ROOT` | `/proc` root, for the same tests |
-| `NZXT_STARTUP_TRACE` | Prints the delay to the first frame |
-| `NZXT_EXIT_AFTER_FIRST_FRAME` | Exits after the first frame, to measure startup |
+| `HERSCHEL_SOCKET` | Unix socket path |
+| `HERSCHEL_CONFIG_DIR` | Configuration directory |
+| `HERSCHEL_RUNTIME_DIR` | Lock and socket directory |
+| `HERSCHEL_SYSFS_ROOT` | sysfs root, for tests against a fake tree |
+| `HERSCHEL_PROC_ROOT` | `/proc` root, for the same tests |
+| `HERSCHEL_STARTUP_TRACE` | Prints the delay to the first frame |
+| `HERSCHEL_EXIT_AFTER_FIRST_FRAME` | Exits after the first frame, to measure startup |
 
 ## Validation
 
@@ -134,14 +134,14 @@ Explicitly out of scope: Web Integrations, cloud, accounts, firmware updates, re
 
 ## Product plan
 
-- [Full PRD](./tasks/prd-native-nzxt-hardware-control.md)
-- [Epic and story tracking](./tasks/prd-native-nzxt-hardware-control-status.json)
+- [Full PRD](./tasks/prd-native-herschel-hardware-control.md)
+- [Epic and story tracking](./tasks/prd-native-herschel-hardware-control-status.json)
 
 The first story validates GPUI under Wayland and X11 with a representative LCD screen, then measures startup, memory, CPU, keyboard focus and scaling before extending the interface.
 
 ## Research
 
-The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
+The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./herschel-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
 
 ## License
 

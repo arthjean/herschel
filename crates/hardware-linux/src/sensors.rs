@@ -10,12 +10,12 @@
 
 use std::path::{Path, PathBuf};
 
-use nzxt_core::telemetry::{MemoryUsage, Reading, SystemTelemetry, Unavailable, clamp_percent};
+use herschel_core::telemetry::{MemoryUsage, Reading, SystemTelemetry, Unavailable, clamp_percent};
 
 use crate::sysfs::{SysfsRoot, read_attribute, read_attribute_detailed, sorted_entries};
 
 /// Relocates `/proc`, so the collectors can be tested against a fixture.
-pub const PROC_ROOT_ENV: &str = "NZXT_PROC_ROOT";
+pub const PROC_ROOT_ENV: &str = "HERSCHEL_PROC_ROOT";
 
 /// The `/proc` tree this machine resolves to.
 ///

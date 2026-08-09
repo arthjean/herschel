@@ -1,5 +1,5 @@
 [package]
-name = "nzxt-daemon"
+name = "herschel-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,17 +8,17 @@ repository.workspace = true
 description = "Per-user daemon owning every write to allowlisted NZXT hardware"
 
 [[bin]]
-name = "nzxt-controld"
+name = "herscheld"
 path = "src/main.rs"
 
 [lib]
-name = "nzxt_daemon"
+name = "herschel_daemon"
 path = "src/lib.rs"
 
 [dependencies]
-nzxt-core.workspace = true
-nzxt-hardware-linux.workspace = true
-nzxt-lcd-renderer.workspace = true
+herschel-core.workspace = true
+herschel-hardware-linux.workspace = true
+herschel-lcd-renderer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -26,7 +26,7 @@ toml.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
-nzxt-hardware-linux = { workspace = true, features = ["testing"] }
+herschel-hardware-linux = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

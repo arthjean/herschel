@@ -12,8 +12,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use nzxt_core::ipc::ConfigState;
-use nzxt_core::profile::{
+use herschel_core::ipc::ConfigState;
+use herschel_core::profile::{
     CONFIG_SCHEMA_VERSION, Profile, SAFE_PROFILE_NAME, ValidationError, validate_profile,
 };
 use serde::{Deserialize, Serialize};
@@ -316,7 +316,7 @@ fn write_atomically(path: &Path, document: &ConfigDocument) -> Result<(), Config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::profile::{CoolingProgram, TemperatureCurve};
+    use herschel_core::profile::{CoolingProgram, TemperatureCurve};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -329,7 +329,7 @@ mod tests {
         fn new(name: &str) -> Self {
             let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
             let dir = std::env::temp_dir().join(format!(
-                "nzxt-config-{name}-{}-{unique}",
+                "herschel-config-{name}-{}-{unique}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
@@ -410,7 +410,7 @@ mod tests {
                 pump: curve.clone(),
                 fan: curve.clone(),
             },
-            device: Some(nzxt_core::KRAKEN_BASE),
+            device: Some(herschel_core::KRAKEN_BASE),
             lighting: Vec::new(),
             display: None,
         };

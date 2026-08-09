@@ -9,7 +9,7 @@
 //!
 //! Nothing here knows what a metric is. It takes coordinates and colors.
 
-use nzxt_core::lighting::Rgb;
+use herschel_core::lighting::Rgb;
 
 /// A straight RGB8 buffer, one entry per pixel, row major.
 #[derive(Debug, Clone, PartialEq, Eq)]

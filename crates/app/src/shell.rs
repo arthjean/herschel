@@ -18,18 +18,18 @@ use gpui::{
     AnyElement, App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels,
     Point, SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
-use nzxt_core::capability::CapabilityId;
-use nzxt_core::display::{DisplayMode, LcdMetric, MetricSample};
-use nzxt_core::ipc::ChannelState;
-use nzxt_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
-use nzxt_core::profile::{
+use herschel_core::capability::CapabilityId;
+use herschel_core::display::{DisplayMode, LcdMetric, MetricSample};
+use herschel_core::ipc::ChannelState;
+use herschel_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
+use herschel_core::profile::{
     Channel, CoolingProgram, CurveNodes, MAX_DUTY, Profile, SAFE_PROFILE_NAME,
 };
-use nzxt_core::telemetry::{
+use herschel_core::telemetry::{
     Collector, HISTORY_WINDOW_MS, KrakenTelemetry, MetricView, SafetyAlert, format_binary_bytes,
     format_temperature,
 };
-use nzxt_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
+use herschel_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::assets::Icon;
 use crate::components::{
@@ -2125,7 +2125,7 @@ impl Shell {
         &self,
         base: isize,
         editor: &DisplayEditor,
-        panel: &nzxt_core::capability::LcdPanel,
+        panel: &herschel_core::capability::LcdPanel,
         frame: ControlState,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -2339,7 +2339,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let enabled = state.is_enabled();
-        let max = f32::from(nzxt_core::lighting::MAX_BRIGHTNESS);
+        let max = f32::from(herschel_core::lighting::MAX_BRIGHTNESS);
         // Created per render and captured by this render's listeners, so the
         // rectangle a press reads is the one the track was just painted at.
         // Only an operable track is published, so a press cannot grab a slider
@@ -2374,7 +2374,7 @@ impl Shell {
                         "left" | "down" => i16::from(value) - step,
                         "right" | "up" => i16::from(value) + step,
                         "home" => 0,
-                        "end" => i16::from(nzxt_core::lighting::MAX_BRIGHTNESS),
+                        "end" => i16::from(herschel_core::lighting::MAX_BRIGHTNESS),
                         _ => return,
                     };
                     shell.popover = None;
@@ -2395,7 +2395,7 @@ impl Shell {
         if drag.track.size.width <= px(0.0) {
             return;
         }
-        let max = f32::from(nzxt_core::lighting::MAX_BRIGHTNESS);
+        let max = f32::from(herschel_core::lighting::MAX_BRIGHTNESS);
         let value = Slider::value_at(drag.track, position, 0.0, max);
         self.set_brightness(drag.row, value.round() as i16);
         cx.notify();
@@ -2406,7 +2406,7 @@ impl Shell {
     /// Takes a signed value so a keyboard step past either end arrives here to
     /// be clamped rather than wrapping around in the caller.
     fn set_brightness(&mut self, row: LightingRow, percent: i16) {
-        let percent = percent.clamp(0, i16::from(nzxt_core::lighting::MAX_BRIGHTNESS)) as u8;
+        let percent = percent.clamp(0, i16::from(herschel_core::lighting::MAX_BRIGHTNESS)) as u8;
         match row {
             LightingRow::Channel(channel) => {
                 if let Some(editor) = self.lighting.channel_mut(channel) {

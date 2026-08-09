@@ -23,7 +23,7 @@ pub mod telemetry;
 /// FR-20: original branding, never NZXT's. It lives here rather than in the
 /// client's theme because the daemon draws it onto the panel too, and the
 /// wordmark on the hardware and the wordmark in the window must be one string.
-pub const PRODUCT_NAME: &str = "Kraken Control";
+pub const PRODUCT_NAME: &str = "Herschel";
 
 /// Vendor and product identifiers of a USB device.
 ///

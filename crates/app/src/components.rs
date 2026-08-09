@@ -15,8 +15,8 @@ use gpui::{
     Bounds, Div, ElementId, Hsla, PathBuilder, Pixels, Point, SharedString, Stateful, Svg, Window,
     canvas, div, fill, point, prelude::*, px, size, svg,
 };
-use nzxt_core::profile::{CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent};
-use nzxt_core::telemetry::{History, MetricView};
+use herschel_core::profile::{CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent};
+use herschel_core::telemetry::{History, MetricView};
 
 use crate::assets::Icon;
 use crate::theme::{
@@ -2402,7 +2402,7 @@ mod tests {
 
     #[test]
     fn a_full_window_is_reduced_to_a_bounded_number_of_plotted_points() {
-        let mut history = History::new(nzxt_core::telemetry::HISTORY_WINDOW_MS);
+        let mut history = History::new(herschel_core::telemetry::HISTORY_WINDOW_MS);
         for step in 0..900u64 {
             history.push(step * 1_000, Some(step as f32 % 100.0));
         }
@@ -2419,7 +2419,7 @@ mod tests {
 
     #[test]
     fn downsampling_never_hides_a_gap() {
-        let mut history = History::new(nzxt_core::telemetry::HISTORY_WINDOW_MS);
+        let mut history = History::new(herschel_core::telemetry::HISTORY_WINDOW_MS);
         for step in 0..900u64 {
             history.push(step * 1_000, if step == 500 { None } else { Some(1.0) });
         }

@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use gpui::{Div, Image, ImageFormat, Pixels, div, img, prelude::*, px};
-use nzxt_core::capability::{LcdPanel, LcdPanelShape};
-use nzxt_core::display::{DisplayPreset, MetricSample};
+use herschel_core::capability::{LcdPanel, LcdPanelShape};
+use herschel_core::display::{DisplayPreset, MetricSample};
 
 use crate::theme::{Color, color};
 
@@ -65,7 +65,7 @@ pub fn assumed_panel() -> LcdPanel {
 /// `samples` are the readings the frame will carry, so the preview ages with
 /// telemetry exactly as the panel does.
 pub fn panel_preview(preset: &DisplayPreset, samples: &[MetricSample; 2], panel: &LcdPanel) -> Div {
-    let rendered = nzxt_lcd_renderer::render(preset, samples, panel)
+    let rendered = herschel_lcd_renderer::render(preset, samples, panel)
         .and_then(|frame| frame.to_png())
         .ok();
 
@@ -137,20 +137,20 @@ pub fn worst_contrast(preset: &DisplayPreset) -> Option<(&'static str, f32, f32)
     .min_by(|a, b| (a.1 - a.2).total_cmp(&(b.1 - b.2)))
 }
 
-fn contrast(color: nzxt_core::lighting::Rgb, background: Color) -> f32 {
+fn contrast(color: herschel_core::lighting::Rgb, background: Color) -> f32 {
     Color::rgb(pack(color)).contrast(background)
 }
 
 /// A core color as the theme's packed form.
-fn pack(color: nzxt_core::lighting::Rgb) -> u32 {
+fn pack(color: herschel_core::lighting::Rgb) -> u32 {
     (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::display::LcdMetric;
-    use nzxt_core::lighting::Rgb;
+    use herschel_core::display::LcdMetric;
+    use herschel_core::lighting::Rgb;
 
     fn samples() -> [MetricSample; 2] {
         [
@@ -246,7 +246,7 @@ mod tests {
         // the panel's pixels, because both come from one call.
         let preset = DisplayPreset::default_infographic();
         let panel = assumed_panel();
-        let frame = nzxt_lcd_renderer::render(&preset, &samples(), &panel).unwrap();
+        let frame = herschel_lcd_renderer::render(&preset, &samples(), &panel).unwrap();
 
         assert_eq!(frame.width(), u32::from(panel.width));
         assert_eq!(frame.height(), u32::from(panel.height));
@@ -264,9 +264,9 @@ mod tests {
         // no picture, which is what keeps a broken entry from painting a stale
         // frame as if it were current.
         let mut preset = DisplayPreset::default_infographic();
-        preset.mode = nzxt_core::display::DisplayMode::Image;
+        preset.mode = herschel_core::display::DisplayMode::Image;
         let panel = assumed_panel();
-        assert!(nzxt_lcd_renderer::render(&preset, &samples(), &panel).is_err());
+        assert!(herschel_lcd_renderer::render(&preset, &samples(), &panel).is_err());
     }
 
     #[test]

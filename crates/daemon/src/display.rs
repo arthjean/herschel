@@ -29,11 +29,11 @@
 //! four seconds ago because three frames are waiting is worse than a panel that
 //! skipped them.
 
-use nzxt_core::capability::LcdPanel;
-use nzxt_core::display::{DisplayError, DisplayPreset, MetricSample};
-use nzxt_core::ipc::{DisplayOutcome, DisplayState, HardwareState};
-use nzxt_core::lighting::Brightness;
-use nzxt_hardware_linux::lcd::{LcdError, LcdLink};
+use herschel_core::capability::LcdPanel;
+use herschel_core::display::{DisplayError, DisplayPreset, MetricSample};
+use herschel_core::ipc::{DisplayOutcome, DisplayState, HardwareState};
+use herschel_core::lighting::Brightness;
+use herschel_hardware_linux::lcd::{LcdError, LcdLink};
 
 /// Owns the panel handle and the record of what it was told to show.
 pub struct DisplayExecutor {
@@ -126,7 +126,7 @@ impl DisplayExecutor {
                 .is_some_and(|preset| preset.mode.uses_readings())
     }
 
-    /// Per-panel state for [`nzxt_core::ipc::DaemonStatus`].
+    /// Per-panel state for [`herschel_core::ipc::DaemonStatus`].
     pub fn state(&self) -> DisplayState {
         DisplayState {
             panel: self.panel.clone(),
@@ -204,7 +204,7 @@ impl DisplayExecutor {
             return Ok(absent(preset));
         };
 
-        let frame = nzxt_lcd_renderer::render(preset, samples, &panel)?.to_rgb565_be();
+        let frame = herschel_lcd_renderer::render(preset, samples, &panel)?.to_rgb565_be();
 
         let Some(link) = self.link.as_mut() else {
             return Ok(absent(preset));
@@ -304,11 +304,11 @@ fn uncertain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nzxt_core::display::{DisplayMode, LcdMetric};
-    use nzxt_core::lighting::{Brightness, Rgb};
-    use nzxt_hardware_linux::lcd::{self, FRAME_BYTES};
-    use nzxt_hardware_linux::testing::{BulkRecorder, FakeKraken};
-    use nzxt_hardware_linux::usbfs::UsbfsError;
+    use herschel_core::display::{DisplayMode, LcdMetric};
+    use herschel_core::lighting::{Brightness, Rgb};
+    use herschel_hardware_linux::lcd::{self, FRAME_BYTES};
+    use herschel_hardware_linux::testing::{BulkRecorder, FakeKraken};
+    use herschel_hardware_linux::usbfs::UsbfsError;
     use std::sync::Arc;
 
     fn samples(first: Option<f32>, second: Option<f32>) -> [MetricSample; 2] {

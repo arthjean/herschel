@@ -11,25 +11,25 @@
 
 use std::process::ExitCode;
 
-use nzxt_core::lighting::{Brightness, LightingProgram, Rgb};
-use nzxt_core::{KRAKEN_BASE, RGB_CONTROLLER};
-use nzxt_daemon::rgb_probe::ProbeScope;
-use nzxt_daemon::state::Daemon;
-use nzxt_daemon::{DAEMON_VERSION, Paths, Server};
-use nzxt_hardware_linux::SysfsRoot;
+use herschel_core::lighting::{Brightness, LightingProgram, Rgb};
+use herschel_core::{KRAKEN_BASE, RGB_CONTROLLER};
+use herschel_daemon::rgb_probe::ProbeScope;
+use herschel_daemon::state::Daemon;
+use herschel_daemon::{DAEMON_VERSION, Paths, Server};
+use herschel_hardware_linux::SysfsRoot;
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("nzxt-controld: {message}");
+            eprintln!("herscheld: {message}");
             ExitCode::FAILURE
         }
     }
 }
 
 const USAGE: &str = "\
-Usage: nzxt-controld [OPTIONS]
+Usage: herscheld [OPTIONS]
 
 Options:
   --capabilities     Print the versioned capability record as JSON and exit.
@@ -73,7 +73,7 @@ fn run() -> Result<(), String> {
         Some("--lcd-probe") => print_lcd_capabilities(),
         Some("--lcd-write-probe") => lcd_write_probe(),
         Some("--version") => {
-            println!("nzxt-controld {DAEMON_VERSION}");
+            println!("herscheld {DAEMON_VERSION}");
             Ok(())
         }
         Some("--help" | "-h") => {
@@ -92,16 +92,16 @@ fn run() -> Result<(), String> {
 /// keeping in the command line rather than hiding behind one flag.
 fn print_rgb_capabilities() -> Result<(), String> {
     let sysfs = SysfsRoot::from_env();
-    let mut record = nzxt_hardware_linux::probe(&sysfs);
+    let mut record = herschel_hardware_linux::probe(&sysfs);
 
     let node = record
         .device(RGB_CONTROLLER)
         .filter(|device| device.is_supported())
         .and_then(|device| {
-            nzxt_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path))
+            herschel_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path))
         });
-    let (topology, _link) = nzxt_hardware_linux::rgb::connect(node);
-    nzxt_hardware_linux::probe::attach_rgb_topology(&mut record, topology);
+    let (topology, _link) = herschel_hardware_linux::rgb::connect(node);
+    herschel_hardware_linux::probe::attach_rgb_topology(&mut record, topology);
 
     record.redact_serials();
     let json = serde_json::to_string_pretty(&record)
@@ -142,7 +142,7 @@ fn write_probe(arguments: &[String]) -> Result<(), String> {
     }
 
     let sysfs = SysfsRoot::from_env();
-    let record = nzxt_hardware_linux::probe(&sysfs);
+    let record = herschel_hardware_linux::probe(&sysfs);
     let device = record
         .device(RGB_CONTROLLER)
         .filter(|device| device.is_supported())
@@ -152,15 +152,17 @@ fn write_probe(arguments: &[String]) -> Result<(), String> {
     paths
         .ensure()
         .map_err(|error| format!("could not prepare {}: {error}", paths.runtime_dir.display()))?;
-    let _lock = nzxt_daemon::ownership::acquire(&paths, RGB_CONTROLLER).map_err(|conflict| {
-        format!(
-            "another process owns the controller ({}). Stop nzxt-controld and try again.",
-            conflict.detail
-        )
-    })?;
+    let _lock =
+        herschel_daemon::ownership::acquire(&paths, RGB_CONTROLLER).map_err(|conflict| {
+            format!(
+                "another process owns the controller ({}). Stop herscheld and try again.",
+                conflict.detail
+            )
+        })?;
 
-    let node = nzxt_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path));
-    let (topology, link) = nzxt_hardware_linux::rgb::connect(node);
+    let node =
+        herschel_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path));
+    let (topology, link) = herschel_hardware_linux::rgb::connect(node);
     let mut link = link.ok_or_else(|| {
         format!(
             "the controller did not answer: {}",
@@ -171,9 +173,9 @@ fn write_probe(arguments: &[String]) -> Result<(), String> {
         )
     })?;
 
-    let report = nzxt_daemon::rgb_probe::run(
+    let report = herschel_daemon::rgb_probe::run(
         &mut link,
-        &mut nzxt_daemon::rgb_probe::Terminal,
+        &mut herschel_daemon::rgb_probe::Terminal,
         &topology,
         scope,
         restore,
@@ -193,7 +195,7 @@ fn write_probe(arguments: &[String]) -> Result<(), String> {
 /// bulk interface is claimed only to record that it can be.
 fn print_lcd_capabilities() -> Result<(), String> {
     let sysfs = SysfsRoot::from_env();
-    let mut record = nzxt_hardware_linux::probe(&sysfs);
+    let mut record = herschel_hardware_linux::probe(&sysfs);
 
     let device = record
         .device(KRAKEN_BASE)
@@ -201,9 +203,9 @@ fn print_lcd_capabilities() -> Result<(), String> {
         .map(|device| std::path::PathBuf::from(&device.usb.sysfs_path));
     let node = device
         .as_deref()
-        .and_then(nzxt_hardware_linux::usb::hidraw_node);
-    let (topology, _link) = nzxt_hardware_linux::lcd::connect(device.as_deref(), node);
-    nzxt_hardware_linux::probe::attach_lcd_topology(&mut record, topology);
+        .and_then(herschel_hardware_linux::usb::hidraw_node);
+    let (topology, _link) = herschel_hardware_linux::lcd::connect(device.as_deref(), node);
+    herschel_hardware_linux::probe::attach_lcd_topology(&mut record, topology);
 
     record.redact_serials();
     let json = serde_json::to_string_pretty(&record)
@@ -219,16 +221,16 @@ fn print_lcd_capabilities() -> Result<(), String> {
 /// other's evidence and look like a device that answered nothing.
 fn print_full_capabilities() -> Result<(), String> {
     let sysfs = SysfsRoot::from_env();
-    let mut record = nzxt_hardware_linux::probe(&sysfs);
+    let mut record = herschel_hardware_linux::probe(&sysfs);
 
     let rgb_node = record
         .device(RGB_CONTROLLER)
         .filter(|device| device.is_supported())
         .and_then(|device| {
-            nzxt_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path))
+            herschel_hardware_linux::usb::hidraw_node(std::path::Path::new(&device.usb.sysfs_path))
         });
-    let (rgb_topology, _rgb) = nzxt_hardware_linux::rgb::connect(rgb_node);
-    nzxt_hardware_linux::probe::attach_rgb_topology(&mut record, rgb_topology);
+    let (rgb_topology, _rgb) = herschel_hardware_linux::rgb::connect(rgb_node);
+    herschel_hardware_linux::probe::attach_rgb_topology(&mut record, rgb_topology);
 
     let kraken = record
         .device(KRAKEN_BASE)
@@ -236,9 +238,9 @@ fn print_full_capabilities() -> Result<(), String> {
         .map(|device| std::path::PathBuf::from(&device.usb.sysfs_path));
     let lcd_node = kraken
         .as_deref()
-        .and_then(nzxt_hardware_linux::usb::hidraw_node);
-    let (lcd_topology, _lcd) = nzxt_hardware_linux::lcd::connect(kraken.as_deref(), lcd_node);
-    nzxt_hardware_linux::probe::attach_lcd_topology(&mut record, lcd_topology);
+        .and_then(herschel_hardware_linux::usb::hidraw_node);
+    let (lcd_topology, _lcd) = herschel_hardware_linux::lcd::connect(kraken.as_deref(), lcd_node);
+    herschel_hardware_linux::probe::attach_lcd_topology(&mut record, lcd_topology);
 
     record.redact_serials();
     let json = serde_json::to_string_pretty(&record)
@@ -259,7 +261,7 @@ fn lcd_write_probe() -> Result<(), String> {
     }
 
     let sysfs = SysfsRoot::from_env();
-    let record = nzxt_hardware_linux::probe(&sysfs);
+    let record = herschel_hardware_linux::probe(&sysfs);
     let device = record
         .device(KRAKEN_BASE)
         .filter(|device| device.is_supported())
@@ -270,15 +272,15 @@ fn lcd_write_probe() -> Result<(), String> {
     paths
         .ensure()
         .map_err(|error| format!("could not prepare {}: {error}", paths.runtime_dir.display()))?;
-    let _lock = nzxt_daemon::ownership::acquire(&paths, KRAKEN_BASE).map_err(|conflict| {
+    let _lock = herschel_daemon::ownership::acquire(&paths, KRAKEN_BASE).map_err(|conflict| {
         format!(
-            "another process owns the Kraken ({}). Stop nzxt-controld and try again.",
+            "another process owns the Kraken ({}). Stop herscheld and try again.",
             conflict.detail
         )
     })?;
 
-    let node = nzxt_hardware_linux::usb::hidraw_node(&sysfs_path);
-    let (topology, link) = nzxt_hardware_linux::lcd::connect(Some(&sysfs_path), node);
+    let node = herschel_hardware_linux::usb::hidraw_node(&sysfs_path);
+    let (topology, link) = herschel_hardware_linux::lcd::connect(Some(&sysfs_path), node);
     let mut link = link.ok_or_else(|| {
         format!(
             "the panel is not reachable: {}",
@@ -291,9 +293,12 @@ fn lcd_write_probe() -> Result<(), String> {
         )
     })?;
 
-    let report =
-        nzxt_daemon::lcd_probe::run(&mut link, &mut nzxt_daemon::lcd_probe::Terminal, &topology)
-            .map_err(|refusal| refusal.to_string())?;
+    let report = herschel_daemon::lcd_probe::run(
+        &mut link,
+        &mut herschel_daemon::lcd_probe::Terminal,
+        &topology,
+    )
+    .map_err(|refusal| refusal.to_string())?;
 
     let json = serde_json::to_string_pretty(&report)
         .map_err(|error| format!("could not encode the probe record: {error}"))?;
@@ -307,7 +312,7 @@ fn lcd_write_probe() -> Result<(), String> {
 /// Serial numbers are redacted so the output can be attached to an issue or
 /// committed without publishing a device identifier.
 fn print_capabilities() -> Result<(), String> {
-    let mut record = nzxt_hardware_linux::probe(&SysfsRoot::from_env());
+    let mut record = herschel_hardware_linux::probe(&SysfsRoot::from_env());
     record.redact_serials();
     let json = serde_json::to_string_pretty(&record)
         .map_err(|error| format!("could not encode the capability record: {error}"))?;
@@ -334,13 +339,13 @@ fn serve() -> Result<(), String> {
     // Single instance is decided here, before sysfs is read and before any
     // device is asked for. The lock, not the socket, is the arbiter, and it is
     // released by the kernel if this process is killed.
-    let _instance = nzxt_daemon::ownership::acquire_instance(&paths)
+    let _instance = herschel_daemon::ownership::acquire_instance(&paths)
         .map_err(|conflict| format!("could not start: {}", conflict.detail))?;
 
     // Bound before the hardware is touched, so nothing is acquired by a
     // process that is about to exit, and before anything is printed, so the
     // banner cannot announce a socket that was never taken.
-    let listener = nzxt_daemon::server::bind_socket(&paths.socket)
+    let listener = herschel_daemon::server::bind_socket(&paths.socket)
         .map_err(|error| format!("could not bind {}: {error}", paths.socket.display()))?;
 
     let daemon = Daemon::start(paths.clone(), &sysfs)
@@ -349,7 +354,7 @@ fn serve() -> Result<(), String> {
     let status = daemon.status();
     let locked = daemon.locked_devices();
     println!(
-        "nzxt-controld {DAEMON_VERSION} listening on {}, holding {} device lock{}",
+        "herscheld {DAEMON_VERSION} listening on {}, holding {} device lock{}",
         status.socket_path,
         locked.len(),
         if locked.len() == 1 { "" } else { "s" }
