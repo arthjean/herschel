@@ -99,6 +99,22 @@ cargo build --release
 ./target/release/herschel
 ```
 
+To keep the daemon across logins, install it as a user unit. Nothing here needs
+root: the binary goes to your own `~/.local/bin` and the unit to your own
+`systemd --user` instance.
+
+```bash
+install -Dm0755 target/release/herscheld ~/.local/bin/herscheld
+install -Dm0644 packaging/systemd/herscheld.service ~/.config/systemd/user/herscheld.service
+systemctl --user daemon-reload
+systemctl --user enable --now herscheld.service
+```
+
+`systemctl --user status herscheld` reports the socket it bound and how many
+attributes it found writable on each device. Reinstall the binary and run
+`systemctl --user restart herscheld` after a rebuild, because capabilities are
+resolved when the daemon opens the devices.
+
 The daemon refuses to start as root. Without the udev rule above, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
 
 Environment variables read:

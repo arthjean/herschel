@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A per-user unit, never a system one. The daemon refuses to start as root, and
+# the hidraw nodes it needs are handed to the logged-in user by uaccess, which
+# is a session ACL that only exists inside that user's session.
+
+[Unit]
+Description=Herschel cooling daemon
+Documentation=https://github.com/arthjean/herschel
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/herscheld
+
+# The daemon holds one lock per device. Restarting instantly on a failure makes
+# those locks flap, so a failed start waits before the next attempt.
+Restart=on-failure
+RestartSec=5s
+
+# The daemon degrades to read-only rather than escalating, so it never needs a
+# privilege it did not start with.
+NoNewPrivileges=yes
+
+# Normal operation opens zero network sockets: the only one it binds is the
+# AF_UNIX socket in $XDG_RUNTIME_DIR. This makes the kernel enforce that
+# invariant instead of leaving it to the code.
+RestrictAddressFamilies=AF_UNIX
+
+# Do not add ProtectSystem, ProtectKernelTunables or ProtectClock here. The
+# first two remount /sys read-only, and every cooling write this daemon makes
+# goes to a hwmon attribute under /sys. Hardening that silently turns the
+# product read-only is worse than no hardening: the UI would report a
+# permission it does have.
+
+[Install]
+WantedBy=default.target
