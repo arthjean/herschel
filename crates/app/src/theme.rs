@@ -145,6 +145,12 @@ pub const RAIL_WIDTH: Pixels = px(196.0);
 /// panel reading as nested inside the card that holds it rather than as a
 /// second card of the same shape.
 pub const RADIUS: Pixels = px(8.0);
+/// Corner radius of a device row.
+///
+/// One padding step outside [`RADIUS`], because that is what a row holds: a
+/// line of controls of [`RADIUS`] inset by [`space::XS`]. Concentric rather
+/// than equal, so the row does not read as a second control of the same shape.
+pub const ROW_RADIUS: Pixels = px(12.0);
 /// Corner radius of a card: the navigation rail, and the window itself.
 ///
 /// One radius for both, as in Paneflow: a card inset from a window corner reads

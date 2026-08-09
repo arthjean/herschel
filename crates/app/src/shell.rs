@@ -45,8 +45,8 @@ use crate::link::LinkState;
 use crate::metrics::MetricBook;
 use crate::theme::{
     CARD_INSET, CARD_RADIUS, Color, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH, MENU_MIN_WIDTH,
-    MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, RAIL_WIDTH, SWATCH_RADIUS,
-    SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE, color, space,
+    MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, RAIL_WIDTH, ROW_RADIUS,
+    SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE, color, space,
 };
 use crate::window_chrome::{self, DragLatch};
 
@@ -1223,7 +1223,7 @@ impl Shell {
             .min_w_0()
             .gap(space::MD)
             .pb(space::MD)
-            .pl(px(22.0))
+            .pl(ROW_DETAIL_INDENT)
             .when(self.cooling.mode == CoolingMode::Fixed, |this| {
                 this.child(self.duty_stepper(channel, write, base + 1, cx))
             })
@@ -1752,15 +1752,41 @@ impl Shell {
             .flex_col()
             .w_full()
             .min_w_0()
+            .p(space::XS)
+            // Between the line and what it opened. Only ever applies when a
+            // detail is there, since a closed row has a single child.
+            .gap(space::SM)
+            .rounded(ROW_RADIUS)
+            // Open is a state the whole row carries, not a stack of two
+            // elements that happen to touch: the line and what it revealed sit
+            // on one fill, so the detail is read as the inside of this device
+            // rather than as the top of the next one. Held at every state, so
+            // opening a row does not move the line that opened it.
+            .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .items_end()
+                    // Centered now that the controls carry no caption above
+                    // them: with a label they hung off a shared baseline, and
+                    // without one they are boxes of equal height beside a
+                    // two-line name.
+                    .items_center()
                     .gap(space::MD)
                     .w_full()
                     .min_w_0()
-                    .py(space::XS)
+                    .py(space::SM)
+                    // Only on the right: the head of the line carries its own
+                    // padding on the left, and the last control would otherwise
+                    // sit flush against the edge of the highlight.
+                    .pr(space::SM)
+                    .rounded(RADIUS)
+                    // The whole line lights up, not just the part that opens
+                    // it: the controls on the right belong to this device, and
+                    // a highlight that stops before them reads as two rows.
+                    // What the press does is still decided by what is under
+                    // it, which is why only the head carries the handler.
+                    .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
                     .child(self.row_disclosure(
                         LightingRow::Channel(channel),
                         base,
@@ -1819,12 +1845,6 @@ impl Shell {
         let Some(editor) = self.lighting.channel(channel) else {
             return div();
         };
-        let reported = self
-            .link
-            .lighting_channels()
-            .iter()
-            .find(|state| state.channel == channel);
-
         // Apply is gated on the pending program being buildable as well as on
         // the capability: an unusable color must disable it with its own
         // reason, not with the capability's.
@@ -1840,18 +1860,7 @@ impl Shell {
             .min_w_0()
             .gap(space::MD)
             .pb(space::MD)
-            .pl(px(22.0))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child(format!(
-                        "Detected: {}",
-                        reported
-                            .map(accessory_summary)
-                            .unwrap_or_else(|| "not reported".to_string())
-                    )),
-            )
+            .pl(ROW_DETAIL_INDENT)
             .child(
                 div()
                     .flex()
@@ -1924,6 +1933,10 @@ impl Shell {
             .child(
                 div()
                     .flex()
+                    // A step more air than the gap between fields: what is
+                    // below this line acts on the hardware, and what is above
+                    // it only edits a value.
+                    .pt(space::SM)
                     .gap(space::SM)
                     .child(
                         Button::new(format!("lighting-apply-{channel}"), "Apply")
@@ -1996,15 +2009,41 @@ impl Shell {
             .flex_col()
             .w_full()
             .min_w_0()
+            .p(space::XS)
+            // Between the line and what it opened. Only ever applies when a
+            // detail is there, since a closed row has a single child.
+            .gap(space::SM)
+            .rounded(ROW_RADIUS)
+            // Open is a state the whole row carries, not a stack of two
+            // elements that happen to touch: the line and what it revealed sit
+            // on one fill, so the detail is read as the inside of this device
+            // rather than as the top of the next one. Held at every state, so
+            // opening a row does not move the line that opened it.
+            .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .items_end()
+                    // Centered now that the controls carry no caption above
+                    // them: with a label they hung off a shared baseline, and
+                    // without one they are boxes of equal height beside a
+                    // two-line name.
+                    .items_center()
                     .gap(space::MD)
                     .w_full()
                     .min_w_0()
-                    .py(space::XS)
+                    .py(space::SM)
+                    // Only on the right: the head of the line carries its own
+                    // padding on the left, and the last control would otherwise
+                    // sit flush against the edge of the highlight.
+                    .pr(space::SM)
+                    .rounded(RADIUS)
+                    // The whole line lights up, not just the part that opens
+                    // it: the controls on the right belong to this device, and
+                    // a highlight that stops before them reads as two rows.
+                    // What the press does is still decided by what is under
+                    // it, which is why only the head carries the handler.
+                    .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
                     .child(self.row_disclosure(
                         LightingRow::Lcd,
                         base,
@@ -2121,7 +2160,7 @@ impl Shell {
             .w_full()
             .min_w_0()
             .pb(space::MD)
-            .pl(px(22.0))
+            .pl(ROW_DETAIL_INDENT)
             .child(
                 div()
                     .flex()
@@ -2213,7 +2252,6 @@ impl Shell {
             .cursor_pointer()
             .tab_index(tab_index)
             .tab_stop(true)
-            .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
             // Shown to a keyboard user, who has no other way to know which row
             // Enter would open, and withheld from a pointer user, who just
             // aimed at it.
