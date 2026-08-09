@@ -107,7 +107,7 @@ Two consequences for the budget:
 
 ### Sources
 
-- [Initial NZXT GitHub and Linux ecosystem report](../herschel-linux-github-research.md)
+- [Initial NZXT GitHub and Linux ecosystem report](../nzxt-linux-github-research.md)
 - [GPUI documentation](https://docs.rs/gpui/latest/gpui/index.html)
 - [liquidctl Kraken X3/Z3 guide](https://github.com/liquidctl/liquidctl/blob/main/docs/kraken-x3-z3-guide.md)
 - [Linux kernel nzxt-kraken3 documentation](https://docs.kernel.org/hwmon/nzxt-kraken3.html)

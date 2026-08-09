@@ -3,7 +3,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-//! Types shared by the NZXT control daemon and the GPUI client.
+//! Types shared by the Herschel daemon and the GPUI client.
 //!
 //! Nothing in this crate touches hardware. It defines the vocabulary both
 //! processes agree on: what a device can do, what a reading is worth, what a

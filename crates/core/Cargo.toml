@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Capability, telemetry, profile and IPC types shared by the NZXT control daemon and client"
+description = "Capability, telemetry, profile and IPC types shared by the Herschel daemon and client"
 
 [dependencies]
 serde.workspace = true
