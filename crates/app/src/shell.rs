@@ -41,7 +41,7 @@ use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
 use crate::feed::{Command, CommandOutcome, Feed, OutcomeSeverity, now_unix_ms};
 use crate::lighting::{LightingEditor, LightingMode};
-use crate::link::{DeviceSummary, LinkState};
+use crate::link::LinkState;
 use crate::metrics::MetricBook;
 use crate::theme::{
     CARD_INSET, CARD_RADIUS, Color, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH, MENU_MIN_WIDTH,
@@ -230,6 +230,20 @@ pub const ROW_HEAD_MIN_WIDTH: Pixels = px(180.0);
 /// Width of one field in an open row's detail, two of which fit side by side
 /// in the column left of the preview.
 pub const FIELD_WIDTH: Pixels = px(168.0);
+/// What the controller's card is headed with.
+///
+/// What the device does rather than the product string it reports: that string
+/// is a vendor wordmark, and this heading says which of the two devices the
+/// card is for, which is what the operator needs from it. The reported string
+/// is still shown on the Devices panel.
+pub const RGB_CONTROLLER_NAME: &str = "RGB & Fan Controller";
+
+/// Left inset of an open row's detail.
+///
+/// Lines up with what follows the chevron on the line above: the head's own
+/// padding, the chevron, and the gap after it. A detail that starts under the
+/// chevron reads as another row rather than as the inside of this one.
+pub const ROW_DETAIL_INDENT: Pixels = px(32.0);
 /// Side of the appearance thumbnail at the head of a device row.
 pub const ROW_THUMBNAIL: Pixels = px(34.0);
 
@@ -1574,7 +1588,7 @@ impl Shell {
         let fixed = self
             .link
             .control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor);
-        let card = self.device_card(RGB_CONTROLLER, "RGB controller");
+        let card = Self::device_card(RGB_CONTROLLER_NAME);
 
         // No channel means the controller has not told this daemon what it is.
         // The reason the capability record carries is the whole content of the
@@ -1604,32 +1618,41 @@ impl Shell {
     }
 
     /// The Kraken and the row its panel occupies.
+    ///
+    /// Headed with what the cooler reported, unlike the controller: there is
+    /// one panel and one pump, so the exact model is what tells the operator
+    /// which cooler answered.
     fn panel_card(&self, channel_count: usize, cx: &mut Context<Self>) -> Div {
-        self.device_card(KRAKEN_BASE, "Kraken")
-            .child(self.lcd_row(lcd_row_tab(channel_count), cx))
+        let name = self
+            .reported_name(KRAKEN_BASE)
+            .unwrap_or_else(|| "Kraken".to_string());
+        Self::device_card(&name).child(self.lcd_row(lcd_row_tab(channel_count), cx))
+    }
+
+    /// The product string a device reported, if it answered at all.
+    fn reported_name(&self, device: DeviceId) -> Option<String> {
+        self.link
+            .device_rows()
+            .into_iter()
+            .find(|summary| summary.id == device)
+            .map(|summary| summary.name)
     }
 
     /// The card one device gets: what it is, and its rows.
     ///
-    /// The name is the product string the device itself reported, not one this
-    /// client invented, and the second line is the firmware and kernel binding
-    /// the Devices panel already shows for it. That panel is also where the
-    /// device's state is read; the header here names the device and nothing
-    /// more.
-    fn device_card(&self, device: DeviceId, fallback_name: &str) -> Div {
-        let summary = self
-            .link
-            .device_rows()
-            .into_iter()
-            .find(|summary| summary.id == device);
-        let name = summary
-            .as_ref()
-            .map(|summary| summary.name.clone())
-            .unwrap_or_else(|| fallback_name.to_string());
-        let detail = summary
-            .as_ref()
-            .map(DeviceSummary::detail)
-            .unwrap_or_else(|| format!("{device} has not been detected."));
+    /// `name` is what the card is headed with. Where it is a fixed string, the
+    /// product string the device reported is deliberately not shown: that
+    /// string carries a vendor wordmark this product does not use, and what the
+    /// operator needs from the heading is which of the two devices this is. The
+    /// reported string is still on the Devices panel, unchanged, which is where
+    /// identifying the exact hardware belongs.
+    ///
+    /// The header carries the name alone. Firmware, kernel binding and state
+    /// are all on the Devices panel, which is the screen for identifying
+    /// hardware; repeating them over every card put a line of provenance above
+    /// controls that are about appearance.
+    fn device_card(name: &str) -> Div {
+        let name = name.to_string();
 
         panel_surface().child(
             div()
@@ -1659,12 +1682,6 @@ impl Shell {
                                 .text_color(color::TEXT.hsla())
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child(name),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(color::TEXT_MUTED.hsla())
-                                .child(detail),
                         ),
                 ),
         )
