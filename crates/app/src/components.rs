@@ -242,7 +242,7 @@ impl Button {
         match self.variant {
             ButtonVariant::Primary => color::ACCENT.hsla(),
             ButtonVariant::Secondary => color::CONTROL.hsla(),
-            ButtonVariant::Danger => color::DANGER.alpha(0.18),
+            ButtonVariant::Danger => color::DESTRUCTIVE.hsla(),
         }
     }
 
@@ -253,20 +253,24 @@ impl Button {
         match self.variant {
             ButtonVariant::Primary => color::TEXT_ON_ACCENT.hsla(),
             ButtonVariant::Secondary => color::TEXT.hsla(),
-            ButtonVariant::Danger => color::DANGER.hsla(),
+            ButtonVariant::Danger => color::TEXT_ON_DESTRUCTIVE.hsla(),
         }
     }
 
     /// The fill under the pointer.
     ///
     /// A button lifts where a field sinks, so the two share a resting fill and
-    /// part ways on hover. The accent has a lift of its own; the other two take
+    /// part ways on hover. The accent has a lift of its own; the secondary takes
     /// the raised control fill.
+    ///
+    /// The destructive button is the exception that deepens instead. It carries
+    /// white at full opacity, and lifting a red that already sits near the
+    /// contrast floor would take its own label under it.
     fn hover_fill(&self) -> Hsla {
         match self.variant {
             ButtonVariant::Primary => color::ACCENT_HOVER.hsla(),
             ButtonVariant::Secondary => color::CONTROL_RAISED.hsla(),
-            ButtonVariant::Danger => color::DANGER.alpha(0.28),
+            ButtonVariant::Danger => color::DESTRUCTIVE_HOVER.hsla(),
         }
     }
 
@@ -278,7 +282,7 @@ impl Button {
         let pressed = match self.variant {
             ButtonVariant::Primary => color::ACCENT_ACTIVE.hsla(),
             ButtonVariant::Secondary => color::CONTROL_HOVER.hsla(),
-            ButtonVariant::Danger => color::DANGER.alpha(0.36),
+            ButtonVariant::Danger => color::DESTRUCTIVE_ACTIVE.hsla(),
         };
 
         // Paneflow's `secondary_button` geometry, on the pill every control on

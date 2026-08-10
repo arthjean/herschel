@@ -121,7 +121,34 @@ pub mod color {
 
     pub const SUCCESS: Color = Color::rgb(0x5ee49a);
     pub const WARNING: Color = Color::rgb(0xf5c451);
+    /// The word a failure is named in: an error, a stalled channel, a device
+    /// that did not answer. A text color, held to the full 4.5:1 on every
+    /// surface it is written on, which is why it is a light red rather than a
+    /// saturated one.
     pub const DANGER: Color = Color::rgb(0xff8a8a);
+
+    /// Fill of a destructive action, at full opacity.
+    ///
+    /// Apple's dark-mode `systemRed`. A tinted fill was the previous answer and
+    /// it made the one irreversible control on the screen look like a quieter
+    /// version of the two beside it. A destructive button is the one thing that
+    /// should never be pressed by mistake, so it is the one thing that carries a
+    /// solid fill.
+    ///
+    /// Deliberately *not* [`DANGER`]. That token is a word on a surface and is
+    /// held to the body-text bar; this one is a surface a word sits on, and the
+    /// two cannot be the same color without one of them failing its own job.
+    pub const DESTRUCTIVE: Color = Color::rgb(0xff453a);
+    /// The same fill under the pointer, and pressed.
+    ///
+    /// Deepening rather than lightening, which is the opposite of what
+    /// [`ACCENT_HOVER`] does. A lighter red loses contrast against the white
+    /// label it carries: the same lift the accent uses would take this button
+    /// under 3:1, where deepening walks it up past 4:1 instead.
+    pub const DESTRUCTIVE_HOVER: Color = Color::rgb(0xf03028);
+    pub const DESTRUCTIVE_ACTIVE: Color = Color::rgb(0xcc2a22);
+    /// Text drawn on top of a destructive fill.
+    pub const TEXT_ON_DESTRUCTIVE: Color = Color::rgb(0xffffff);
 }
 
 /// Spacing scale, in logical pixels.
@@ -303,6 +330,65 @@ mod tests {
     #[test]
     fn the_accent_itself_is_distinguishable_from_the_surface() {
         assert!(ACCENT.contrast(SURFACE) >= NON_TEXT_MIN);
+    }
+
+    /// The destructive fill is the one place this interface knowingly sits under
+    /// the body-text bar.
+    ///
+    /// A saturated red carrying white cannot clear 4.5:1: the luminance a red
+    /// that bright has puts the ceiling near 3.5:1, which is why Apple ships
+    /// `systemRed` with white on its own destructive buttons at the same figure.
+    /// The alternative is a deep maroon that no longer reads as a warning, and a
+    /// destructive control that does not read as one is the worse failure.
+    ///
+    /// So the bar here is the 3:1 one, checked in every interaction state, and
+    /// the label is never the only thing carrying the meaning: the button says
+    /// "Delete profile" in words and asks a second time before it acts.
+    ///
+    /// Measured, so the tradeoff is auditable rather than asserted:
+    ///
+    /// | fill | white on it | on SURFACE | on PANEL |
+    /// |---|---|---|---|
+    /// | `DESTRUCTIVE` | 3.41:1 | 4.85:1 | 4.39:1 |
+    /// | `DESTRUCTIVE_HOVER` | 4.07:1 | 4.06:1 | 3.68:1 |
+    /// | `DESTRUCTIVE_ACTIVE` | 5.35:1 | 3.08:1 | 2.80:1 |
+    #[test]
+    fn the_destructive_button_stays_legible_in_every_interaction_state() {
+        for state in [DESTRUCTIVE, DESTRUCTIVE_HOVER, DESTRUCTIVE_ACTIVE] {
+            let ratio = TEXT_ON_DESTRUCTIVE.contrast(state);
+            assert!(ratio >= NON_TEXT_MIN, "on-destructive text is {ratio:.2}:1");
+        }
+
+        // Against the surfaces it is laid on, so the button is a shape before
+        // it is a label. Resting and hovered only: the pressed fill exists for
+        // as long as a button is held, with the pointer on top of it, and
+        // holding a momentary state to the bar that says "this component can be
+        // found on the page" would price the press feedback out of existing.
+        for state in [DESTRUCTIVE, DESTRUCTIVE_HOVER] {
+            for surface in [SURFACE, PANEL] {
+                let ratio = state.contrast(surface);
+                assert!(
+                    ratio >= NON_TEXT_MIN,
+                    "{state:?} on {surface:?} is {ratio:.2}:1"
+                );
+            }
+        }
+
+        // Pressing deepens the fill rather than lifting it, which is the
+        // opposite of what the accent does and the reason the label survives:
+        // a lifted red would take its own white under 3:1.
+        assert!(DESTRUCTIVE_HOVER.luminance() < DESTRUCTIVE.luminance());
+        assert!(DESTRUCTIVE_ACTIVE.luminance() < DESTRUCTIVE_HOVER.luminance());
+        assert!(
+            TEXT_ON_DESTRUCTIVE.contrast(DESTRUCTIVE_ACTIVE)
+                > TEXT_ON_DESTRUCTIVE.contrast(DESTRUCTIVE)
+        );
+
+        // The fill and the word a failure is named in are separate tokens on
+        // purpose. Collapsing them would put a body-text red behind white, or
+        // a saturated red on a panel as text, and each fails its own bar.
+        assert_ne!(DESTRUCTIVE, DANGER);
+        assert!(DANGER.contrast(PANEL) >= TEXT_MIN);
     }
 
     #[test]
