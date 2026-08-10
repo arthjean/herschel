@@ -99,9 +99,9 @@ cargo build --release
 ./target/release/herschel
 ```
 
-To keep the daemon across logins, install it as a user unit. Nothing here needs
-root: the binary goes to your own `~/.local/bin` and the unit to your own
-`systemd --user` instance.
+To start the daemon with your desktop session, install it as a user unit.
+Nothing here needs root: the binary goes to your own `~/.local/bin` and the unit
+to your own `systemd --user` instance.
 
 ```bash
 install -Dm0755 target/release/herscheld ~/.local/bin/herscheld
@@ -114,6 +114,14 @@ systemctl --user enable --now herscheld.service
 attributes it found writable on each device. Reinstall the binary and run
 `systemctl --user restart herscheld` after a rebuild, because capabilities are
 resolved when the daemon opens the devices.
+
+The unit is wanted by `graphical-session.target`, not `default.target`, so it
+starts with your session rather than with the machine. `uaccess` grants the
+hidraw nodes through a session ACL, and a daemon started before that ACL exists
+reports the panel and the RGB controller as permission denied until it is
+restarted. If you enabled an earlier version of the unit, run
+`systemctl --user disable herscheld.service` once before enabling it again, so
+the stale `default.target` link goes away.
 
 The daemon refuses to start as root. Without the udev rule above, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
 

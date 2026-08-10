@@ -9,6 +9,16 @@
 Description=Herschel cooling daemon
 Documentation=https://github.com/arthjean/herschel
 
+# The daemon probes each device once at startup and reports what it could not
+# reach for the rest of its life. That probe must happen after logind has placed
+# the uaccess ACL on the hidraw nodes, which it does when the graphical session
+# becomes active. Started earlier, under a lingering user manager the machine
+# brings up at boot, the daemon finds the nodes unreadable and the panel and the
+# RGB controller stay read-only until the next restart, with a permission error
+# the hardware does not actually have.
+After=graphical-session.target
+PartOf=graphical-session.target
+
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/herscheld
@@ -34,4 +44,4 @@ RestrictAddressFamilies=AF_UNIX
 # permission it does have.
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
