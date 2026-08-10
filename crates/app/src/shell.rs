@@ -564,6 +564,22 @@ pub struct Shell {
     duty_tracks: Rc<TrackMap<Channel>>,
     /// Set while the pointer holds the title bar, before a move begins.
     window_drag: DragLatch,
+    /// Set once a daemon status has seeded the panel editor.
+    ///
+    /// The seeding happens on the first status that arrives and never again: a
+    /// later snapshot arriving mid-edit would replace what the operator is
+    /// typing with what the panel is still showing. The first status is also the
+    /// only moment where nothing can be lost, since every write control is
+    /// disabled until the link reports one.
+    lcd_seeded: bool,
+    /// The committed program the last status reported, as it was reported.
+    ///
+    /// Held so a change can be told from a repetition. The panel is seeded once
+    /// and never again because its editor holds text a snapshot must not
+    /// retype; a cooling program has no such field, and following it is what
+    /// puts a newly activated profile's curve on the plot without the client
+    /// having to guess what activation did.
+    committed: Option<CoolingProgram>,
     /// Wall clock of the last refresh, used to age every reading.
     now_unix_ms: u64,
 }
@@ -618,6 +634,8 @@ impl Shell {
             duty_drag: None,
             duty_tracks: Rc::new(TrackMap::default()),
             window_drag: DragLatch::default(),
+            lcd_seeded: false,
+            committed: None,
             now_unix_ms: now_unix_ms(),
         }
     }
@@ -631,6 +649,20 @@ impl Shell {
                 self.metrics.observe(snapshot);
             }
             self.link = link;
+            // What the panel is running outlives this window: the daemon keeps
+            // writing the preset it committed, so opening the client again must
+            // show that preset rather than the factory arrangement. The first
+            // status is what seeds it, and only the first, so a snapshot cannot
+            // overwrite an edit in progress.
+            if !self.lcd_seeded
+                && let Some(status) = self.link.status()
+            {
+                self.lcd_seeded = true;
+                if let Some(preset) = status.display.committed.clone() {
+                    self.lcd.adopt(&preset);
+                }
+            }
+            self.adopt_committed_program();
             // The controller's channel list is the only source of what can be
             // addressed, so the editor follows it rather than assuming three.
             let channels: Vec<u8> = self
@@ -1703,6 +1735,30 @@ impl Shell {
             self.touch_cooling();
             cx.notify();
         }
+    }
+
+    /// Put the daemon's committed program in the editor when it changes.
+    ///
+    /// This is what makes the Cooling screen open on the machine as it is
+    /// rather than on the factory arrangement, and what shows the curve of a
+    /// profile the operator just activated: an activation is the daemon
+    /// committing a program like any other, so one rule covers both.
+    fn adopt_committed_program(&mut self) {
+        let editing = self.curve_drag.is_some()
+            || self.duty_drag.is_some()
+            || self.autosave_at.is_some()
+            || self.sent.is_some();
+        let Some(program) = program_to_adopt(
+            self.link
+                .status()
+                .and_then(|status| status.cooling.as_ref()),
+            self.committed.as_ref(),
+            editing,
+        ) else {
+            return;
+        };
+        self.cooling.adopt(&program);
+        self.committed = Some(program);
     }
 
     /// Note that the cooling edit changed, without scheduling anything.
@@ -3672,6 +3728,29 @@ pub fn cooling_write_is_due(
     deadline.is_some_and(|deadline| now >= deadline) && !gesturing && !in_flight
 }
 
+/// The committed program a fresh status should put in the editor, if any.
+///
+/// Free and pure, for the same reason [`cooling_write_is_due`] is. `seen` is
+/// what the last adoption took, so a status repeating itself adopts nothing and
+/// a screen the operator is reading does not twitch once a second.
+///
+/// Nothing is adopted while an edit is in flight: a write waiting out its quiet
+/// period, a gesture still running, or a command whose outcome has not come back
+/// is the operator's intent, and what the daemon committed is the state that
+/// intent is about to replace. A refused edit stays on screen by the same rule,
+/// since a refusal changes nothing the daemon has committed.
+pub fn program_to_adopt(
+    committed: Option<&CoolingProgram>,
+    seen: Option<&CoolingProgram>,
+    editing: bool,
+) -> Option<CoolingProgram> {
+    let committed = committed?;
+    if editing || seen == Some(committed) {
+        return None;
+    }
+    Some(committed.clone())
+}
+
 /// State of the delete control for the currently active profile.
 ///
 /// `None` means no daemon answered. The built-in safe profile is refused here
@@ -3926,6 +4005,40 @@ mod tests {
         assert!(
             !cooling_write_is_due(Some(passed), now, false, true),
             "one write in flight at a time, or an outcome lands against the wrong program"
+        );
+    }
+
+    #[test]
+    fn the_committed_program_is_adopted_once_and_never_over_an_edit() {
+        let committed = CoolingProgram::Fixed { pump: 180, fan: 90 };
+        let other = CoolingProgram::Fixed { pump: 200, fan: 90 };
+
+        assert_eq!(
+            program_to_adopt(Some(&committed), None, false),
+            Some(committed.clone()),
+            "a window opening on a running machine takes what it is running"
+        );
+        assert_eq!(
+            program_to_adopt(Some(&committed), Some(&committed), false),
+            None,
+            "a status repeating itself must not redraw the screen every second"
+        );
+        assert_eq!(
+            program_to_adopt(Some(&other), Some(&committed), false),
+            Some(other.clone()),
+            "activating a profile is the daemon committing a program, and the \
+             plot has to follow it"
+        );
+        assert_eq!(
+            program_to_adopt(Some(&other), Some(&committed), true),
+            None,
+            "an edit in flight is the operator's intent, and it outranks the \
+             state that intent is about to replace"
+        );
+        assert_eq!(
+            program_to_adopt(None, Some(&committed), false),
+            None,
+            "a daemon that has committed nothing says nothing about the plot"
         );
     }
 

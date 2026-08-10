@@ -270,6 +270,44 @@ impl CoolingEditor {
         self.applied = Some(program);
     }
 
+    /// Open on the program the daemon reports it has committed.
+    ///
+    /// The editor opens on defaults while the hardware keeps running whatever
+    /// the daemon last wrote, so a window opened a second time showed a curve
+    /// the machine was not on and the operator had to draw theirs again. The
+    /// shape arrives from the daemon's record rather than from telemetry
+    /// because the device publishes no attribute that returns a curve.
+    ///
+    /// Adopting is also recording: the program came from the daemon saying it
+    /// committed one, which is the same confirmation
+    /// [`CoolingEditor::record_applied`] exists for, so nothing is left
+    /// pending against a write that already landed.
+    pub fn adopt(&mut self, program: &CoolingProgram) {
+        match program {
+            CoolingProgram::Onboard => self.mode = CoolingMode::Onboard,
+            CoolingProgram::Fixed { pump, fan } => {
+                self.set_duty(Channel::Pump, *pump);
+                self.set_duty(Channel::Fan, *fan);
+                self.mode = CoolingMode::Fixed;
+            }
+            CoolingProgram::Curve { pump, fan } => {
+                // A curve this editor produced round-trips through the node
+                // set it was interpolated from. One that does not came from
+                // somewhere else, and the plot is left as it stands rather
+                // than showing an arbitrary reading of it.
+                let (Some(pump), Some(fan)) =
+                    (CurveNodes::from_curve(pump), CurveNodes::from_curve(fan))
+                else {
+                    return;
+                };
+                self.pump_curve = pump;
+                self.fan_curve = fan;
+                self.mode = CoolingMode::Curve;
+            }
+        }
+        self.applied = Some(program.clone());
+    }
+
     /// Whether the pending edit differs from what the hardware confirms.
     ///
     /// A fixed program is checked against the readback, which the driver
@@ -593,6 +631,54 @@ mod tests {
         assert_eq!(editor.mode, CoolingMode::Onboard);
         assert!(!editor.pending(None));
         assert_eq!(editor.program(), CoolingProgram::Onboard);
+    }
+
+    /// Reopening the window must show the machine, not the factory arrangement.
+    /// The curve is the case that matters: nothing reads one back, so an editor
+    /// that ignored the daemon's record left the operator drawing theirs again.
+    #[test]
+    fn adopting_the_committed_program_opens_the_editor_on_the_machine() {
+        let mut drawn = CoolingEditor::new();
+        drawn.select_node(Channel::Fan, 6);
+        drawn.adjust_node(Channel::Fan, 12);
+        let committed = drawn.program();
+
+        let mut fresh = CoolingEditor::new();
+        assert_eq!(fresh.mode, CoolingMode::Onboard);
+        fresh.adopt(&committed);
+
+        assert_eq!(fresh.mode, CoolingMode::Curve);
+        assert_eq!(fresh.curve(Channel::Fan), drawn.curve(Channel::Fan));
+        assert_eq!(fresh.program(), committed);
+        assert!(
+            !fresh.pending(Some(&kraken(PwmMode::Curve, 200, 200))),
+            "a program the daemon says it committed is not an unsent edit"
+        );
+
+        // A fixed program takes both duties and the mode that runs them.
+        let mut fresh = CoolingEditor::new();
+        fresh.adopt(&CoolingProgram::Fixed { pump: 180, fan: 90 });
+        assert_eq!(fresh.mode, CoolingMode::Fixed);
+        assert_eq!(fresh.duty(Channel::Pump), 180);
+        assert_eq!(fresh.duty(Channel::Fan), 90);
+        assert!(!fresh.pending(Some(&kraken(PwmMode::Fixed, 180, 90))));
+    }
+
+    /// A curve this editor could not have produced is not read into the plot.
+    /// Showing an arbitrary reading of it would claim the operator drew
+    /// something they never did.
+    #[test]
+    fn a_curve_that_does_not_round_trip_leaves_the_plot_alone() {
+        let mut editor = CoolingEditor::new();
+        let before = *editor.curve(Channel::Pump);
+        let short = herschel_core::profile::TemperatureCurve { points: Vec::new() };
+        editor.adopt(&CoolingProgram::Curve {
+            pump: short.clone(),
+            fan: short,
+        });
+
+        assert_eq!(*editor.curve(Channel::Pump), before);
+        assert_eq!(editor.mode, CoolingMode::Onboard);
     }
 
     #[test]

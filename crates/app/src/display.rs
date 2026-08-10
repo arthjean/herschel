@@ -297,6 +297,19 @@ impl DisplayScreen {
         }
     }
 
+    /// Load the whole screen from a preset the daemon reported committed.
+    ///
+    /// The panel reads nothing back, so the daemon's record of the last preset
+    /// it committed is the only evidence of what is on the glass. A client that
+    /// opens on its own defaults shows a mode the panel is not running, which is
+    /// the fabricated default this product refuses everywhere else.
+    ///
+    /// Goes through [`Self::edit`] like every other mutation, so the preview
+    /// moves with the editor.
+    pub fn adopt(&mut self, preset: &DisplayPreset) {
+        self.edit(|editor| *editor = DisplayEditor::from_preset(preset));
+    }
+
     /// The preset the preview should draw.
     pub fn preview(&self) -> &DisplayPreset {
         &self.last_valid
@@ -455,6 +468,34 @@ mod tests {
 
         // Whatever the route in, the preview is the preset the row would send.
         assert_eq!(&screen.preset().unwrap(), screen.preview());
+    }
+
+    #[test]
+    fn the_screen_opens_on_the_preset_the_daemon_reports_committed() {
+        // What the panel is running outlives the window, so a client that opens
+        // while the daemon streams a picture shows that picture rather than the
+        // arrangement it ships with.
+        let mut screen = DisplayScreen::default();
+        let mut committed = DisplayPreset::default_infographic();
+        committed.mode = DisplayMode::SingleReading;
+        committed.readings[0].metric = LcdMetric::LiquidTemperature;
+        committed.background = Rgb::new(0x11, 0x22, 0x33);
+        committed.orientation = Orientation::Deg180;
+        committed.brightness = Brightness::new(40).unwrap();
+        assert_ne!(screen.preset().unwrap(), committed);
+
+        screen.adopt(&committed);
+
+        assert_eq!(screen.editor().mode, DisplayMode::SingleReading);
+        assert_eq!(
+            screen.editor().color_text(DisplayColorField::Background),
+            "112233"
+        );
+        assert_eq!(screen.editor().brightness, 40);
+        // The preview follows, and the row would send back exactly what the
+        // panel is already showing, so adopting sends nothing.
+        assert_eq!(screen.preview(), &committed);
+        assert_eq!(screen.preset().unwrap(), committed);
     }
 
     #[test]
