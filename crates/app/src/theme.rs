@@ -209,6 +209,16 @@ pub const CARD_INSET: Pixels = px(4.0);
 /// Width of the visible focus ring, in logical pixels.
 pub const FOCUS_RING: Pixels = px(2.0);
 
+/// Height of one line of the device strip.
+///
+/// The strip is provenance, not content: it names which hardware answered and
+/// in what state, above the readouts the screen is actually about. So the line
+/// is sized like a caption rather than like a row: tall enough that two of them
+/// do not touch, short enough that the pair costs less than a single metric
+/// tile. Deliberately far under [`TARGET_MIN`], which is a floor for things the
+/// pointer aims at and nothing on this strip is.
+pub const DEVICE_LINE_HEIGHT: Pixels = px(22.0);
+
 /// Height of a control pill: a select, a color field, a slider.
 ///
 /// One height for all three, so a row that carries two different controls has

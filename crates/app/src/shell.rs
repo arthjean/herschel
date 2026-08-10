@@ -34,21 +34,21 @@ use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::assets::Icon;
 use crate::components::{
-    Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceRow, ICON_SIZE, Metric,
-    Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron, focus_visible, icon,
-    node_at, panel_surface, row_panel, set_focus_visible,
+    Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceHealth, DeviceRow,
+    ICON_SIZE, Metric, Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron,
+    focus_visible, icon, node_at, panel_surface, row_panel, set_focus_visible,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
 use crate::feed::{Command, CommandOutcome, Feed, OutcomeSeverity, now_unix_ms};
 use crate::lighting::{LightingEditor, LightingMode};
-use crate::link::LinkState;
+use crate::link::{DeviceSummary, LinkState};
 use crate::metrics::MetricBook;
 use crate::theme::{
-    CARD_INSET, CARD_RADIUS, Color, DEGREE_C, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH,
-    MENU_MIN_WIDTH, MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, META_SEPARATOR,
-    RADIUS, RAIL_WIDTH, ROW_RADIUS, SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE,
-    color, space,
+    CARD_INSET, CARD_RADIUS, Color, DEGREE_C, DEVICE_LINE_HEIGHT, FOCUS_RING, MENU_MAX_HEIGHT,
+    MENU_MAX_WIDTH, MENU_MIN_WIDTH, MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT,
+    META_SEPARATOR, RADIUS, RAIL_WIDTH, ROW_RADIUS, SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN,
+    UNOFFICIAL_NOTICE, color, space,
 };
 use crate::window_chrome::{self, DragLatch};
 
@@ -279,7 +279,7 @@ pub const FIELD_WIDTH: Pixels = px(168.0);
 /// What the device does rather than the product string it reports: that string
 /// is a vendor wordmark, and this heading says which of the two devices the
 /// card is for, which is what the operator needs from it. The reported string
-/// is still shown on the Devices panel.
+/// is still shown on the monitoring screen's device strip.
 pub const RGB_CONTROLLER_NAME: &str = "RGB & Fan Controller";
 
 /// Left inset of an open row's detail.
@@ -906,25 +906,95 @@ impl Shell {
         Some(Note::new(NoteLevel::Warning, message).render())
     }
 
-    fn device_panel(&self) -> Div {
+    /// Which hardware answered, as a caption under the screen heading.
+    ///
+    /// Not a panel, and not always drawn. This used to be a titled card at the
+    /// head of the screen, which gave the two devices the same weight as the CPU
+    /// and GPU sections and spent a heading, a line of policy and four lines of
+    /// prose to say "both devices are ready". Every fact on it was already
+    /// carried better somewhere else:
+    ///
+    /// - The state word duplicates [`Link::control_state`], which is the single
+    ///   gate every write passes through and which names the refusal on the
+    ///   control the operator just tried to use, in language about that control.
+    /// - The Kraken's presence is proven by its own readings further down this
+    ///   screen. A device that stopped answering shows it in Liquid, Pump and
+    ///   Fan, not in a line of provenance above them.
+    /// - Firmware, kernel binding and the USB identity are static for a session
+    ///   and are follow-up questions rather than glances, so they live on the
+    ///   Settings screen, which is the diagnostics list.
+    ///
+    /// What is left is the exception, and only the exception: a device that is
+    /// not [`DeviceHealth::Ready`] gets its full line here, because that is
+    /// exactly when its firmware and its kernel binding are the evidence that
+    /// explains the degradation. A machine with both devices ready draws
+    /// nothing, and the screen opens on the readings it is named for.
+    ///
+    /// The dropped sentence about the allowlist is not a loss of meaning: it
+    /// described a property of the process, not a state of the hardware. That
+    /// policy is stated where it is enforced, in `ALLOWLIST`.
+    fn device_strip(&self) -> Option<Div> {
+        let strip = div().flex().flex_col().w_full().min_w_0().gap(space::XS);
         let rows = self.link.device_rows();
-        let panel = Panel::new("Devices")
-            .subtitle("Only the two allowlisted devices are ever opened.")
-            .render();
 
+        // Nothing supported at all is itself the exception, and the one case
+        // where no device line can carry the news.
         if rows.is_empty() {
-            return panel.child(
-                div()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child("No supported NZXT device detected."),
+            return Some(
+                strip.child(
+                    div()
+                        .text_xs()
+                        .min_h(DEVICE_LINE_HEIGHT)
+                        .text_color(color::TEXT_MUTED.hsla())
+                        .child("No supported NZXT device detected."),
+                ),
             );
         }
 
-        panel.children(rows.into_iter().map(|summary| {
+        let degraded = degraded_devices(rows);
+        if degraded.is_empty() {
+            return None;
+        }
+
+        Some(strip.children(degraded.into_iter().map(|summary| {
             DeviceRow::new(summary.name.clone(), summary.id.to_string(), summary.health)
                 .detail(summary.detail())
                 .render()
-        }))
+        })))
+    }
+
+    /// Every device and everything known about it, for the diagnostics screen.
+    ///
+    /// The permanent home of the provenance the monitoring strip no longer
+    /// carries. One row per device, in the same label-and-value shape as the
+    /// service rows beside it, because that is what these are: static facts an
+    /// operator reads once, or quotes in a report.
+    ///
+    /// The state is the first fragment rather than a colored word at the end.
+    /// On this screen it is one more recorded fact, not a signal to act on; the
+    /// screen that asks for action is the one that colors it.
+    fn device_settings(&self) -> Vec<Div> {
+        let rows = self.link.device_rows();
+        if rows.is_empty() {
+            return vec![setting_row(
+                "Devices",
+                "No supported NZXT device detected.".to_string(),
+            )];
+        }
+
+        rows.into_iter()
+            .map(|summary| {
+                setting_row_owned(
+                    summary.name.clone(),
+                    format!(
+                        "{} {META_SEPARATOR} {} {META_SEPARATOR} {}",
+                        summary.health.label(),
+                        summary.id,
+                        summary.detail()
+                    ),
+                )
+            })
+            .collect()
     }
 
     fn monitoring(&self) -> Div {
@@ -956,7 +1026,7 @@ impl Shell {
         };
 
         screen("Monitoring", "System and cooling state at a glance.")
-            .child(self.device_panel())
+            .children(self.device_strip())
             .child(
                 Panel::new("CPU")
                     .subtitle(self.collector_note(Collector::Cpu, "Load and package temperature."))
@@ -1978,13 +2048,13 @@ impl Shell {
     /// product string the device reported is deliberately not shown: that
     /// string carries a vendor wordmark this product does not use, and what the
     /// operator needs from the heading is which of the two devices this is. The
-    /// reported string is still on the Devices panel, unchanged, which is where
-    /// identifying the exact hardware belongs.
+    /// reported string is still on the monitoring screen's device strip,
+    /// unchanged, which is where identifying the exact hardware belongs.
     ///
     /// The header carries the name alone. Firmware, kernel binding and state
-    /// are all on the Devices panel, which is the screen for identifying
-    /// hardware; repeating them over every card put a line of provenance above
-    /// controls that are about appearance.
+    /// are all on that strip, which is the screen for identifying hardware;
+    /// repeating them over every card put a line of provenance above controls
+    /// that are about appearance.
     fn device_card(name: &str) -> Div {
         let name = name.to_string();
 
@@ -2918,6 +2988,12 @@ impl Shell {
         screen("Settings", "Local paths, versions and diagnostics.")
             .child(panel)
             .child(
+                Panel::new("Devices")
+                    .subtitle("Only the two allowlisted devices are ever opened.")
+                    .render()
+                    .children(self.device_settings()),
+            )
+            .child(
                 Panel::new("Diagnostics")
                     .subtitle("Serial numbers are redacted before anything leaves this machine.")
                     .render()
@@ -3475,6 +3551,21 @@ impl Render for Shell {
     }
 }
 
+/// The devices the monitoring strip still has to speak for.
+///
+/// A ready device has nothing left to say there: everything it can do is
+/// already offered, and everything it cannot is refused at the control that
+/// tried, by [`LinkState::control_state`]. A device in any other state is the
+/// case the strip exists for, so the filter is written once and tested, rather
+/// than being an inline predicate that could quietly widen to `true` and take
+/// the screen back to a permanent block, or narrow and hide a device that is
+/// not answering.
+fn degraded_devices(rows: Vec<DeviceSummary>) -> Vec<DeviceSummary> {
+    rows.into_iter()
+        .filter(|summary| summary.health != DeviceHealth::Ready)
+        .collect()
+}
+
 /// The standard heading and column of a destination.
 fn screen(title: &'static str, subtitle: &'static str) -> Div {
     div().flex().flex_col().gap(space::LG).w_full().child(
@@ -3948,6 +4039,44 @@ mod tests {
         );
         stops.push(base + LCD_OFFSET_RESUME);
         stops
+    }
+
+    fn device(id: DeviceId, health: DeviceHealth) -> DeviceSummary {
+        DeviceSummary {
+            id,
+            name: "Device".to_string(),
+            firmware: Some("0200".to_string()),
+            driver: "kraken2023".to_string(),
+            health,
+        }
+    }
+
+    #[test]
+    fn the_monitoring_strip_speaks_for_a_device_only_while_it_is_not_ready() {
+        // A machine where both devices answered and both are writable draws no
+        // strip at all: the screen opens on the readings it is named for, and
+        // the provenance is on the diagnostics screen.
+        assert!(
+            degraded_devices(vec![
+                device(KRAKEN_BASE, DeviceHealth::Ready),
+                device(RGB_CONTROLLER, DeviceHealth::Ready),
+            ])
+            .is_empty()
+        );
+
+        // Every other state is the exception the strip exists for, and it is
+        // named per device rather than collapsed into one line: a read-only
+        // controller beside a ready Kraken is a different machine from one
+        // where neither answered.
+        for health in [DeviceHealth::ReadOnly, DeviceHealth::Unavailable] {
+            let shown = degraded_devices(vec![
+                device(KRAKEN_BASE, DeviceHealth::Ready),
+                device(RGB_CONTROLLER, health),
+            ]);
+            assert_eq!(shown.len(), 1, "{health:?} was not reported");
+            assert_eq!(shown[0].id, RGB_CONTROLLER);
+            assert_eq!(shown[0].health, health);
+        }
     }
 
     #[test]

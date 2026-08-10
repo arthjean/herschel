@@ -22,8 +22,8 @@ use kori_core::telemetry::{History, MetricView};
 
 use crate::assets::Icon;
 use crate::theme::{
-    CONTROL_HEIGHT, Color, DEGREE_C, FOCUS_RING, MENU_GLYPH_SIZE, META_SEPARATOR, RADIUS,
-    SWATCH_RADIUS, SWATCH_SIZE, color, numeric_font, space,
+    CONTROL_HEIGHT, Color, DEGREE_C, DEVICE_LINE_HEIGHT, FOCUS_RING, MENU_GLYPH_SIZE,
+    META_SEPARATOR, RADIUS, SWATCH_RADIUS, SWATCH_SIZE, color, numeric_font, space,
 };
 
 /// What a control is allowed to do right now.
@@ -889,15 +889,24 @@ impl DeviceRow {
         self
     }
 
-    /// Two lines: what the device is and what state it is in, then everything
-    /// that only matters once one of those two raises a question.
+    /// One line: what the device is, how it was identified, and what state it
+    /// is in.
     ///
-    /// The row carries no separator and no leading status glyph. It is a list
-    /// of two devices inside a panel that already draws its own surface, so the
-    /// panel's own gap is the only rhythm it needs, and dropping the glyph is
-    /// what lets the device name start on the same vertical as the panel title
-    /// above it. State is still named in words, never by color alone; the
-    /// colored label is the word.
+    /// It used to be two lines inside a titled panel, and on the monitoring
+    /// screen that block outweighed the readouts under it: a card, a heading, a
+    /// sentence of policy and four lines of prose, all of it answering a
+    /// question the operator asks once a session. Provenance is a caption, so it
+    /// is set like one. The whole line is [`text_xs`](Div::text_xs) and hierarchy
+    /// is carried by color alone: the name in ink, the identity muted, the state
+    /// in its own color at the far right.
+    ///
+    /// The row carries no separator, no fill and no leading status glyph. State
+    /// is still named in words, never by color alone; the colored label is the
+    /// word. The identity block takes the slack between the two, so the state
+    /// column lands on the same right edge on every line whatever the name in
+    /// front of it measures, and truncates rather than wrapping: a device that
+    /// reports a long firmware string must not push its own state off the line.
+    ///
     /// `min_w_0` belongs on the flex containers, never on the element that
     /// holds the text. On a text element it removes the intrinsic minimum a
     /// line needs, and GPUI then wraps the name one glyph per line rather than
@@ -905,46 +914,59 @@ impl DeviceRow {
     pub fn render(self) -> Div {
         div()
             .flex()
-            .flex_col()
+            // Wrapping is the escape hatch for a window narrow enough that the
+            // name and the state alone no longer fit. The identity block shrinks
+            // first and reaches zero before that happens, so in practice this
+            // only fires on a window narrower than the layout targets.
+            .flex_wrap()
+            .items_center()
             .w_full()
             .min_w_0()
-            .gap(px(2.0))
+            .min_h(DEVICE_LINE_HEIGHT)
+            .gap(space::SM)
+            .text_xs()
             .child(
                 div()
-                    .flex()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap(space::MD)
-                    .child(div().text_color(color::TEXT.hsla()).child(self.name))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .text_color(self.health.color())
-                            .child(self.health.label()),
-                    ),
+                    .flex_none()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(color::TEXT.hsla())
+                    .child(self.name),
             )
             .child(
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w_0()
                     .items_center()
-                    .gap(space::SM)
-                    .text_xs()
+                    .gap(space::XS)
                     .text_color(color::TEXT_MUTED.hsla())
-                    .child(div().font(numeric_font()).child(self.identifier))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font(numeric_font())
+                            .child(self.identifier),
+                    )
                     .children(self.detail.map(|detail| {
                         div()
                             .flex()
+                            .min_w_0()
                             .items_center()
-                            .gap(space::SM)
+                            .gap(space::XS)
                             .child(
                                 div()
+                                    .flex_none()
                                     .text_color(color::TEXT_DISABLED.hsla())
                                     .child(META_SEPARATOR),
                             )
-                            .child(div().child(detail))
+                            .child(div().min_w_0().truncate().child(detail))
                     })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(self.health.color())
+                    .child(self.health.label()),
             )
     }
 }
