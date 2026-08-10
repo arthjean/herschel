@@ -610,6 +610,7 @@ pub struct ColorField {
     key: SharedString,
     label: SharedString,
     value: String,
+    state: ControlState,
     tab_index: isize,
 }
 
@@ -623,8 +624,20 @@ impl ColorField {
             key: key.into(),
             label: label.into(),
             value: value.into(),
+            state: ControlState::Enabled,
             tab_index: 0,
         }
+    }
+
+    /// Whether the hardware behind this field can be written at all.
+    ///
+    /// Separate from the digits being valid. A field the operator can finish
+    /// typing and a field whose device refused the capability are two different
+    /// refusals, and the second one outranks the first: correcting the color
+    /// would not make the write happen.
+    pub fn state(mut self, state: ControlState) -> Self {
+        self.state = state;
+        self
     }
 
     pub fn tab_index(mut self, index: isize) -> Self {
@@ -634,9 +647,10 @@ impl ColorField {
 
     pub fn render(self) -> Stateful<Div> {
         let parsed = parse_hex_color(&self.value);
-        let state = match &parsed {
-            Ok(_) => ControlState::Enabled,
-            Err(error) => ControlState::error(error.clone()),
+        let state = match (&self.state, &parsed) {
+            (ControlState::Disabled { .. }, _) => self.state.clone(),
+            (_, Ok(_)) => ControlState::Enabled,
+            (_, Err(error)) => ControlState::error(error.clone()),
         };
         let swatch = parsed.unwrap_or(Color::rgb(0x000000));
         let message = state.message().map(str::to_string);
