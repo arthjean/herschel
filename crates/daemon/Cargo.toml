@@ -27,6 +27,9 @@ rustix.workspace = true
 
 [dev-dependencies]
 kori-hardware-linux = { workspace = true, features = ["testing"] }
+# The picture fixtures: an animation cannot be exercised without a real file
+# carrying more than one frame.
+kori-lcd-renderer = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

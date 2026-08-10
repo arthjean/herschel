@@ -825,6 +825,20 @@ impl Daemon {
         self.display.drop_frame();
     }
 
+    /// Advance a playing animation, and say when its next frame is due.
+    ///
+    /// `None` means nothing is playing, so the caller has only the telemetry
+    /// cadence to wake for.
+    ///
+    /// No diagnostic is recorded per frame, unlike [`Self::tick_display`]. An
+    /// animation runs at up to a dozen frames a second, which would fill the
+    /// event ring in a couple of minutes and push out the events that say what
+    /// the hardware actually did. A transfer that fails still stops the stream
+    /// and names itself, through the state the executor publishes.
+    pub fn tick_animation(&mut self, now: Instant) -> Option<Instant> {
+        self.display.advance_animation(now)
+    }
+
     fn save_profile(&mut self, profile: Profile) -> Response {
         let name = profile.name.clone();
         match self.config.save_profile(profile) {

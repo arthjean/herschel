@@ -28,6 +28,16 @@
 //! pending one rather than queue behind it: a panel showing a temperature from
 //! four seconds ago because three frames are waiting is worse than a panel that
 //! skipped them.
+//!
+//! **An animation is decoded once and then only copied.** A GIF the operator
+//! picks is compiled to a table of finished framebuffers when it is applied, so
+//! what the tick loop does per frame is a copy and a transfer. It plays on its
+//! own clock, taken from the file rather than from the telemetry cadence, and
+//! the same rule about late ticks applies to it: the cursor walks the wall
+//! clock, so a tick that ran late skips frames instead of playing the animation
+//! in slow motion.
+
+use std::time::{Duration, Instant};
 
 use kori_core::capability::LcdPanel;
 use kori_core::display::{DisplayError, DisplayPreset, MetricSample};
@@ -57,6 +67,8 @@ pub struct DisplayExecutor {
     faulted: Option<String>,
     /// Frames discarded because a newer sample replaced them.
     dropped: u64,
+    /// The animation playing, when the active preset names one.
+    animation: Option<Animation>,
 }
 
 /// What the panel is showing, and the frame that put it there.
@@ -67,6 +79,23 @@ pub struct DisplayExecutor {
 struct Committed {
     preset: DisplayPreset,
     frame: Vec<u8>,
+}
+
+/// A compiled animation and where the panel is in it.
+///
+/// The frames are held as the bytes the transport takes rather than as
+/// framebuffers: nothing downstream of the compile step needs the pixels back,
+/// and two bytes per pixel rather than three is a third of the table.
+struct Animation {
+    frames: Vec<AnimationFrame>,
+    cursor: usize,
+    /// When the frame after the current one is due.
+    due: Instant,
+}
+
+struct AnimationFrame {
+    bytes: Vec<u8>,
+    delay: Duration,
 }
 
 impl DisplayExecutor {
@@ -84,6 +113,7 @@ impl DisplayExecutor {
             brightness: None,
             faulted: None,
             dropped: 0,
+            animation: None,
         }
     }
 
@@ -117,10 +147,16 @@ impl DisplayExecutor {
     }
 
     /// Whether a tick would currently produce anything.
+    ///
+    /// An animation counts: it is the panel moving on its own, which is what
+    /// this flag means to the screen, and a fault has to be able to stop it the
+    /// same way it stops a stream of readings.
     fn is_streaming(&self) -> bool {
-        self.is_connected()
-            && self.faulted.is_none()
-            && self
+        if !self.is_connected() || self.faulted.is_some() {
+            return false;
+        }
+        self.animation.is_some()
+            || self
                 .active
                 .as_ref()
                 .is_some_and(|preset| preset.mode.uses_readings())
@@ -166,20 +202,114 @@ impl DisplayExecutor {
         // An Apply the operator activated is the explicit recoverable state a
         // faulted stream waits for.
         self.faulted = None;
-        let outcome = self.send(preset, samples)?;
+        // Whatever was playing belongs to the preset being replaced. Dropped
+        // before the new one is compiled rather than after, so a file that
+        // fails to decode leaves the panel with no animation instead of the
+        // previous operator's.
+        self.animation = None;
+        let outcome = if preset.mode.uses_image() {
+            self.start_image(preset)?
+        } else {
+            self.send(preset, samples)?
+        };
         self.active = Some(preset.clone());
         Ok(outcome)
+    }
+
+    /// Compile the picture a preset names and put its first frame on the glass.
+    ///
+    /// The whole decode happens here, once. A file that turns out to carry more
+    /// than one frame is installed as an animation and the tick loop takes it
+    /// from there; one that does not is an ordinary frame and nothing is
+    /// installed, so a still picture costs no clock at all.
+    fn start_image(&mut self, preset: &DisplayPreset) -> Result<DisplayOutcome, DisplayError> {
+        let Some(panel) = self.panel.clone() else {
+            return Ok(absent(preset));
+        };
+        let frames: Vec<AnimationFrame> = kori_lcd_renderer::render_image_frames(preset, &panel)?
+            .into_iter()
+            .map(|frame| AnimationFrame {
+                bytes: frame.frame.to_rgb565_be(),
+                delay: frame.delay,
+            })
+            .collect();
+
+        let Some(first) = frames.first() else {
+            return Ok(absent(preset));
+        };
+        let bytes = first.bytes.clone();
+        let delay = first.delay;
+        let outcome = self.send_bytes(preset, bytes);
+
+        if frames.len() > 1 {
+            self.animation = Some(Animation {
+                frames,
+                cursor: 0,
+                due: Instant::now() + delay,
+            });
+        }
+        Ok(outcome)
+    }
+
+    /// Put the next frame of the animation on the glass, if one is due.
+    ///
+    /// Returns when the frame after that one is due, so the caller can sleep to
+    /// it rather than poll for it. `None` means nothing is playing, which is
+    /// also what a faulted or disconnected panel reports: a stopped stream must
+    /// not keep a clock running against a link that is refusing.
+    pub fn advance_animation(&mut self, now: Instant) -> Option<Instant> {
+        if !self.is_streaming() {
+            return None;
+        }
+        let animation = self.animation.as_mut()?;
+        if now < animation.due {
+            return Some(animation.due);
+        }
+
+        // The cursor walks the wall clock rather than the tick count. A tick
+        // that ran late skips the frames it slept through, which is the same
+        // rule US-018 sets for a late telemetry frame and for the same reason:
+        // a backlog of old pictures has nothing to offer a panel. The loop is
+        // bounded because every delay is at least MIN_FRAME_DELAY_MS.
+        let mut skipped = 0u32;
+        loop {
+            animation.cursor = (animation.cursor + 1) % animation.frames.len();
+            let frame = animation.frames.get(animation.cursor)?;
+            animation.due += frame.delay;
+            if now < animation.due {
+                break;
+            }
+            skipped += 1;
+        }
+
+        let due = animation.due;
+        let bytes = animation.frames.get(animation.cursor)?.bytes.clone();
+        let preset = self.active.clone()?;
+        for _ in 0..skipped {
+            self.drop_frame();
+        }
+
+        let outcome = self.send_bytes(&preset, bytes);
+        if let HardwareState::Uncertain { reason } = &outcome.hardware {
+            self.faulted = Some(reason.clone());
+            return None;
+        }
+        Some(due)
     }
 
     /// Redraw the active preset against a fresh sample, once per tick.
     ///
     /// Returns `None` when there is nothing to do: no preset, no panel, a
-    /// preset that does not read telemetry, or a stream that has faulted.
+    /// preset that does not read telemetry, an animation running on its own
+    /// clock, or a stream that has faulted.
     pub fn refresh(&mut self, samples: &[MetricSample; 2]) -> Option<DisplayOutcome> {
-        if !self.is_streaming() {
+        if !self.is_streaming() || self.animation.is_some() {
             return None;
         }
         let preset = self.active.clone()?;
+        if !preset.mode.uses_readings() {
+            return None;
+        }
         match self.send(&preset, samples) {
             Ok(outcome) => {
                 if let HardwareState::Uncertain { reason } = &outcome.hardware {
@@ -206,9 +336,20 @@ impl DisplayExecutor {
         };
 
         let frame = kori_lcd_renderer::render(preset, samples, &panel)?.to_rgb565_be();
+        Ok(self.send_bytes(preset, frame))
+    }
 
+    /// Everything a frame goes through once it exists: the brightness, the
+    /// comparison against what the panel holds, and the transfer.
+    ///
+    /// Split out so an animation frame, which was rendered when the file was
+    /// picked rather than on this tick, takes exactly the same path as one the
+    /// renderer just produced. Both are then deduplicated the same way, which
+    /// is what keeps a GIF whose frames repeat from costing a transfer per
+    /// repeat.
+    fn send_bytes(&mut self, preset: &DisplayPreset, frame: Vec<u8>) -> DisplayOutcome {
         let Some(link) = self.link.as_mut() else {
-            return Ok(absent(preset));
+            return absent(preset);
         };
 
         // Brightness travels over its own report and only when it changed, so
@@ -218,7 +359,7 @@ impl DisplayExecutor {
         let mut brightness_sent = false;
         if self.brightness != Some(preset.brightness) {
             if let Err(error) = link.set_display(preset.brightness) {
-                return Ok(uncertain(preset, &error, &mut self.committed, false));
+                return uncertain(preset, &error, &mut self.committed, false);
             }
             self.brightness = Some(preset.brightness);
             brightness_sent = true;
@@ -233,13 +374,13 @@ impl DisplayExecutor {
             .as_ref()
             .is_some_and(|entry| entry.frame == frame)
         {
-            return Ok(DisplayOutcome {
+            return DisplayOutcome {
                 preset: preset.clone(),
                 hardware: HardwareState::Confirmed,
                 frames: 0,
                 deduplicated: true,
                 brightness_sent,
-            });
+            };
         }
 
         match link.send_frame(&frame) {
@@ -248,20 +389,15 @@ impl DisplayExecutor {
                     preset: preset.clone(),
                     frame,
                 });
-                Ok(DisplayOutcome {
+                DisplayOutcome {
                     preset: preset.clone(),
                     hardware: HardwareState::Confirmed,
                     frames: 1,
                     deduplicated: false,
                     brightness_sent,
-                })
+                }
             }
-            Err(error) => Ok(uncertain(
-                preset,
-                &error,
-                &mut self.committed,
-                brightness_sent,
-            )),
+            Err(error) => uncertain(preset, &error, &mut self.committed, brightness_sent),
         }
     }
 }
@@ -332,6 +468,32 @@ mod tests {
             DisplayExecutor::connected(kraken.link(), lcd::candidate_panel()),
             bulk,
         )
+    }
+
+    /// An image preset pointing at a GIF of `frames` solid colors, each
+    /// declaring `delay` hundredths of a second.
+    fn animated(name: &str, frames: usize, delay: u16) -> DisplayPreset {
+        let directory = kori_lcd_renderer::testing::scratch(name).unwrap();
+        let path = directory.join("animation.gif");
+        let pictures: Vec<(Rgb, u16)> = (0..frames)
+            // Distinct after the panel's five bits of red, so no two frames
+            // in a row are deduplicated as the same picture.
+            .map(|index| (Rgb::new((index % 32) as u8 * 8, 0x40, 0x80), delay))
+            .collect();
+        kori_lcd_renderer::testing::write_gif(&path, 16, &pictures).unwrap();
+
+        let mut preset = DisplayPreset::default_infographic();
+        preset.mode = DisplayMode::Image;
+        preset.image = Some(path);
+        preset
+    }
+
+    /// How many whole pictures the recorder has seen.
+    ///
+    /// Every frame is two sequences and every sequence is a header plus a
+    /// payload, so four transfers is one picture on the glass.
+    fn pictures(bulk: &BulkRecorder) -> usize {
+        bulk.transfers().len() / 4
     }
 
     #[test]
@@ -610,5 +772,200 @@ mod tests {
         assert_eq!(state.panel.map(|panel| panel.width), Some(240));
         assert_eq!(state.committed.as_ref(), Some(&preset));
         assert!(state.streaming);
+    }
+
+    #[test]
+    fn applying_an_animation_puts_its_first_frame_on_the_glass_and_starts_a_clock() {
+        let (mut executor, bulk) = executor();
+        let preset = animated("apply", 3, 10);
+        let outcome = executor.apply(&preset, &samples(None, None)).unwrap();
+
+        assert_eq!(outcome.frames, 1, "the first picture goes out at once");
+        assert_eq!(pictures(&bulk), 1);
+        assert!(
+            executor.state().streaming,
+            "an animation is the panel moving on its own, which is what streaming means"
+        );
+        assert!(
+            executor.advance_animation(Instant::now()).is_some(),
+            "the clock is running"
+        );
+    }
+
+    #[test]
+    fn a_still_picture_installs_no_clock_at_all() {
+        // One frame is an ordinary frame. Nothing has to wake up for it, which
+        // is what keeps a wallpaper from costing what an animation costs.
+        let (mut executor, bulk) = executor();
+        let preset = animated("still", 1, 10);
+        executor.apply(&preset, &samples(None, None)).unwrap();
+
+        assert_eq!(pictures(&bulk), 1);
+        assert_eq!(
+            executor.advance_animation(Instant::now() + Duration::from_secs(10)),
+            None,
+            "a still picture has no next frame to be due"
+        );
+        assert_eq!(pictures(&bulk), 1);
+    }
+
+    #[test]
+    fn an_animation_frame_is_sent_when_it_is_due_and_not_before() {
+        let (mut executor, bulk) = executor();
+        // Ten hundredths is 100 ms, above the transport floor, so the delay
+        // survives the clamp and this test is about the clock rather than
+        // about the clamp.
+        let preset = animated("cadence", 4, 10);
+        executor.apply(&preset, &samples(None, None)).unwrap();
+        assert_eq!(pictures(&bulk), 1);
+
+        // Every instant here comes from the executor's own answer rather than
+        // from a clock this test read earlier, so the assertions do not depend
+        // on how long the compile took.
+        let due = executor
+            .advance_animation(Instant::now())
+            .expect("the animation is still playing");
+        assert_eq!(pictures(&bulk), 1, "nothing was due yet");
+
+        executor.advance_animation(due);
+        assert_eq!(pictures(&bulk), 2, "the second picture landed on its due");
+        assert_eq!(executor.state().dropped_frames, 0);
+    }
+
+    #[test]
+    fn a_late_tick_skips_the_frames_it_slept_through_rather_than_playing_them_all() {
+        // The same rule US-018 sets for a late telemetry frame, for the same
+        // reason: a backlog of old pictures has nothing to offer a panel. What
+        // it does not do is play the animation in slow motion, which is what a
+        // cursor advancing one step per tick would produce.
+        let (mut executor, bulk) = executor();
+        let preset = animated("late", 8, 10);
+        executor.apply(&preset, &samples(None, None)).unwrap();
+        let due = executor
+            .advance_animation(Instant::now())
+            .expect("the animation is playing");
+
+        // Four hundred milliseconds past the first due, on a hundred
+        // millisecond cadence: five frames came due while nothing was looking.
+        executor.advance_animation(due + Duration::from_millis(400));
+        assert_eq!(
+            pictures(&bulk),
+            2,
+            "one picture went out, not the five that came due"
+        );
+        assert_eq!(
+            executor.state().dropped_frames,
+            4,
+            "the frames that were skipped are counted rather than hidden"
+        );
+    }
+
+    #[test]
+    fn an_animation_returns_to_its_first_frame_rather_than_stopping_at_the_last() {
+        let (mut executor, bulk) = executor();
+        let preset = animated("loop", 2, 10);
+        executor.apply(&preset, &samples(None, None)).unwrap();
+
+        // Two frames, so the third picture is the first one again. It is sent
+        // rather than deduplicated only because the second one displaced it.
+        let mut due = executor
+            .advance_animation(Instant::now())
+            .expect("the animation is playing");
+        for _ in 0..2 {
+            due = executor.advance_animation(due).expect("still playing");
+        }
+        assert_eq!(pictures(&bulk), 3);
+        assert!(executor.state().streaming);
+    }
+
+    #[test]
+    fn a_failed_transfer_stops_the_animation_instead_of_pushing_frames_at_a_refusing_panel() {
+        let kraken = FakeKraken::new("2.0.4");
+        let bulk = kraken.bulk_recorder();
+        let mut executor = DisplayExecutor::connected(kraken.link(), lcd::candidate_panel());
+        let preset = animated("faulted", 4, 10);
+        executor.apply(&preset, &samples(None, None)).unwrap();
+        let due = executor
+            .advance_animation(Instant::now())
+            .expect("the animation is playing");
+        let sent = pictures(&bulk);
+
+        bulk.fail_with(UsbfsError::PermissionDenied {
+            path: "/dev/bus/usb/001/004".to_string(),
+        });
+        assert_eq!(
+            executor.advance_animation(due),
+            None,
+            "a failed transfer stops the clock rather than returning a next due"
+        );
+
+        let state = executor.state();
+        assert!(!state.streaming);
+        assert!(state.faulted.is_some(), "the stop names itself");
+        assert_eq!(
+            executor.advance_animation(due + Duration::from_millis(400)),
+            None,
+            "and a later tick does not restart it by itself"
+        );
+        assert_eq!(
+            pictures(&bulk),
+            sent,
+            "no picture was completed after the refusal"
+        );
+    }
+
+    #[test]
+    fn the_telemetry_tick_leaves_an_animation_to_its_own_clock() {
+        // Both cadences run on one thread, and the second one has nothing to
+        // contribute to a picture that reads no telemetry. Without this the
+        // once-a-second redraw would push frame zero back onto the glass in
+        // the middle of the animation.
+        let (mut executor, bulk) = executor();
+        let preset = animated("tick", 3, 10);
+        executor.apply(&preset, &samples(None, None)).unwrap();
+        let sent = pictures(&bulk);
+
+        assert_eq!(executor.refresh(&samples(Some(61.0), Some(48.0))), None);
+        assert_eq!(pictures(&bulk), sent, "the telemetry tick sent nothing");
+    }
+
+    #[test]
+    fn a_new_preset_drops_whatever_was_playing() {
+        let (mut executor, _bulk) = executor();
+        executor
+            .apply(&animated("replaced", 4, 10), &samples(None, None))
+            .unwrap();
+        assert!(executor.advance_animation(Instant::now()).is_some());
+
+        executor
+            .apply(
+                &DisplayPreset::default_infographic(),
+                &samples(Some(50.0), Some(40.0)),
+            )
+            .unwrap();
+        assert_eq!(
+            executor.advance_animation(Instant::now() + Duration::from_secs(1)),
+            None,
+            "the animation belonged to the preset that was replaced"
+        );
+    }
+
+    #[test]
+    fn a_picture_that_cannot_be_decoded_leaves_no_animation_behind() {
+        // A file that fails must not leave the previous operator's animation
+        // running under a preset that no longer names it.
+        let (mut executor, _bulk) = executor();
+        executor
+            .apply(&animated("kept", 4, 10), &samples(None, None))
+            .unwrap();
+
+        let mut broken = DisplayPreset::default_infographic();
+        broken.mode = DisplayMode::Image;
+        broken.image = Some(std::path::PathBuf::from("/nonexistent/kori/absent.gif"));
+        assert!(executor.apply(&broken, &samples(None, None)).is_err());
+        assert_eq!(
+            executor.advance_animation(Instant::now() + Duration::from_secs(1)),
+            None
+        );
     }
 }

@@ -21,6 +21,21 @@ use kori_core::ipc::{IpcError, PROTOCOL_VERSION, Request, Response, read_frame, 
 
 use crate::state::Daemon;
 
+/// Longest the display ticker sleeps between two looks at the clock.
+///
+/// It is what makes shutdown prompt at a cadence of one frame per second, and
+/// it is also the coarsest an animation frame can land: a delay of 100 ms is
+/// hit within one of these of its due instant, since the sleep is recomputed
+/// from the deadline on every pass.
+const TICK_POLL: Duration = Duration::from_millis(50);
+
+/// Shortest that same sleep is allowed to be.
+///
+/// A deadline already in the past would otherwise compute a zero sleep, and a
+/// loop that takes the state mutex without ever yielding is a spin against
+/// every request handler.
+const TICK_FLOOR: Duration = Duration::from_millis(1);
+
 /// A running server and the handle used to stop it.
 pub struct Server {
     listener: UnixListener,
@@ -97,34 +112,56 @@ impl Server {
     /// A tick that runs late does not catch up. The missed frames are counted
     /// and discarded, because the next tick draws the current reading and a
     /// backlog of old ones has nothing to offer a panel.
+    ///
+    /// This one thread carries both cadences: the telemetry redraw at
+    /// `frame_interval`, and an animation on the clock its own file declares.
+    /// One thread rather than two because the writes to the panel are
+    /// serialized by construction here, and a second thread would put that back
+    /// on the mutex to enforce.
     fn spawn_display_ticker(&self) -> std::thread::JoinHandle<()> {
         let daemon = Arc::clone(&self.daemon);
         let shutdown = Arc::clone(&self.shutdown);
         let interval = self.frame_interval;
         std::thread::spawn(move || {
             let mut next = Instant::now() + interval;
+            // Nothing is playing until a preset says so, so the loop starts on
+            // the idle cadence and only shortens once an animation asks it to.
+            let mut nap = interval.min(TICK_POLL).max(TICK_FLOOR);
             while !shutdown.load(Ordering::SeqCst) {
-                // Woken often enough that shutdown is prompt even at one frame
-                // per second.
-                std::thread::sleep(interval.min(Duration::from_millis(50)));
+                std::thread::sleep(nap);
                 let now = Instant::now();
-                if now < next {
-                    continue;
-                }
 
-                let mut missed = 0u32;
-                while next + interval <= now {
-                    next += interval;
-                    missed += 1;
-                }
-                next += interval;
-
+                let mut animation_due = None;
                 if let Ok(mut daemon) = daemon.lock() {
-                    for _ in 0..missed {
-                        daemon.drop_display_frame();
+                    // The animation is asked first: it runs at up to a dozen
+                    // frames a second against the telemetry redraw's one, so it
+                    // is what the sleep below is sized against.
+                    animation_due = daemon.tick_animation(now);
+
+                    if now >= next {
+                        let mut missed = 0u32;
+                        while next + interval <= now {
+                            next += interval;
+                            missed += 1;
+                        }
+                        next += interval;
+
+                        for _ in 0..missed {
+                            daemon.drop_display_frame();
+                        }
+                        daemon.tick_display();
                     }
-                    daemon.tick_display();
                 }
+
+                // Sleep to whichever comes first, but never past TICK_POLL, so
+                // shutdown stays prompt even when nothing is due for a second.
+                let wake = match animation_due {
+                    Some(due) => due.min(next),
+                    None => next,
+                };
+                nap = wake
+                    .saturating_duration_since(Instant::now())
+                    .clamp(TICK_FLOOR, TICK_POLL);
             }
         })
     }
