@@ -7,14 +7,24 @@ license.workspace = true
 repository.workspace = true
 description = "Turns one DisplayPreset into the exact framebuffer the Kraken panel takes"
 
+[features]
+# Exposes the picture fixtures to other crates' tests.
+testing = []
+
 [dependencies]
 kori-core.workspace = true
 thiserror.workspace = true
 
-# Decodes the static image US-017 lets an operator pick. Default features are
-# off so the graph carries two decoders rather than the twenty the crate can
-# build; MIT OR Apache-2.0, compatible with this project's GPL-3.0-or-later.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Decodes the picture US-017 lets an operator pick. Default features are off so
+# the graph carries three decoders rather than the twenty the crate can build;
+# MIT OR Apache-2.0, compatible with this project's GPL-3.0-or-later.
+#
+# `gif` is here for the whole `AnimationDecoder` path rather than for one more
+# format. The raw `gif` crate hands back each frame as a sub-rectangle with a
+# disposal method, and compositing those over a canvas is exactly the logic
+# `image` already carries and tests; it also types the frame delay, which the
+# raw crate reports in hundredths of a second.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 
 # Rasterizes the panel's text. Apache-2.0, compatible with this project's
 # GPL-3.0-or-later. Chosen over fontdue and swash because it is the smallest

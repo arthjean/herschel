@@ -18,14 +18,19 @@
 pub mod canvas;
 pub mod text;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
+use std::time::Duration;
+
 use kori_core::capability::LcdPanel;
 use kori_core::display::{
-    DisplayError, DisplayMode, DisplayPreset, MAX_IMAGE_DIMENSION, MetricSample, Orientation,
-    ReadingSlot,
+    DEFAULT_FRAME_DELAY_MS, DisplayError, DisplayMode, DisplayPreset, MAX_ANIMATION_FRAMES,
+    MAX_IMAGE_DIMENSION, MIN_FRAME_DELAY_MS, MetricSample, Orientation, ReadingSlot,
 };
 use kori_core::lighting::Rgb;
 
-use image::{ImageDecoder, ImageEncoder};
+use image::{AnimationDecoder, ImageDecoder, ImageEncoder};
 
 use canvas::{Arc, Canvas};
 
@@ -131,18 +136,7 @@ pub fn render(
     panel: &LcdPanel,
 ) -> Result<Framebuffer, DisplayError> {
     preset.validate()?;
-    if panel.width == 0 || panel.height == 0 {
-        return Err(DisplayError::PanelUnknown);
-    }
-
-    // The content is laid out at the size it will occupy *before* rotation, so
-    // a quarter turn on a non-square panel composes rather than crops.
-    let quarter = preset.orientation.quarter_turns();
-    let (width, height) = if quarter % 2 == 1 {
-        (u32::from(panel.height), u32::from(panel.width))
-    } else {
-        (u32::from(panel.width), u32::from(panel.height))
-    };
+    let (width, height) = compose_size(preset, panel)?;
 
     let mut canvas = Canvas::filled(width, height, preset.background);
     match preset.mode {
@@ -154,12 +148,148 @@ pub fn render(
         DisplayMode::SingleReading => draw_single(&mut canvas, preset, &samples[0]),
     }
 
-    let canvas = rotate(&canvas, preset.orientation);
-    Ok(Framebuffer {
+    Ok(finish(&canvas, preset.orientation))
+}
+
+/// The size the content is laid out at, before the quarter turn.
+///
+/// Laying out at the pre-rotation size is what makes a quarter turn on a
+/// non-square panel compose rather than crop.
+fn compose_size(preset: &DisplayPreset, panel: &LcdPanel) -> Result<(u32, u32), DisplayError> {
+    if panel.width == 0 || panel.height == 0 {
+        return Err(DisplayError::PanelUnknown);
+    }
+    Ok(if preset.orientation.quarter_turns() % 2 == 1 {
+        (u32::from(panel.height), u32::from(panel.width))
+    } else {
+        (u32::from(panel.width), u32::from(panel.height))
+    })
+}
+
+/// Turn the finished picture and hand back the frame.
+fn finish(canvas: &Canvas, orientation: Orientation) -> Framebuffer {
+    let canvas = rotate(canvas, orientation);
+    Framebuffer {
         width: canvas.width(),
         height: canvas.height(),
         pixels: canvas.pixels().to_vec(),
-    })
+    }
+}
+
+/// One picture of an animation, and how long it stays on the glass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationFrame {
+    pub frame: Framebuffer,
+    /// Already clamped to what the transport can hold. See
+    /// [`kori_core::display::MIN_FRAME_DELAY_MS`].
+    pub delay: Duration,
+}
+
+/// Compile the file an image preset names into the frames the panel will play.
+///
+/// One entry for a still picture or a single-frame GIF, one per frame for an
+/// animated one. The caller decides what that means: the daemon installs a
+/// sequence of more than one as an animation and sends a single one as an
+/// ordinary frame.
+///
+/// This is the whole decode. It happens once, when the operator picks a file,
+/// and never again: what the tick loop then holds is a table of finished
+/// framebuffers, so playing an animation costs a copy and a transfer rather
+/// than an LZW pass and a resize per frame. That is also why the ceiling is a
+/// frame count rather than a duration, and why it is
+/// [`MAX_ANIMATION_FRAMES`] frames of memory rather than a stream.
+///
+/// The first frame agrees with [`render`] by construction for a still picture,
+/// which draws it through the same code, and by composition for a GIF: both
+/// blend frame zero over the preset's own background rather than over black.
+pub fn render_image_frames(
+    preset: &DisplayPreset,
+    panel: &LcdPanel,
+) -> Result<Vec<AnimationFrame>, DisplayError> {
+    preset.validate()?;
+    let (width, height) = compose_size(preset, panel)?;
+
+    let Some(path) = preset.image.as_ref().filter(|_| preset.mode.uses_image()) else {
+        return Err(DisplayError::ImagePathMissing);
+    };
+    let name = path.display().to_string();
+    let undecodable = |detail: String| DisplayError::ImageUndecodable {
+        path: name.clone(),
+        detail,
+    };
+
+    let reader = image::ImageReader::open(path)
+        .map_err(|error| undecodable(error.to_string()))?
+        .with_guessed_format()
+        .map_err(|error| undecodable(error.to_string()))?;
+
+    // Anything that is not a GIF holds still, and is drawn by the same function
+    // the per-tick render calls, so the two cannot disagree about one picture.
+    if reader.format() != Some(image::ImageFormat::Gif) {
+        let mut canvas = Canvas::filled(width, height, preset.background);
+        draw_image(&mut canvas, preset)?;
+        return Ok(vec![AnimationFrame {
+            frame: finish(&canvas, preset.orientation),
+            delay: Duration::from_millis(DEFAULT_FRAME_DELAY_MS),
+        }]);
+    }
+
+    let decoder = image::codecs::gif::GifDecoder::new(reader.into_inner())
+        .map_err(|error| undecodable(error.to_string()))?;
+    let (source_width, source_height) = decoder.dimensions();
+    if source_width > MAX_IMAGE_DIMENSION || source_height > MAX_IMAGE_DIMENSION {
+        return Err(DisplayError::ImageTooLarge {
+            width: source_width,
+            height: source_height,
+            max: MAX_IMAGE_DIMENSION,
+        });
+    }
+    if source_width == 0 || source_height == 0 {
+        return Err(undecodable("the image has no pixels".to_string()));
+    }
+
+    let mut frames = Vec::new();
+    for frame in decoder.into_frames() {
+        // Refused rather than truncated: an animation quietly cut off at its
+        // ceiling is a file the operator picked and this product then played
+        // something else instead of.
+        if frames.len() == MAX_ANIMATION_FRAMES {
+            return Err(DisplayError::AnimationTooLong {
+                max: MAX_ANIMATION_FRAMES,
+            });
+        }
+        let frame = frame.map_err(|error| undecodable(error.to_string()))?;
+        let delay = clamp_delay(frame.delay().into());
+
+        // `AnimationDecoder` has already composited this frame over the
+        // previous ones and applied its disposal method, so what arrives here
+        // is the whole canvas rather than the sub-rectangle the format stores.
+        let mut canvas = Canvas::filled(width, height, preset.background);
+        draw_rgba(&mut canvas, frame.buffer());
+        frames.push(AnimationFrame {
+            frame: finish(&canvas, preset.orientation),
+            delay,
+        });
+    }
+
+    if frames.is_empty() {
+        return Err(undecodable("the file carries no frames".to_string()));
+    }
+    Ok(frames)
+}
+
+/// What a frame's declared delay becomes once the transport has its say.
+///
+/// A zero means "as fast as possible" in the format and a tenth of a second
+/// everywhere it is played. Anything else is raised to the floor one picture
+/// costs, because a cadence the hardware cannot hold is not played faster, it
+/// is played further and further behind.
+fn clamp_delay(delay: Duration) -> Duration {
+    if delay.is_zero() {
+        Duration::from_millis(DEFAULT_FRAME_DELAY_MS)
+    } else {
+        delay.max(Duration::from_millis(MIN_FRAME_DELAY_MS))
+    }
 }
 
 /// Where each element sits, as a fraction of the panel's smaller side.
@@ -529,31 +659,72 @@ fn draw_image(canvas: &mut Canvas, preset: &DisplayPreset) -> Result<(), Display
         return Err(undecodable("the image has no pixels".to_string()));
     }
 
+    // RGBA rather than RGB: a transparent PNG or a one-frame GIF shows the
+    // preset's own background through its holes, which is what the animated
+    // path does with every frame and what an operator picking a logo expects.
     let decoded = image::DynamicImage::from_decoder(decoder)
         .map_err(|error| undecodable(error.to_string()))?
-        .to_rgb8();
+        .to_rgba8();
 
-    // Cover: the shorter side fills the panel and the longer one is trimmed
-    // evenly, so a wide photograph is not squeezed into a circle.
-    let scale = (canvas.width() as f32 / source_width as f32)
-        .max(canvas.height() as f32 / source_height as f32);
-    let offset_x = (source_width as f32 * scale - canvas.width() as f32) / 2.0;
-    let offset_y = (source_height as f32 * scale - canvas.height() as f32) / 2.0;
+    draw_rgba(canvas, &decoded);
+    Ok(())
+}
 
+/// Paint one decoded picture across the canvas, scaled to cover it.
+fn draw_rgba(canvas: &mut Canvas, source: &image::RgbaImage) {
+    let Some(cover) = Cover::new(canvas, source.width(), source.height()) else {
+        return;
+    };
     for y in 0..canvas.height() {
         for x in 0..canvas.width() {
-            let source_x = (((x as f32 + 0.5 + offset_x) / scale) as u32).min(source_width - 1);
-            let source_y = (((y as f32 + 0.5 + offset_y) / scale) as u32).min(source_height - 1);
-            let pixel = decoded.get_pixel(source_x, source_y);
+            let (source_x, source_y) = cover.source(x, y);
+            let pixel = source.get_pixel(source_x, source_y);
             canvas.blend(
                 x as i32,
                 y as i32,
                 Rgb::new(pixel[0], pixel[1], pixel[2]),
-                1.0,
+                f32::from(pixel[3]) / 255.0,
             );
         }
     }
-    Ok(())
+}
+
+/// Where a canvas pixel reads from, when the picture is scaled to cover it.
+///
+/// Cover rather than fit: the shorter side fills the panel and the longer one
+/// is trimmed evenly, so a wide photograph is not squeezed into a circle.
+struct Cover {
+    scale: f32,
+    offset_x: f32,
+    offset_y: f32,
+    source_width: u32,
+    source_height: u32,
+}
+
+impl Cover {
+    /// `None` when there is nothing to sample, which is the one case the
+    /// arithmetic below cannot express.
+    fn new(canvas: &Canvas, source_width: u32, source_height: u32) -> Option<Self> {
+        if source_width == 0 || source_height == 0 {
+            return None;
+        }
+        let scale = (canvas.width() as f32 / source_width as f32)
+            .max(canvas.height() as f32 / source_height as f32);
+        Some(Self {
+            scale,
+            offset_x: (source_width as f32 * scale - canvas.width() as f32) / 2.0,
+            offset_y: (source_height as f32 * scale - canvas.height() as f32) / 2.0,
+            source_width,
+            source_height,
+        })
+    }
+
+    fn source(&self, x: u32, y: u32) -> (u32, u32) {
+        (
+            (((x as f32 + 0.5 + self.offset_x) / self.scale) as u32).min(self.source_width - 1),
+            (((y as f32 + 0.5 + self.offset_y) / self.scale) as u32).min(self.source_height - 1),
+        )
+    }
 }
 
 /// Turn the finished picture, which is where the only rotation happens.
@@ -1054,6 +1225,189 @@ mod tests {
         assert_eq!(
             render(&preset, &samples(None, None), &panel()),
             Err(DisplayError::ImagePathMissing)
+        );
+    }
+
+    /// A preset in image mode pointing at `path`.
+    fn image_preset(path: &std::path::Path) -> DisplayPreset {
+        let mut preset = DisplayPreset::default_infographic();
+        preset.mode = DisplayMode::Image;
+        preset.image = Some(path.to_path_buf());
+        preset
+    }
+
+    #[test]
+    fn an_animated_gif_becomes_one_finished_frame_per_picture() {
+        let directory = testing::scratch("animated").unwrap();
+        let path = directory.join("three.gif");
+        let colors = [
+            Rgb::new(0xff, 0, 0),
+            Rgb::new(0, 0xff, 0),
+            Rgb::new(0, 0, 0xff),
+        ];
+        testing::write_gif(&path, 24, &colors.map(|color| (color, 10))).unwrap();
+
+        let frames = render_image_frames(&image_preset(&path), &panel()).unwrap();
+        assert_eq!(frames.len(), 3, "one entry per picture in the file");
+        for (frame, expected) in frames.iter().zip(colors) {
+            assert_eq!(frame.frame.width(), 240);
+            assert_eq!(frame.frame.height(), 240);
+            assert_eq!(
+                frame.frame.to_rgb565_be().len(),
+                panel().frame_bytes as usize,
+                "every frame is exactly the size the transport takes"
+            );
+            // The picture fills the panel, so the color at the middle is the
+            // frame's own rather than the preset's background.
+            let middle = frame.frame.pixels()[(240 * 120 + 120) as usize];
+            assert_eq!(
+                (middle.r >> 3, middle.g >> 2, middle.b >> 3),
+                (expected.r >> 3, expected.g >> 2, expected.b >> 3),
+                "frame {expected:?} did not survive to the framebuffer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cadence_the_transport_cannot_hold_is_slowed_to_what_it_can() {
+        // A GIF asking for a hundredth of a second is not played faster by
+        // trying: one picture costs two transfer sequences, and a delay under
+        // the floor would only put the animation further behind every frame.
+        let directory = testing::scratch("cadence").unwrap();
+        let path = directory.join("fast.gif");
+        testing::write_gif(
+            &path,
+            8,
+            &[(Rgb::new(0xff, 0, 0), 1), (Rgb::new(0, 0xff, 0), 50)],
+        )
+        .unwrap();
+
+        let frames = render_image_frames(&image_preset(&path), &panel()).unwrap();
+        assert_eq!(
+            frames[0].delay,
+            Duration::from_millis(MIN_FRAME_DELAY_MS),
+            "a frame under the floor is raised to it"
+        );
+        assert_eq!(
+            frames[1].delay,
+            Duration::from_millis(500),
+            "a frame the transport can hold keeps the delay it declared"
+        );
+    }
+
+    #[test]
+    fn a_still_picture_compiles_to_the_one_frame_the_renderer_draws() {
+        // FR-14 for the compiled path: the table the daemon plays and the
+        // picture the per-tick renderer produces are the same bytes, because
+        // one calls the other.
+        let directory = testing::scratch("still").unwrap();
+        let path = directory.join("one.gif");
+        testing::write_gif(&path, 16, &[(Rgb::new(0x20, 0x80, 0xc0), 10)]).unwrap();
+
+        let preset = image_preset(&path);
+        let frames = render_image_frames(&preset, &panel()).unwrap();
+        assert_eq!(frames.len(), 1, "a single-frame GIF holds still");
+
+        let drawn = render(&preset, &samples(None, None), &panel()).unwrap();
+        assert_eq!(
+            frames[0].frame.to_rgb565_be(),
+            drawn.to_rgb565_be(),
+            "the compiled frame and the drawn one are the same picture"
+        );
+    }
+
+    #[test]
+    fn an_animation_past_the_ceiling_is_refused_rather_than_truncated() {
+        // Cut off at its ceiling, the operator would have picked one file and
+        // this product would be playing another. The GIF header declares no
+        // frame count, so the refusal has to come from the decoder being
+        // stopped rather than from a field read ahead of it.
+        let directory = testing::scratch("ceiling").unwrap();
+        let path = directory.join("long.gif");
+        let frames: Vec<(Rgb, u16)> = (0..MAX_ANIMATION_FRAMES + 1)
+            .map(|index| (Rgb::new(index as u8, 0, 0), 10))
+            .collect();
+        testing::write_gif(&path, 4, &frames).unwrap();
+
+        assert_eq!(
+            render_image_frames(&image_preset(&path), &panel()),
+            Err(DisplayError::AnimationTooLong {
+                max: MAX_ANIMATION_FRAMES
+            })
+        );
+
+        // One frame fewer is accepted, so the ceiling is the ceiling and not
+        // an off-by-one below it.
+        testing::write_gif(&path, 4, &frames[..MAX_ANIMATION_FRAMES]).unwrap();
+        assert_eq!(
+            render_image_frames(&image_preset(&path), &panel())
+                .map(|frames| frames.len())
+                .unwrap(),
+            MAX_ANIMATION_FRAMES
+        );
+    }
+
+    #[test]
+    fn a_gif_that_stops_halfway_is_refused_rather_than_played_as_far_as_it_got() {
+        // A truncated animation is a file the operator picked and this product
+        // would otherwise play a piece of, which is the same objection as the
+        // frame ceiling: it fails, it does not shorten.
+        let directory = testing::scratch("truncated").unwrap();
+        let path = directory.join("cut.gif");
+        testing::write_gif(
+            &path,
+            32,
+            &[(Rgb::new(0xff, 0, 0), 10), (Rgb::new(0, 0xff, 0), 10)],
+        )
+        .unwrap();
+        let whole = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &whole[..whole.len() * 2 / 3]).unwrap();
+
+        assert!(
+            matches!(
+                render_image_frames(&image_preset(&path), &panel()),
+                Err(DisplayError::ImageUndecodable { .. })
+            ),
+            "a stream that ends early is a decode failure, not a shorter animation"
+        );
+    }
+
+    #[test]
+    fn a_header_declaring_more_than_the_ceiling_is_refused_before_a_frame_is_decoded() {
+        // The same guard the still path has, on the animated one: the size
+        // comes from what the file declares, so an enormous canvas is refused
+        // rather than allocated for.
+        let directory = testing::scratch("declared").unwrap();
+        let path = directory.join("huge.gif");
+        // A real GIF whose logical screen descriptor is then overwritten with
+        // a canvas past the ceiling. The rest of the file is intact, so the
+        // refusal can only have come from those four bytes.
+        testing::write_gif(&path, 8, &[(Rgb::new(0xff, 0, 0), 10)]).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[6..10].copy_from_slice(&[0x00, 0x60, 0x00, 0x60]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert_eq!(
+            render_image_frames(&image_preset(&path), &panel()),
+            Err(DisplayError::ImageTooLarge {
+                width: 24576,
+                height: 24576,
+                max: MAX_IMAGE_DIMENSION,
+            })
+        );
+    }
+
+    #[test]
+    fn a_compiled_frame_is_refused_when_the_panel_geometry_is_unknown() {
+        let directory = testing::scratch("nopanel").unwrap();
+        let path = directory.join("any.gif");
+        testing::write_gif(&path, 4, &[(Rgb::new(1, 2, 3), 10)]).unwrap();
+
+        let mut panel = panel();
+        panel.width = 0;
+        assert_eq!(
+            render_image_frames(&image_preset(&path), &panel),
+            Err(DisplayError::PanelUnknown)
         );
     }
 
