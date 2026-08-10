@@ -7,8 +7,12 @@
 //! interface can be checked as a system: the contrast tests below run against
 //! these values, not against a screenshot.
 //!
-//! The palette is the project's own. It borrows the operational density of a
-//! dark control surface without reusing any vendor logo, asset or wordmark.
+//! The neutral surfaces and the status hues are Paneflow's dark UI palette
+//! (`theme::model::ui_colors_with`, dark branch), so the two windows read as the
+//! same desktop chrome rather than as two products that happen to both be dark.
+//! The accent stays this project's violet: Paneflow signs its own chrome in
+//! teal, and an operator running both should still know which window is holding
+//! the pump. Nothing here reuses a vendor logo, asset or wordmark.
 
 use gpui::{Font, FontFeatures, FontStyle, FontWeight, Hsla, Pixels, Rgba, px};
 use std::sync::Arc;
@@ -89,36 +93,45 @@ pub mod color {
     use super::Color;
 
     /// Fixed navigation rail, darkest surface.
-    pub const RAIL: Color = Color::rgb(0x14161a);
-    /// Charcoal work surface.
-    pub const SURFACE: Color = Color::rgb(0x1c1f25);
-    /// Raised panel on the work surface.
-    pub const PANEL: Color = Color::rgb(0x23272f);
-    /// Input and control fill.
-    pub const CONTROL: Color = Color::rgb(0x2a2f38);
+    ///
+    /// Paneflow's chrome background, the one its title bar carries. The rail is
+    /// this window's chrome, so it sits under the work surface for the same
+    /// reason: the frame is the thing the content is laid on.
+    pub const RAIL: Color = Color::rgb(0x141414);
+    /// Charcoal work surface. Paneflow's `base`.
+    pub const SURFACE: Color = Color::rgb(0x181818);
+    /// Raised panel on the work surface. Paneflow's `surface`.
+    pub const PANEL: Color = Color::rgb(0x212121);
+    /// Input and control fill. Paneflow's `subtle`.
+    pub const CONTROL: Color = Color::rgb(0x2a2a2a);
     /// The same fill under the pointer.
     ///
-    /// [`CONTROL`] darkened by 0.04 in luminance rather than lightened, as
+    /// [`CONTROL`] darkened by 0.04 in HSL lightness rather than lightened, as
     /// Paneflow's `select_trigger` does: on a dark surface a control that sinks
     /// under the pointer reads as pressable, while one that brightens reads as
     /// already selected.
-    pub const CONTROL_HOVER: Color = Color::rgb(0x21252c);
+    pub const CONTROL_HOVER: Color = Color::rgb(0x202020);
     /// The same fill under the pointer, on a button.
     ///
     /// [`CONTROL`] mixed 6% toward [`TEXT`], which is Paneflow's
     /// `secondary_button`. A button lifts where a field sinks: one is a thing
     /// to press, the other a thing to open, and the direction of the change is
     /// what says which.
-    pub const CONTROL_RAISED: Color = Color::rgb(0x353a43);
-    /// Low-contrast separator.
-    pub const SEPARATOR: Color = Color::rgb(0x333944);
+    pub const CONTROL_RAISED: Color = Color::rgb(0x343536);
+    /// Low-contrast separator. Paneflow's `border`.
+    pub const SEPARATOR: Color = Color::rgb(0x252525);
     /// Surface a floating menu is drawn on.
     ///
-    /// [`PANEL`] lifted by 0.035 in luminance, which is how Paneflow's
+    /// [`PANEL`] lifted by 0.035 in HSL lightness, which is how Paneflow's
     /// `select_menu_surface` separates a menu from the panel under it: a menu
     /// hovering over a surface of its own color reads as part of it, and the
     /// lift is what says the menu is in front rather than in the page.
-    pub const MENU: Color = Color::rgb(0x2b2f39);
+    ///
+    /// On this palette that lands on [`CONTROL`] exactly, as it does in
+    /// Paneflow. The two stay separate tokens because they are separate
+    /// decisions: one is a fill a control carries, the other a layer over the
+    /// page, and the day either derivation moves the other must not follow.
+    pub const MENU: Color = Color::rgb(0x2a2a2a);
 
     /// The single selection accent.
     ///
@@ -130,19 +143,24 @@ pub mod color {
     /// Focus ring, light enough to read on the accent it may sit against.
     pub const FOCUS: Color = Color::rgb(0xcdbcff);
 
-    pub const TEXT: Color = Color::rgb(0xe8eaee);
-    pub const TEXT_MUTED: Color = Color::rgb(0xa3aab6);
+    /// Paneflow's `text`: a cool near-white rather than a neutral one, which is
+    /// what keeps a page of readouts from reading as printed paper.
+    pub const TEXT: Color = Color::rgb(0xd5deea);
+    /// Paneflow's `muted`.
+    pub const TEXT_MUTED: Color = Color::rgb(0x96a2b3);
     pub const TEXT_DISABLED: Color = Color::rgb(0x6b7280);
     /// Text drawn on top of the accent.
     pub const TEXT_ON_ACCENT: Color = Color::rgb(0xffffff);
 
-    pub const SUCCESS: Color = Color::rgb(0x5ee49a);
-    pub const WARNING: Color = Color::rgb(0xf5c451);
+    /// Paneflow's `vc_added`.
+    pub const SUCCESS: Color = Color::rgb(0x57d992);
+    /// Paneflow's `vc_modified`.
+    pub const WARNING: Color = Color::rgb(0xffd166);
     /// The word a failure is named in: an error, a stalled channel, a device
     /// that did not answer. A text color, held to the full 4.5:1 on every
     /// surface it is written on, which is why it is a light red rather than a
-    /// saturated one.
-    pub const DANGER: Color = Color::rgb(0xff8a8a);
+    /// saturated one. Paneflow's `vc_deleted`, which is the same tradeoff.
+    pub const DANGER: Color = Color::rgb(0xff6f6a);
 
     /// Fill of a destructive action, at full opacity.
     ///
@@ -399,9 +417,9 @@ mod tests {
     ///
     /// | fill | white on it | on SURFACE | on PANEL |
     /// |---|---|---|---|
-    /// | `DESTRUCTIVE` | 3.41:1 | 4.85:1 | 4.39:1 |
-    /// | `DESTRUCTIVE_HOVER` | 4.07:1 | 4.06:1 | 3.68:1 |
-    /// | `DESTRUCTIVE_ACTIVE` | 5.35:1 | 3.08:1 | 2.80:1 |
+    /// | `DESTRUCTIVE` | 3.41:1 | 5.21:1 | 4.72:1 |
+    /// | `DESTRUCTIVE_HOVER` | 4.07:1 | 4.36:1 | 3.95:1 |
+    /// | `DESTRUCTIVE_ACTIVE` | 5.35:1 | 3.32:1 | 3.01:1 |
     #[test]
     fn the_destructive_button_stays_legible_in_every_interaction_state() {
         for state in [DESTRUCTIVE, DESTRUCTIVE_HOVER, DESTRUCTIVE_ACTIVE] {
