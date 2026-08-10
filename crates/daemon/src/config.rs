@@ -12,11 +12,58 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use herschel_core::display::DisplayPreset;
 use herschel_core::ipc::ConfigState;
+use herschel_core::lighting::LightingCommand;
 use herschel_core::profile::{
-    CONFIG_SCHEMA_VERSION, Profile, SAFE_PROFILE_NAME, ValidationError, validate_profile,
+    CONFIG_SCHEMA_VERSION, CoolingProgram, Profile, SAFE_PROFILE_NAME, ValidationError,
+    validate_profile,
 };
 use serde::{Deserialize, Serialize};
+
+/// What the daemon last committed, outside any named profile.
+///
+/// A profile is what the operator chose to keep. This is what the hardware is
+/// actually running, and the two are not the same fact: every Lighting edit
+/// writes as it settles and none of them asks to be saved under a name, so a
+/// restart that replayed only the active profile would drop every edit made
+/// since that profile was written.
+///
+/// Only a committed write reaches this record, so it can never claim a write
+/// that did not happen. The streaming path never touches it either: a telemetry
+/// frame goes out through `DisplayExecutor::refresh`, not through an Apply, so
+/// a panel redrawn once a second costs no disk write at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionState {
+    /// The last thermal program the daemon confirmed on the device.
+    ///
+    /// A curve drawn on the Cooling screen writes as it settles, exactly as a
+    /// lighting edit does, and asks to be saved under a name no more than one
+    /// does. Without this, the shape the operator drew lived only in the
+    /// running window and the next start replayed the profile instead.
+    #[serde(default)]
+    pub program: Option<CoolingProgram>,
+    /// The last program each channel was told to run, one entry per channel.
+    #[serde(default)]
+    pub lighting: Vec<LightingCommand>,
+    /// The last preset the panel was told to show.
+    #[serde(default)]
+    pub display: Option<DisplayPreset>,
+}
+
+impl SessionState {
+    /// True while nothing has been committed, which keeps the table out of the
+    /// file rather than writing an empty one.
+    fn is_empty(&self) -> bool {
+        self.program.is_none() && self.lighting.is_empty() && self.display.is_none()
+    }
+
+    /// The program committed to `channel`, when one was.
+    fn channel(&self, channel: u8) -> Option<&LightingCommand> {
+        self.lighting.iter().find(|held| held.channel == channel)
+    }
+}
 
 /// The on-disk document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +73,13 @@ pub struct ConfigDocument {
     pub active_profile: String,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// Last committed state, restored ahead of the active profile.
+    ///
+    /// Written after the array of profiles because TOML renders a table after
+    /// the arrays of tables that precede it, and read with `default` so a file
+    /// written before this existed still loads.
+    #[serde(default, skip_serializing_if = "SessionState::is_empty")]
+    pub session: SessionState,
 }
 
 impl Default for ConfigDocument {
@@ -34,6 +88,7 @@ impl Default for ConfigDocument {
             schema_version: CONFIG_SCHEMA_VERSION,
             active_profile: SAFE_PROFILE_NAME.to_string(),
             profiles: Vec::new(),
+            session: SessionState::default(),
         }
     }
 }
@@ -191,6 +246,99 @@ impl Configuration {
 
         self.commit_change(|document| document.profiles.retain(|p| p.name != name))?;
         Ok(activated)
+    }
+
+    /// What the daemon last committed to the hardware.
+    pub fn session(&self) -> &SessionState {
+        &self.document.session
+    }
+
+    /// The lighting a start should replay: the active profile, with every
+    /// channel the session has since committed put over it.
+    ///
+    /// Per channel rather than wholesale. A profile that lights three channels
+    /// and one channel edited afterwards is four facts, and taking the session
+    /// as a whole would silently unlight the two the operator never touched.
+    pub fn lighting_to_restore(&self) -> Vec<LightingCommand> {
+        let profile = self.active_profile();
+        let session = &self.document.session;
+        let mut commands: Vec<LightingCommand> = profile
+            .lighting
+            .into_iter()
+            .map(|command| match session.channel(command.channel) {
+                Some(committed) => committed.clone(),
+                None => command,
+            })
+            .collect();
+        for command in &session.lighting {
+            if !commands.iter().any(|held| held.channel == command.channel) {
+                commands.push(command.clone());
+            }
+        }
+        commands
+    }
+
+    /// The thermal program a start should put back, when the session holds one
+    /// the active profile does not.
+    ///
+    /// `None` means nothing has been committed since the profile was chosen, so
+    /// the profile still owns the program and the start reports it by name. A
+    /// program is one fact, like a preset and unlike a set of lighting
+    /// channels, so the session wins outright rather than per part.
+    pub fn program_to_restore(&self) -> Option<&CoolingProgram> {
+        self.document.session.program.as_ref()
+    }
+
+    /// Record the program the device was just confirmed to be running.
+    pub fn record_program(&mut self, program: &CoolingProgram) -> Result<(), ConfigError> {
+        if self.document.session.program.as_ref() == Some(program) {
+            return Ok(());
+        }
+        let program = program.clone();
+        self.commit_change(|document| document.session.program = Some(program))
+    }
+
+    /// The preset a start should put back on the panel.
+    ///
+    /// The session wins outright here, because a preset is one picture: there
+    /// is no half of it the profile could still own.
+    pub fn display_to_restore(&self) -> Option<DisplayPreset> {
+        self.document
+            .session
+            .display
+            .clone()
+            .or_else(|| self.active_profile().display)
+    }
+
+    /// Record the preset the panel was just told to show.
+    ///
+    /// A preset identical to the one already recorded writes nothing, so
+    /// re-applying the same picture does not touch the disk.
+    pub fn record_display(&mut self, preset: &DisplayPreset) -> Result<(), ConfigError> {
+        if self.document.session.display.as_ref() == Some(preset) {
+            return Ok(());
+        }
+        let preset = preset.clone();
+        self.commit_change(|document| document.session.display = Some(preset))
+    }
+
+    /// Record the program a channel was just told to run.
+    pub fn record_lighting(&mut self, command: &LightingCommand) -> Result<(), ConfigError> {
+        if self.document.session.channel(command.channel) == Some(command) {
+            return Ok(());
+        }
+        let command = command.clone();
+        self.commit_change(|document| {
+            match document
+                .session
+                .lighting
+                .iter_mut()
+                .find(|held| held.channel == command.channel)
+            {
+                Some(existing) => *existing = command,
+                None => document.session.lighting.push(command),
+            }
+        })
     }
 
     /// Apply `change` to the document, then persist it.
@@ -356,6 +504,157 @@ mod tests {
             lighting: Vec::new(),
             display: None,
         }
+    }
+
+    fn lit(channel: u8, red: u8) -> LightingCommand {
+        LightingCommand {
+            channel,
+            program: herschel_core::lighting::LightingProgram::Fixed {
+                color: herschel_core::lighting::Rgb::new(red, 0, 0),
+                brightness: herschel_core::lighting::Brightness::FULL,
+            },
+        }
+    }
+
+    #[test]
+    fn a_committed_preset_survives_a_reload() {
+        // The whole point of the record: the panel comes back on the picture it
+        // was left on, without the operator having saved a profile for it.
+        let temp = TempConfig::new("session-display");
+        let mut preset = DisplayPreset::default_infographic();
+        preset.mode = herschel_core::display::DisplayMode::SingleReading;
+        preset.orientation = herschel_core::display::Orientation::Deg180;
+        preset.brightness = herschel_core::lighting::Brightness::new(45).unwrap();
+
+        let mut config = Configuration::load(temp.file());
+        assert_eq!(config.display_to_restore(), None);
+        config.record_display(&preset).unwrap();
+
+        let reloaded = Configuration::load(temp.file());
+        assert_eq!(reloaded.state(), &ConfigState::Loaded);
+        assert_eq!(reloaded.display_to_restore(), Some(preset));
+    }
+
+    /// A curve is the one program nothing can read back, so the file is the
+    /// only place it survives a restart. This is the Cooling half of
+    /// [`a_committed_preset_survives_a_reload`], and it has to hold with no
+    /// profile saved at all.
+    #[test]
+    fn a_committed_curve_survives_a_reload_without_a_profile() {
+        let temp = TempConfig::new("session-program");
+        let mut drawn = TemperatureCurve::flat(140);
+        for (index, point) in drawn.points.iter_mut().enumerate() {
+            *point = 140 + index as u8;
+        }
+        let program = CoolingProgram::Curve {
+            pump: drawn.clone(),
+            fan: drawn,
+        };
+
+        let mut config = Configuration::load(temp.file());
+        assert_eq!(config.program_to_restore(), None);
+        config.record_program(&program).unwrap();
+
+        let reloaded = Configuration::load(temp.file());
+        assert_eq!(reloaded.state(), &ConfigState::Loaded);
+        assert_eq!(reloaded.program_to_restore(), Some(&program));
+        assert!(
+            reloaded.active_profile().is_safe_builtin(),
+            "the shape was never saved under a name, and did not need to be"
+        );
+    }
+
+    #[test]
+    fn re_committing_the_same_program_does_not_touch_the_disk() {
+        let temp = TempConfig::new("session-program-idempotent");
+        let program = CoolingProgram::Fixed { pump: 180, fan: 90 };
+
+        let mut config = Configuration::load(temp.file());
+        config.record_program(&program).unwrap();
+        std::fs::remove_file(temp.file()).unwrap();
+        config.record_program(&program).unwrap();
+        assert!(
+            !temp.file().exists(),
+            "an unchanged program must write nothing"
+        );
+    }
+
+    #[test]
+    fn re_committing_the_same_picture_does_not_touch_the_disk() {
+        // A repeated Apply is deduplicated at the panel, and it has to be
+        // deduplicated here too: the daemon answers every settled edit, and a
+        // file rewritten for a picture that did not change is wear for nothing.
+        let temp = TempConfig::new("session-idempotent");
+        let preset = DisplayPreset::default_infographic();
+
+        let mut config = Configuration::load(temp.file());
+        config.record_display(&preset).unwrap();
+        assert!(temp.file().exists());
+
+        // Removing the file makes the next write observable: a second identical
+        // record that wrote anything would put it back.
+        std::fs::remove_file(temp.file()).unwrap();
+        config.record_display(&preset).unwrap();
+        assert!(
+            !temp.file().exists(),
+            "an unchanged preset must write nothing"
+        );
+    }
+
+    #[test]
+    fn the_session_outranks_the_profile_one_channel_at_a_time() {
+        let temp = TempConfig::new("session-lighting");
+        let mut profile = named("Evening");
+        profile.lighting = vec![lit(1, 0x10), lit(2, 0x20)];
+
+        let mut config = Configuration::load(temp.file());
+        config.save_profile(profile).unwrap();
+        config.activate("Evening").unwrap();
+        assert_eq!(
+            config.lighting_to_restore(),
+            vec![lit(1, 0x10), lit(2, 0x20)]
+        );
+
+        // Channel 1 is edited afterwards, channel 3 is lit for the first time.
+        config.record_lighting(&lit(1, 0xF0)).unwrap();
+        config.record_lighting(&lit(3, 0xF3)).unwrap();
+
+        let reloaded = Configuration::load(temp.file());
+        assert_eq!(
+            reloaded.lighting_to_restore(),
+            vec![lit(1, 0xF0), lit(2, 0x20), lit(3, 0xF3)],
+            "the edited channel comes from the session, the untouched one from \
+             the profile, and neither hides the other"
+        );
+    }
+
+    #[test]
+    fn a_file_written_before_the_session_existed_still_loads() {
+        let temp = TempConfig::new("session-absent");
+        std::fs::write(
+            temp.file(),
+            "schema_version = 1\nactive_profile = \"Onboard safe\"\n",
+        )
+        .unwrap();
+
+        let config = Configuration::load(temp.file());
+        assert_eq!(config.state(), &ConfigState::Loaded);
+        assert_eq!(config.session(), &SessionState::default());
+        assert_eq!(config.display_to_restore(), None);
+        assert!(config.lighting_to_restore().is_empty());
+    }
+
+    #[test]
+    fn nothing_committed_leaves_the_table_out_of_the_file() {
+        let temp = TempConfig::new("session-empty");
+        let mut config = Configuration::load(temp.file());
+        config.save_profile(named("Quiet")).unwrap();
+
+        let written = std::fs::read_to_string(temp.file()).unwrap();
+        assert!(
+            !written.contains("[session]"),
+            "an empty record must not appear in the operator's file: {written}"
+        );
     }
 
     #[test]

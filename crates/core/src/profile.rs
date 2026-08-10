@@ -19,7 +19,13 @@ use crate::capability::{CapabilityId, DeviceRecord};
 ///
 /// Version 3 added the panel preset. Both fields are optional, so a file at an
 /// earlier version parses exactly as it stands and the next save rewrites it.
-pub const CONFIG_SCHEMA_VERSION: u32 = 3;
+///
+/// Version 4 added the session table, which is what the daemon last committed
+/// rather than what the operator saved under a name. The bump matters in the
+/// other direction: an earlier build refuses an unknown key outright and would
+/// preserve the file as unreadable, while the version makes it say which build
+/// wrote it.
+pub const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 /// Name of the built-in profile that is always available and always safe.
 pub const SAFE_PROFILE_NAME: &str = "Onboard safe";

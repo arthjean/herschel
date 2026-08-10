@@ -145,6 +145,14 @@ pub enum EventKind {
         /// Duty the device reports it is running.
         reported: u8,
     },
+    /// A committed command reached the hardware but could not be written down.
+    ///
+    /// The device took it, so nothing on screen is wrong. What is lost is the
+    /// next start: the daemon will replay the state it last managed to record
+    /// rather than this one, and this line is the only place that says so.
+    SessionNotRecorded {
+        detail: String,
+    },
     /// A telemetry collector panicked or stopped answering.
     CollectorFailed {
         collector: Collector,
@@ -164,6 +172,9 @@ impl EventKind {
             | Self::RequestRejected { .. }
             | Self::CollectorFailed { .. }
             | Self::ConfigRecovered { .. }
+            // The hardware is running something the next start will not put
+            // back, which the operator only learns from here.
+            | Self::SessionNotRecorded { .. }
             // The device is not running the program this process believes it
             // committed. That is a control failure, not a notice.
             | Self::CurveDiverged { .. } => Severity::Warning,

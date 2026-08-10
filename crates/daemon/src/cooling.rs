@@ -158,6 +158,31 @@ impl CoolingExecutor {
             .map(|(_, commit)| &commit.target)
     }
 
+    /// The program both channels are committed to, when they hold the same
+    /// kind of target.
+    ///
+    /// Reconstructed from the per-channel commits rather than kept beside them,
+    /// so a curve [`CoolingExecutor::verify_curves`] uncommitted stops being
+    /// reported here in the same move. Two channels running different kinds of
+    /// target are not a program this daemon wrote, so they are reported as
+    /// nothing rather than as half of one.
+    pub fn committed_program(&self) -> Option<CoolingProgram> {
+        match (
+            self.committed_target(Channel::Pump)?,
+            self.committed_target(Channel::Fan)?,
+        ) {
+            (Target::Fixed(pump), Target::Fixed(fan)) => Some(CoolingProgram::Fixed {
+                pump: *pump,
+                fan: *fan,
+            }),
+            (Target::Curve(pump), Target::Curve(fan)) => Some(CoolingProgram::Curve {
+                pump: pump.clone(),
+                fan: fan.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     fn commit(&mut self, channel: Channel, target: Target) {
         self.commit_at(channel, target, crate::now_unix_ms());
     }

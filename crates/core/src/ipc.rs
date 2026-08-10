@@ -453,6 +453,14 @@ pub struct DaemonStatus {
     pub devices: Vec<DeviceStatus>,
     pub active_profile: String,
     pub config: ConfigState,
+    /// The thermal program the daemon last committed, when it committed one.
+    ///
+    /// A duty can be read back from the driver, but a curve cannot: the device
+    /// publishes no attribute that returns the shape it was given. The daemon's
+    /// own record is therefore the only place a curve exists, and a client that
+    /// could not see it would open on a plot the machine is not running and
+    /// make the operator draw theirs again.
+    pub cooling: Option<CoolingProgram>,
     /// Lighting channels the controller reported, empty when it reported none.
     pub lighting: Vec<ChannelState>,
     /// The panel's geometry and what it was last told to show.

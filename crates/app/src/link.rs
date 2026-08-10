@@ -476,6 +476,7 @@ mod tests {
                 }],
                 active_profile: "Onboard safe".into(),
                 config: ConfigState::Loaded,
+                cooling: None,
                 lighting: Vec::new(),
                 display: herschel_core::ipc::DisplayState {
                     panel: None,

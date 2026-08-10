@@ -281,8 +281,33 @@ impl Daemon {
     /// unwritable profile must never keep the service from coming up.
     fn restore_active_profile(&mut self) {
         let profile = self.config.active_profile();
-        self.apply_profile_lighting(&profile);
-        self.apply_profile_display(&profile);
+        // What the operator last put on the hardware outranks what the profile
+        // was saved with, since every Lighting edit writes without being saved
+        // under a name. The profile still owns anything the session never
+        // committed, so a machine that comes back cold is the one the operator
+        // left rather than the one the last Save happened to capture.
+        self.apply_lighting(&self.config.lighting_to_restore());
+        self.apply_display(self.config.display_to_restore().as_ref());
+
+        // A curve edited on the Cooling screen writes as it settles and is
+        // never saved under a name either, so the same rule applies to the
+        // thermal program: what the operator left running outranks what the
+        // last Save happened to capture. `execute` records the outcome of a
+        // committed program on its own, so only the profile path names one.
+        if let Some(program) = self.config.program_to_restore().cloned() {
+            if let Err(error) = self.execute(&program) {
+                self.diagnostics.record(
+                    crate::now_unix_ms(),
+                    EventKind::ProgramApplied {
+                        hardware: HardwareState::NotApplied {
+                            reason: error.to_string(),
+                        },
+                        writes: 0,
+                    },
+                );
+            }
+            return;
+        }
 
         if profile.program == CoolingProgram::Onboard {
             return;
@@ -311,8 +336,8 @@ impl Daemon {
     ///
     /// A refusal is recorded and the daemon carries on, for the same reason a
     /// refused lighting channel does not stop a cooling profile.
-    fn apply_profile_display(&mut self, profile: &Profile) {
-        let Some(preset) = profile.display.clone() else {
+    fn apply_display(&mut self, preset: Option<&DisplayPreset>) {
+        let Some(preset) = preset.cloned() else {
             return;
         };
         if let Err(error) = self.show(&preset) {
@@ -329,9 +354,9 @@ impl Daemon {
         }
     }
 
-    fn apply_profile_lighting(&mut self, profile: &Profile) {
-        for command in profile.lighting.clone() {
-            if let Err(error) = self.illuminate(&command) {
+    fn apply_lighting(&mut self, commands: &[LightingCommand]) {
+        for command in commands {
+            if let Err(error) = self.illuminate(command) {
                 self.diagnostics.record(
                     crate::now_unix_ms(),
                     EventKind::LightingApplied {
@@ -435,6 +460,10 @@ impl Daemon {
                 .collect(),
             active_profile: self.config.active_profile_name().to_string(),
             config: self.config.state().clone(),
+            // What this process wrote and has not since uncommitted, not what
+            // the file holds: a restore the hardware refused must not be
+            // reported as a program the machine is running.
+            cooling: self.cooling.committed_program(),
             lighting: self.lighting.state(),
             display: self.display.state(),
             socket_path: self.paths.socket.display().to_string(),
@@ -613,6 +642,9 @@ impl Daemon {
                 writes: outcome.writes,
             },
         );
+        if outcome.hardware == HardwareState::Confirmed {
+            self.remember(|config| config.record_program(program));
+        }
         Ok(outcome)
     }
 
@@ -673,6 +705,9 @@ impl Daemon {
                 writes: outcome.writes,
             },
         );
+        if outcome.hardware == HardwareState::Confirmed {
+            self.remember(|config| config.record_lighting(command));
+        }
         Ok(outcome)
     }
 
@@ -734,7 +769,29 @@ impl Daemon {
                 frames: outcome.frames,
             },
         );
+        if outcome.hardware == HardwareState::Confirmed {
+            self.remember(|config| config.record_display(preset));
+        }
         Ok(outcome)
+    }
+
+    /// Persist part of the committed state, without letting the disk speak for
+    /// the hardware.
+    ///
+    /// The write has already reached the device by the time this runs, so a
+    /// configuration that cannot be written must not turn a confirmed command
+    /// into a refusal. It is recorded instead, because what the operator loses
+    /// is real: the state stops surviving a restart, and nothing else on screen
+    /// would say so.
+    fn remember(&mut self, record: impl FnOnce(&mut Configuration) -> Result<(), ConfigError>) {
+        if let Err(error) = record(&mut self.config) {
+            self.diagnostics.record(
+                crate::now_unix_ms(),
+                EventKind::SessionNotRecorded {
+                    detail: error.to_string(),
+                },
+            );
+        }
     }
 
     /// Redraw the panel from the latest sample.
@@ -838,8 +895,12 @@ impl Daemon {
 
         match self.config.activate(name) {
             Ok(profile) => {
-                self.apply_profile_lighting(&profile);
-                self.apply_profile_display(&profile);
+                // An activation is the operator naming what they want, so the
+                // profile wins here rather than the session: a profile that
+                // sets no lighting and no picture leaves both alone, exactly as
+                // it did before the session record existed.
+                self.apply_lighting(&profile.lighting);
+                self.apply_display(profile.display.as_ref());
                 // The selection is persisted first, then written. A write that
                 // fails leaves the profile selected and its hardware state
                 // reported honestly, rather than silently reverting a choice
