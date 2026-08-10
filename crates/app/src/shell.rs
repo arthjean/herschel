@@ -138,6 +138,16 @@ impl Destination {
 /// enforces to keep the firmware from discarding writes that arrive too fast.
 const AUTOSAVE_QUIET: Duration = Duration::from_millis(400);
 
+/// How still one Lighting row has to be before its edit is written.
+///
+/// Shorter than [`AUTOSAVE_QUIET`] on purpose. That constant answers to
+/// `MIN_PROGRAM_INTERVAL_MS`, the 200 ms floor of the thermal path; the lighting
+/// floor is `MIN_COMMAND_INTERVAL_MS`, four times lower, and a color that takes
+/// four tenths of a second to appear reads as a control that did not take.
+/// Still several times the floor, so a drag or a held arrow key resolves to one
+/// command rather than to a run of refusals.
+const LIGHTING_QUIET: Duration = Duration::from_millis(150);
+
 /// First tab index available to a screen's own controls.
 pub const SCREEN_TAB_BASE: isize = 10;
 
@@ -207,13 +217,15 @@ pub const LIGHTING_TAB_ROW_BASE: isize = SCREEN_TAB_BASE;
 pub const LIGHTING_ROW_STRIDE: isize = 10;
 
 /// Offsets inside a channel's block.
+///
+/// The block ends at the effect parameters. There is no Apply stop and no Turn
+/// off stop: an edit reaches the controller on its own, and Off is one of the
+/// entries in the mode select rather than a button repeating it.
 pub const ROW_OFFSET_BRIGHTNESS: isize = 1;
 pub const ROW_OFFSET_MODE: isize = 2;
 pub const CHANNEL_OFFSET_COLOR: isize = 3;
 pub const CHANNEL_OFFSET_SPEED: isize = 4;
 pub const CHANNEL_OFFSET_DIRECTION: isize = 5;
-pub const CHANNEL_OFFSET_APPLY: isize = 6;
-pub const CHANNEL_OFFSET_OFF: isize = 7;
 
 /// Offsets inside the panel's block, which is the last one on the screen.
 ///
@@ -224,7 +236,14 @@ pub const CHANNEL_OFFSET_OFF: isize = 7;
 pub const LCD_OFFSET_METRIC_ONE: isize = 3;
 pub const LCD_OFFSET_METRIC_TWO: isize = 4;
 pub const LCD_OFFSET_COLOR_BASE: isize = 5;
-pub const LCD_OFFSET_APPLY: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
+/// The one action the panel row still carries, and only while it is faulted.
+///
+/// Not an Apply: an edit is already on its way. A stopped stream is the one
+/// state no edit can clear, because nothing about the preset changed when the
+/// transfer failed, so it takes a deliberate activation. The stop is reserved
+/// whether or not the control renders, for the same reason every other offset
+/// here is.
+pub const LCD_OFFSET_RESUME: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
 
 /// First tab stop of the channel row at `index` in the rendered list.
 pub fn lighting_row_tab(index: usize) -> isize {
@@ -305,6 +324,46 @@ impl LightingRow {
 enum RowNote {
     Fragment(String),
     Sentence(String),
+}
+
+/// When each Lighting row's pending edit should leave the process.
+///
+/// One deadline per row rather than one for the screen. The daemon tracks its
+/// cadence floor per channel, so two rows edited in the same breath are two
+/// independent writes and a single deadline would make one of them wait behind
+/// the other for no reason.
+///
+/// A row edited again before its deadline pushes that deadline out, which is
+/// how a drag or a held arrow key resolves to one command. Every edit spawns a
+/// timer and every timer drains whatever has come due, so a timer that fires
+/// into a moved deadline does nothing and no task has to be cancelled.
+#[derive(Debug, Default)]
+pub struct WriteSchedule {
+    due: Vec<(LightingRow, Instant)>,
+}
+
+impl WriteSchedule {
+    /// Arrange for `row` to be written once it has been still until `at`.
+    pub fn touch(&mut self, row: LightingRow, at: Instant) {
+        match self.due.iter_mut().find(|(queued, _)| *queued == row) {
+            Some((_, deadline)) => *deadline = at,
+            None => self.due.push((row, at)),
+        }
+    }
+
+    /// Every row whose deadline has passed, removed from the schedule.
+    pub fn take_due(&mut self, now: Instant) -> Vec<LightingRow> {
+        let (ready, waiting) = std::mem::take(&mut self.due)
+            .into_iter()
+            .partition::<Vec<_>, _>(|(_, deadline)| *deadline <= now);
+        self.due = waiting;
+        ready.into_iter().map(|(row, _)| row).collect()
+    }
+
+    /// Whether anything is waiting to be written.
+    pub fn is_pending(&self, row: LightingRow) -> bool {
+        self.due.iter().any(|(queued, _)| *queued == row)
+    }
 }
 
 /// A brightness drag in progress.
@@ -403,8 +462,8 @@ pub const TRACK_GRAB_MARGIN: Pixels = px(6.0);
 /// Modes the screen can configure completely.
 ///
 /// [`DisplayMode::Image`] is deliberately absent. The screen has no control
-/// that can name a file, and a mode whose Apply could only ever refuse would be
-/// a control that says the feature is here and then does nothing. The renderer
+/// that can name a file, and a mode the daemon could only ever refuse would be
+/// an entry that says the feature is here and then does nothing. The renderer
 /// and the daemon support it, and a saved profile can select it; what is
 /// missing is a way to pick the file, which no criterion in US-017 asks the
 /// screen for.
@@ -465,7 +524,7 @@ pub struct Shell {
     curve_drag: Option<CurveDrag>,
     /// When the current cooling edit should be written, once it settles.
     autosave_at: Option<Instant>,
-    /// The program the last Apply sent, held until its outcome arrives.
+    /// The program the last cooling write sent, held until its outcome arrives.
     sent: Option<CoolingProgram>,
     outcome: Option<CommandOutcome>,
     /// Set once the operator has armed the profile deletion.
@@ -486,6 +545,8 @@ pub struct Shell {
     /// row, and two open at once would put the panel's editor an arm's length
     /// below the line it belongs to.
     lighting_open: Vec<LightingRow>,
+    /// When each edited Lighting row should be written, once it settles.
+    lighting_due: WriteSchedule,
     /// The brightness slider the pointer is currently dragging, if any.
     brightness_drag: Option<BrightnessDrag>,
     /// Where this frame painted each operable brightness track.
@@ -544,6 +605,7 @@ impl Shell {
             // and a screen where every row is shut hides the editor the last
             // arrangement put on its own destination.
             lighting_open: vec![LightingRow::Lcd],
+            lighting_due: WriteSchedule::default(),
             brightness_drag: None,
             tracks: Rc::new(TrackMap::default()),
             duty_drag: None,
@@ -576,7 +638,7 @@ impl Shell {
         if let Some(outcome) = self.feed.outcome()
             && self.outcome.as_ref() != Some(&outcome)
         {
-            // A confirmed Apply is what turns a pending curve into the
+            // A confirmed write is what turns a pending curve into the
             // client's record of what the hardware is running. Curve points
             // cannot be read back, so this record is the only evidence there
             // is, and it is only ever set from a confirmation.
@@ -596,6 +658,7 @@ impl Shell {
         // picked up here on the next sample rather than waiting for the
         // operator to touch the screen again.
         self.flush_autosave(cx);
+        self.flush_lighting(cx);
 
         cx.notify();
     }
@@ -620,18 +683,15 @@ impl Shell {
     /// both on screen. Nothing in a lighting detail is shared between rows, so
     /// there is nothing for a second open row to make ambiguous.
     ///
-    /// Opening a channel is also what selects it, so every control the detail
-    /// renders acts on the channel whose line it sits under and none of them
-    /// has to name a channel of its own.
+    /// Every control the detail renders is built for the channel whose line it
+    /// sits under and carries that channel with it, so opening a row reveals
+    /// controls rather than selecting anything.
     fn toggle_lighting_row(&mut self, row: LightingRow, cx: &mut Context<Self>) {
         match self.lighting_open.iter().position(|open| *open == row) {
             Some(index) => {
                 self.lighting_open.remove(index);
             }
             None => self.lighting_open.push(row),
-        }
-        if let LightingRow::Channel(channel) = row {
-            self.lighting.select(channel);
         }
         // A popover anchored to a control that just moved would be left
         // pointing at nothing.
@@ -1720,13 +1780,18 @@ impl Shell {
         cx.notify();
     }
 
-    /// The result of the last command, as a note under the buttons.
+    /// The result of the last command, as a note at the foot of the screen.
     ///
-    /// Only when something went wrong. A confirmed Apply already tells the
-    /// operator everything it has to: the button reads `Applied`, the readings
-    /// move, and the pending state clears. Restating that in a banner after
-    /// every press is noise that trains the eye to skip the banner, which is
-    /// the one place a refusal or an unconfirmed write has to be noticed.
+    /// Only when something went wrong. A confirmed write already tells the
+    /// operator everything it has to: the readings move, the row's reported
+    /// program catches up, and the pending state clears. Restating that in a
+    /// banner after every edit is noise that trains the eye to skip the banner,
+    /// which is the one place a refusal or an unconfirmed write has to be
+    /// noticed.
+    ///
+    /// One note for a screen whose rows all write on their own, so the message
+    /// has to name its device. `Channel 2: ...` and `Panel: ...` are what keep
+    /// it from being read against whichever row the operator is looking at.
     fn outcome_note(&self) -> Option<Div> {
         let outcome = self.outcome.as_ref()?;
         let level = match outcome.severity {
@@ -1873,16 +1938,19 @@ impl Shell {
             return div();
         };
 
-        let fixed = self
-            .link
-            .control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor);
         let effects = self
             .link
             .control_state(RGB_CONTROLLER, CapabilityId::RgbEffects);
+        // Every control on this row now writes by itself, so every one of them
+        // carries this state. It is the capability the pending mode needs, not
+        // a single "lighting is writable": an effect refused on a controller
+        // that accepts a fixed color has to say so on the controls that would
+        // have sent the effect.
         let write = if matches!(editor.mode, LightingMode::Effect(_)) {
             effects.clone()
         } else {
-            fixed.clone()
+            self.link
+                .control_state(RGB_CONTROLLER, CapabilityId::RgbFixedColor)
         };
 
         // One line, not two. What is plugged in leads, because that is what the
@@ -1993,42 +2061,65 @@ impl Shell {
                                 write.clone(),
                                 base + ROW_OFFSET_MODE,
                                 cx,
-                                move |shell, value, _| {
-                                    if let Some(mode) = LightingMode::from_value(value)
-                                        && let Some(editor) = shell.lighting.channel_mut(channel)
-                                    {
-                                        editor.mode = mode;
-                                    }
+                                move |shell, value, cx| {
+                                    let Some(mode) = LightingMode::from_value(value) else {
+                                        return;
+                                    };
+                                    let Some(editor) = shell.lighting.channel_mut(channel) else {
+                                        return;
+                                    };
+                                    editor.mode = mode;
+                                    shell.schedule_lighting(LightingRow::Channel(channel), cx);
                                 },
                             ),
                         ),
                     ),
             )
             .when(open, |this| {
-                this.child(self.channel_detail_lighting(channel, base, write, fixed, cx))
+                this.child(self.channel_detail_lighting(channel, base, write, cx))
             })
     }
 
-    /// What an open channel row reveals: its color, its effect parameters, and
-    /// the two actions that reach the hardware.
+    /// What an open channel row reveals: its color and its effect parameters.
+    ///
+    /// No action. Every control here writes on its own once the row goes quiet,
+    /// so a button repeating what the last edit already did would be a second
+    /// way to send the same command.
     fn channel_detail_lighting(
         &self,
         channel: u8,
         base: isize,
         write: ControlState,
-        fixed: ControlState,
         cx: &mut Context<Self>,
     ) -> Div {
         let Some(editor) = self.lighting.channel(channel) else {
             return div();
         };
-        // Apply is gated on the pending program being buildable as well as on
-        // the capability: an unusable color must disable it with its own
-        // reason, not with the capability's.
-        let apply = match (write.clone(), editor.program()) {
-            (ControlState::Enabled, Err(error)) => ControlState::error(error.to_string()),
-            (state, _) => state,
-        };
+        // A pending program that cannot be built is the one refusal no control
+        // on this row carries: each field names what is wrong with its own
+        // value, and this names what is wrong with the combination. It is a
+        // note rather than a disabled button, because there is no longer a
+        // button to disable and nothing is sent while it stands.
+        let program = editor.program();
+
+        // What the controller was last told to show. The channel answers no
+        // report that reads its program back, so this record is the only
+        // evidence there is, and saying "sent" rather than "showing" is what
+        // keeps it honest.
+        //
+        // It is also the standing confirmation the Apply button used to give by
+        // changing its own label, and it is what US-014 asks the row to show as
+        // the current confirmed mode. The panel row carries the same fact on
+        // its line; a channel line already holds a slider and a select, so this
+        // one lives in the detail.
+        let sent = self
+            .link
+            .lighting_channels()
+            .iter()
+            .find(|state| state.channel == channel)
+            .and_then(|state| state.committed.as_ref())
+            .map(|program| format!("Last sent: {}", program.summary()))
+            .unwrap_or_else(|| "Nothing sent to this channel yet".to_string());
 
         div()
             .flex()
@@ -2040,6 +2131,12 @@ impl Shell {
             .pl(ROW_DETAIL_INDENT)
             .child(
                 div()
+                    .text_xs()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .child(sent),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_wrap()
                     .gap(space::MD)
@@ -2047,7 +2144,12 @@ impl Shell {
                     .min_w_0()
                     .when(editor.mode.uses_color(), |this| {
                         this.child(div().flex_none().w(FIELD_WIDTH).child(
-                            self.lighting_color_field(editor, base + CHANNEL_OFFSET_COLOR, cx),
+                            self.lighting_color_field(
+                                editor,
+                                write.clone(),
+                                base + CHANNEL_OFFSET_COLOR,
+                                cx,
+                            ),
                         ))
                     })
                     .when(editor.mode.uses_speed(), |this| {
@@ -2065,13 +2167,16 @@ impl Shell {
                                     write.clone(),
                                     base + CHANNEL_OFFSET_SPEED,
                                     cx,
-                                    move |shell, value, _| {
-                                        if let Some(speed) = EffectSpeed::from_key(value)
-                                            && let Some(editor) =
-                                                shell.lighting.channel_mut(channel)
-                                        {
-                                            editor.speed = speed;
-                                        }
+                                    move |shell, value, cx| {
+                                        let Some(speed) = EffectSpeed::from_key(value) else {
+                                            return;
+                                        };
+                                        let Some(editor) = shell.lighting.channel_mut(channel)
+                                        else {
+                                            return;
+                                        };
+                                        editor.speed = speed;
+                                        shell.schedule_lighting(LightingRow::Channel(channel), cx);
                                     },
                                 ),
                             ),
@@ -2094,55 +2199,27 @@ impl Shell {
                                     write.clone(),
                                     base + CHANNEL_OFFSET_DIRECTION,
                                     cx,
-                                    move |shell, value, _| {
-                                        if let Some(direction) = EffectDirection::from_key(value)
-                                            && let Some(editor) =
-                                                shell.lighting.channel_mut(channel)
-                                        {
-                                            editor.direction = direction;
-                                        }
+                                    move |shell, value, cx| {
+                                        let Some(direction) = EffectDirection::from_key(value)
+                                        else {
+                                            return;
+                                        };
+                                        let Some(editor) = shell.lighting.channel_mut(channel)
+                                        else {
+                                            return;
+                                        };
+                                        editor.direction = direction;
+                                        shell.schedule_lighting(LightingRow::Channel(channel), cx);
                                     },
                                 ),
                             ),
                         )
                     }),
             )
-            .child(
-                div()
-                    .flex()
-                    // A step more air than the gap between fields: what is
-                    // below this line acts on the hardware, and what is above
-                    // it only edits a value.
-                    .pt(space::SM)
-                    .gap(space::SM)
-                    .child(
-                        Button::new(format!("lighting-apply-{channel}"), "Apply")
-                            .variant(ButtonVariant::Primary)
-                            .state(apply)
-                            .tab_index(base + CHANNEL_OFFSET_APPLY)
-                            .render()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.popover = None;
-                                this.lighting.select(channel);
-                                this.apply_lighting(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(format!("lighting-off-{channel}"), "Turn off")
-                            .state(fixed)
-                            .tab_index(base + CHANNEL_OFFSET_OFF)
-                            .render()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.popover = None;
-                                // The mode changes, so the color the operator
-                                // chose is still there to come back to.
-                                if let Some(editor) = this.lighting.channel_mut(channel) {
-                                    editor.mode = LightingMode::Off;
-                                }
-                                this.lighting.select(channel);
-                                this.apply_lighting(cx);
-                            })),
-                    ),
+            .children(
+                program
+                    .err()
+                    .map(|error| Note::new(NoteLevel::Warning, error.to_string()).render()),
             )
     }
 
@@ -2237,7 +2314,12 @@ impl Shell {
                     .child(self.brightness_slider(
                         LightingRow::Lcd,
                         brightness,
-                        ControlState::Enabled,
+                        // Moving the slider is what sends the brightness now,
+                        // so the panel's own refusal belongs on it. It used to
+                        // sit on the Apply button alone, which left an operable
+                        // control in front of a panel nothing can be written
+                        // to.
+                        frame.clone(),
                         base + ROW_OFFSET_BRIGHTNESS,
                         cx,
                     ))
@@ -2252,13 +2334,15 @@ impl Shell {
                                     .map(|mode| SelectOption::new(mode.key(), mode.label()))
                                     .collect(),
                                 editor.mode.key().to_string(),
-                                ControlState::Enabled,
+                                frame.clone(),
                                 base + ROW_OFFSET_MODE,
                                 cx,
-                                |shell, value, _| {
-                                    if let Some(mode) = DisplayMode::from_key(value) {
-                                        shell.lcd.edit(|editor| editor.mode = mode);
-                                    }
+                                |shell, value, cx| {
+                                    let Some(mode) = DisplayMode::from_key(value) else {
+                                        return;
+                                    };
+                                    shell.lcd.edit(|editor| editor.mode = mode);
+                                    shell.schedule_lighting(LightingRow::Lcd, cx);
                                 },
                             ),
                         ),
@@ -2289,15 +2373,16 @@ impl Shell {
             ],
         };
 
-        // Apply is refused for two separate reasons, and they are reported
-        // separately: a preset that cannot be built names its own field, and a
-        // panel that may not be written names the missing evidence.
-        let apply = match (editor.preset(), &frame) {
-            (Err(error), _) => ControlState::Disabled {
-                reason: error.to_string(),
-            },
-            _ => frame.clone(),
-        };
+        // A stopped stream is the one state on this screen an edit cannot
+        // clear: the transfer failed without anything about the preset
+        // changing, so nothing an automatic write watches has moved. It takes
+        // a deliberate activation, which is what US-018 calls an explicit
+        // recoverable state.
+        let faulted = self
+            .link
+            .status()
+            .and_then(|status| status.display.faulted.clone())
+            .filter(|_| frame.is_enabled());
 
         // One grid, two columns wide: slot 1 on the left, slot 2 on the right,
         // one line per thing being chosen. Built here rather than inside the
@@ -2310,6 +2395,7 @@ impl Shell {
             for slot in 0..editor.mode.reading_slots() {
                 controls.push(self.metric_select(
                     slot,
+                    frame.clone(),
                     base + LCD_OFFSET_METRIC_ONE + slot as isize,
                     cx,
                 ));
@@ -2327,7 +2413,12 @@ impl Shell {
                     continue;
                 }
                 let index = (line * 2 + column) as isize;
-                controls.push(self.color_field(*field, base + LCD_OFFSET_COLOR_BASE + index, cx));
+                controls.push(self.color_field(
+                    *field,
+                    frame.clone(),
+                    base + LCD_OFFSET_COLOR_BASE + index,
+                    cx,
+                ));
             }
             if !controls.is_empty() {
                 lines.push(field_line(controls));
@@ -2354,25 +2445,41 @@ impl Shell {
                     // screen reads as one form rather than as three panels.
                     .gap(space::MD)
                     .children(lines)
-                    .child(
-                        div().flex().flex_wrap().pt(space::SM).gap(space::SM).child(
-                            Button::new("lcd-apply", "Apply")
-                                .variant(ButtonVariant::Primary)
-                                .state(apply)
-                                .tab_index(base + LCD_OFFSET_APPLY)
-                                .render()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    // Acting on the editor dismisses any open
-                                    // popover, so a swatch list never hides the
-                                    // result.
-                                    this.popover = None;
-                                    if let Ok(preset) = this.lcd.preset() {
-                                        this.feed.send(Command::ApplyDisplay(preset));
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
+                    .children(
+                        editor
+                            .preset()
+                            .err()
+                            .map(|error| Note::new(NoteLevel::Warning, error.to_string()).render()),
                     )
+                    .children(faulted.map(|reason| {
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .pt(space::SM)
+                            .gap(space::SM)
+                            .child(
+                                Button::new("lcd-resume", "Resume display")
+                                    .variant(ButtonVariant::Primary)
+                                    .tab_index(base + LCD_OFFSET_RESUME)
+                                    .render()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        // Acting on the panel dismisses any
+                                        // open popover, so a swatch list never
+                                        // hides the result.
+                                        this.popover = None;
+                                        this.resume_display(cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(color::WARNING.hsla())
+                                    .child(format!("The panel stopped updating: {reason}")),
+                            )
+                    }))
                     .children(frame.message().map(|reason| {
                         div()
                             .text_xs()
@@ -2564,7 +2671,10 @@ impl Shell {
                     };
                     shell.popover = None;
                     shell.set_brightness(row, next);
-                    cx.notify();
+                    // A held arrow key arrives by the dozen and each press
+                    // pushes the deadline out, so the value the operator stops
+                    // on is the one that is written.
+                    shell.schedule_lighting(row, cx);
                 }),
             )
         });
@@ -2623,7 +2733,13 @@ impl Shell {
     }
 
     /// The metric select for one reading slot.
-    fn metric_select(&self, slot: usize, tab_index: isize, cx: &mut Context<Self>) -> Div {
+    fn metric_select(
+        &self,
+        slot: usize,
+        state: ControlState,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let selected = self.lcd.editor().metrics[slot];
         // The metric line heads the grid and the colors under it are named by
         // role, so the slot alone is enough to say what this select chooses.
@@ -2641,13 +2757,15 @@ impl Shell {
                 .map(|metric| SelectOption::new(metric.key(), metric.label()))
                 .collect(),
             selected.key().to_string(),
-            ControlState::Enabled,
+            state,
             tab_index,
             cx,
-            move |shell, value, _| {
-                if let Some(metric) = LcdMetric::from_key(value) {
-                    shell.lcd.edit(|editor| editor.metrics[slot] = metric);
-                }
+            move |shell, value, cx| {
+                let Some(metric) = LcdMetric::from_key(value) else {
+                    return;
+                };
+                shell.lcd.edit(|editor| editor.metrics[slot] = metric);
+                shell.schedule_lighting(LightingRow::Lcd, cx);
             },
         )
     }
@@ -2821,43 +2939,147 @@ impl Shell {
         })
     }
 
-    /// Send the selected channel's pending program.
+    /// Note one Lighting row's edit and arrange for it to be written.
     ///
-    /// Nothing is sent when the program cannot be built: the button is already
-    /// disabled in that state, and checking again here is what keeps a keyboard
-    /// activation from bypassing the same rule.
-    fn apply_lighting(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self.lighting.selected() else {
+    /// The same shape as [`Shell::schedule_autosave`], kept per row: every edit
+    /// spawns its own timer, every timer drains whatever has come due, and a
+    /// later edit on the same row pushes that row's deadline out so the earlier
+    /// timers fire into nothing. No task has to be cancelled and no edit can be
+    /// lost by cancelling the wrong one.
+    fn schedule_lighting(&mut self, row: LightingRow, cx: &mut Context<Self>) {
+        self.lighting_due
+            .touch(row, Instant::now() + LIGHTING_QUIET);
+        cx.notify();
+        cx.spawn(async move |shell, cx| {
+            cx.background_executor().timer(LIGHTING_QUIET).await;
+            let _ = shell.update(cx, |shell, cx| shell.flush_lighting(cx));
+        })
+        .detach();
+    }
+
+    /// Write every Lighting row that has been still long enough.
+    ///
+    /// The quiet period is not cosmetic. The controller acknowledges nothing,
+    /// so the daemon refuses a command arriving within `MIN_COMMAND_INTERVAL_MS`
+    /// of the last one on that channel rather than queueing it, and it keeps no
+    /// last-value-wins. A screen that wrote on every pointer move would have
+    /// most of its writes refused, and the value the operator stopped on could
+    /// be one of them.
+    fn flush_lighting(&mut self, cx: &mut Context<Self>) {
+        for row in self.lighting_due.take_due(Instant::now()) {
+            // A gesture still in progress keeps its deadline. Letting go is
+            // what says which value the operator meant.
+            if self.brightness_drag.map(|drag| drag.row) == Some(row) {
+                self.lighting_due
+                    .touch(row, Instant::now() + LIGHTING_QUIET);
+                continue;
+            }
+            match row {
+                LightingRow::Channel(channel) => self.send_lighting(channel),
+                LightingRow::Lcd => self.send_display(),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Send one channel's pending program, unless it is already showing it.
+    ///
+    /// Nothing is sent when the program cannot be built. The control holding
+    /// the unusable value already names the problem, and a command the daemon
+    /// would refuse would answer it with a sentence about the channel instead.
+    ///
+    /// The comparison against what the daemon committed does not replace the
+    /// daemon's own deduplication, which still runs and is still the authority.
+    /// It is what keeps an edit that lands back on the current value from
+    /// costing a request, a reply and a polling cycle.
+    fn send_lighting(&mut self, channel: u8) {
+        let Some(program) = self
+            .lighting
+            .channel(channel)
+            .and_then(|editor| editor.program().ok())
+        else {
             return;
         };
-        let channel = editor.channel;
-        if let Ok(program) = editor.program() {
-            self.feed
-                .send(Command::ApplyLighting(LightingCommand { channel, program }));
+        let committed = self
+            .link
+            .lighting_channels()
+            .iter()
+            .find(|state| state.channel == channel)
+            .and_then(|state| state.committed.as_ref());
+        if committed == Some(&program) {
+            return;
+        }
+        self.feed
+            .send(Command::ApplyLighting(LightingCommand { channel, program }));
+    }
+
+    /// Send the panel's pending preset, unless it is already showing it.
+    ///
+    /// Deduplicating here matters more than it does for a channel: an unchanged
+    /// preset still costs the daemon a full render before it can compare the
+    /// picture it produced.
+    fn send_display(&mut self) {
+        let Ok(preset) = self.lcd.preset() else {
+            return;
+        };
+        let committed = self
+            .link
+            .status()
+            .and_then(|status| status.display.committed.as_ref());
+        if committed == Some(&preset) {
+            return;
+        }
+        self.feed.send(Command::ApplyDisplay(preset));
+    }
+
+    /// Send the panel's preset whatever it is showing, to restart a stopped
+    /// stream.
+    ///
+    /// The one write on this screen that is still a deliberate activation. A
+    /// faulted stream is the state no edit can clear: the transfer failed
+    /// without anything about the preset changing, so there is nothing for an
+    /// automatic write to notice.
+    fn resume_display(&mut self, cx: &mut Context<Self>) {
+        if let Ok(preset) = self.lcd.preset() {
+            self.feed.send(Command::ApplyDisplay(preset));
         }
         cx.notify();
     }
 
     /// One channel's color field plus its swatch popover.
+    ///
+    /// The field carries the capability refusal itself now that choosing a
+    /// swatch is what reaches the controller. A picker that opens over a
+    /// channel nothing can be written to would be a control that acts and
+    /// changes nothing on the hardware.
     fn lighting_color_field(
         &self,
         editor: &crate::lighting::ChannelEditor,
+        state: ControlState,
         tab_index: isize,
         cx: &mut Context<Self>,
     ) -> Div {
         let channel = editor.channel;
-        let open = self.popover == Some(Popover::LightingSwatches { channel });
+        let enabled = state.is_enabled();
+        let open = enabled && self.popover == Some(Popover::LightingSwatches { channel });
         let id = SharedString::from(format!("lighting-color-{channel}"));
 
         // `ColorField` renders its own error state, so a stored color that
-        // cannot be parsed names the problem on the field rather than only on
-        // the disabled Apply button.
+        // cannot be parsed names the problem on the field itself. A refused
+        // capability outranks it: correcting the digits would not make the
+        // write happen.
         let control = ColorField::new(id.clone(), "Color", editor.color.clone())
+            .state(state)
             .tab_index(tab_index)
             .render()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_popover(Popover::LightingSwatches { channel }, cx)
-            }));
+            // GPUI has no disabled semantics of its own: a handler left
+            // attached still fires, so withholding it is what makes the
+            // refusal real rather than a matter of styling.
+            .when(enabled, |this| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_popover(Popover::LightingSwatches { channel }, cx)
+                }))
+            });
 
         div().relative().child(control).when(open, |this| {
             this.child(swatch_menu(swatch_grid(
@@ -2867,11 +3089,12 @@ impl Shell {
                     .map(|(index, swatch)| {
                         swatch_cell(format!("{id}-swatch-{index}"), swatch, tab_index)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(editor) = this.lighting.channel_mut(channel) {
-                                    editor.color = format!("{:06X}", swatch.0);
-                                }
+                                let Some(editor) = this.lighting.channel_mut(channel) else {
+                                    return;
+                                };
+                                editor.color = format!("{:06X}", swatch.0);
                                 this.popover = None;
-                                cx.notify();
+                                this.schedule_lighting(LightingRow::Channel(channel), cx);
                             }))
                             .into_any_element()
                     })
@@ -2884,14 +3107,18 @@ impl Shell {
     ///
     /// The field shows the digits as typed, so an entry the operator has not
     /// finished keeps its own error rather than being replaced by a value it
-    /// never held.
+    /// never held. It carries the panel's refusal for the same reason the
+    /// channel fields carry the controller's: choosing a swatch is what sends
+    /// the frame.
     fn color_field(
         &self,
         field: DisplayColorField,
+        state: ControlState,
         tab_index: isize,
         cx: &mut Context<Self>,
     ) -> Div {
-        let open = self.popover == Some(Popover::Swatches { field });
+        let enabled = state.is_enabled();
+        let open = enabled && self.popover == Some(Popover::Swatches { field });
         let id = SharedString::from(format!("lcd-color-{}", field.key()));
 
         // The full name: nothing beside the field carries the slot any more,
@@ -2901,11 +3128,14 @@ impl Shell {
             field.label(),
             self.lcd.editor().color_text(field),
         )
+        .state(state)
         .tab_index(tab_index)
         .render()
-        .on_click(
-            cx.listener(move |this, _, _, cx| this.toggle_popover(Popover::Swatches { field }, cx)),
-        );
+        .when(enabled, |this| {
+            this.on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_popover(Popover::Swatches { field }, cx)
+            }))
+        });
 
         div().relative().child(control).when(open, |this| {
             this.child(swatch_menu(swatch_grid(
@@ -2919,7 +3149,7 @@ impl Shell {
                                     editor.set_color_text(field, format!("{:06X}", swatch.0))
                                 });
                                 this.popover = None;
-                                cx.notify();
+                                this.schedule_lighting(LightingRow::Lcd, cx);
                             }))
                             .into_any_element()
                     })
@@ -3022,7 +3252,12 @@ impl Render for Shell {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
-                    this.brightness_drag = None;
+                    // Nothing is written while the pointer holds the track: a
+                    // drag names dozens of values and only the one it stops on
+                    // is worth a command.
+                    if let Some(drag) = this.brightness_drag.take() {
+                        this.schedule_lighting(drag.row, cx);
+                    }
                     // Releasing ends the gesture wherever the pointer is. A
                     // release the plot never heard is what used to leave a node
                     // following the cursor with no button held.
@@ -3540,8 +3775,6 @@ mod tests {
             base + CHANNEL_OFFSET_COLOR,
             base + CHANNEL_OFFSET_SPEED,
             base + CHANNEL_OFFSET_DIRECTION,
-            base + CHANNEL_OFFSET_APPLY,
-            base + CHANNEL_OFFSET_OFF,
         ]
     }
 
@@ -3558,7 +3791,7 @@ mod tests {
             (0..DisplayColorField::ALL.len() as isize)
                 .map(|index| base + LCD_OFFSET_COLOR_BASE + index),
         );
-        stops.push(base + LCD_OFFSET_APPLY);
+        stops.push(base + LCD_OFFSET_RESUME);
         stops
     }
 
@@ -3593,6 +3826,53 @@ mod tests {
                 "screen controls come after every rail entry"
             );
         }
+    }
+
+    #[test]
+    fn the_quiet_period_clears_the_floor_the_daemon_enforces() {
+        // The daemon refuses a command arriving inside the floor rather than
+        // queueing it, and keeps no last-value-wins, so a quiet period shorter
+        // than the floor would turn a settled edit into a refusal.
+        assert!(
+            LIGHTING_QUIET
+                > Duration::from_millis(herschel_core::lighting::MIN_COMMAND_INTERVAL_MS),
+            "an edit must not be written faster than the controller accepts"
+        );
+        // And short enough that the whole round trip stays inside the 500 ms
+        // the PRD budgets for a write reaching a confirmed state.
+        assert!(
+            LIGHTING_QUIET < Duration::from_millis(250),
+            "an edit that takes a quarter of a second to leave reads as a control that did not take"
+        );
+    }
+
+    #[test]
+    fn each_lighting_row_waits_out_its_own_quiet_period() {
+        let start = Instant::now();
+        let mut schedule = WriteSchedule::default();
+        schedule.touch(LightingRow::Channel(1), start + LIGHTING_QUIET);
+        schedule.touch(LightingRow::Lcd, start + LIGHTING_QUIET * 3);
+
+        // Nothing is due before its own deadline, and one row coming due does
+        // not drag the other out with it: the daemon tracks its cadence per
+        // channel, so two rows edited together are two independent writes.
+        assert!(schedule.take_due(start).is_empty());
+        assert_eq!(
+            schedule.take_due(start + LIGHTING_QUIET),
+            vec![LightingRow::Channel(1)]
+        );
+        assert!(!schedule.is_pending(LightingRow::Channel(1)));
+        assert!(schedule.is_pending(LightingRow::Lcd));
+
+        // A row edited again before its deadline is written once, at the later
+        // deadline. That is what turns a drag into one command.
+        schedule.touch(LightingRow::Lcd, start + LIGHTING_QUIET * 5);
+        assert!(schedule.take_due(start + LIGHTING_QUIET * 3).is_empty());
+        assert_eq!(
+            schedule.take_due(start + LIGHTING_QUIET * 5),
+            vec![LightingRow::Lcd]
+        );
+        assert!(!schedule.is_pending(LightingRow::Lcd));
     }
 
     #[test]
@@ -3785,7 +4065,7 @@ mod tests {
 
     #[test]
     fn the_screen_offers_only_the_modes_it_can_configure_completely() {
-        // A mode whose Apply could only ever refuse is absent, not disabled,
+        // A mode the daemon could only ever refuse is absent, not disabled,
         // which is the same rule the Lighting screen applies to an unproven
         // effect. Static images stay in the vocabulary and in the renderer.
         assert_eq!(SCREEN_MODES.len(), 3);

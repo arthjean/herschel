@@ -3,10 +3,10 @@
 
 //! The pending state of the LCD screen.
 //!
-//! Mirrors [`crate::lighting`]: everything here is an edit that has not
-//! happened yet. Typing a color or picking a metric changes this structure and
-//! nothing else. The panel is only touched when Apply is activated and the
-//! daemon accepts the preset.
+//! Mirrors [`crate::lighting`]: everything here is an edit, and this structure
+//! holds it. Choosing a color or picking a metric changes nothing else. What
+//! turns it into a frame is the row going quiet, not a button, and the daemon
+//! still accepts or refuses the preset that results.
 //!
 //! Colors are held as the six digits the operator typed rather than as parsed
 //! values. That is what lets an incomplete entry stay on screen with its own
@@ -187,7 +187,7 @@ impl DisplayEditor {
         self.brightness = percent.min(herschel_core::lighting::MAX_BRIGHTNESS);
     }
 
-    /// The preset Apply would send, or the first reason it cannot be built.
+    /// The preset this row would send, or the first reason it cannot be built.
     ///
     /// Every color is parsed, including the ones the current mode does not
     /// draw. That is deliberate: a mode switch must not turn an entry the
@@ -302,7 +302,7 @@ impl DisplayScreen {
         &self.last_valid
     }
 
-    /// The preset Apply would send, or the first reason it cannot be built.
+    /// The preset this row would send, or the first reason it cannot be built.
     pub fn preset(&self) -> Result<DisplayPreset, DisplayError> {
         self.editor.preset()
     }
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incomplete_color_names_its_own_field_and_blocks_apply() {
+    fn an_incomplete_color_names_its_own_field_and_stops_the_frame() {
         let mut editor = DisplayEditor::default();
         editor.set_color_text(DisplayColorField::TextTwo, "12A");
 
@@ -412,7 +412,7 @@ mod tests {
             &good,
             "the prior valid preview must stay visible"
         );
-        assert!(screen.preset().is_err(), "and Apply stays refused");
+        assert!(screen.preset().is_err(), "and nothing can be sent");
 
         // Finishing the entry moves it again.
         screen.edit(|editor| editor.set_color_text(DisplayColorField::Background, "0A0B0C"));
@@ -423,7 +423,7 @@ mod tests {
     fn every_editor_change_moves_the_preview_with_it() {
         // The defect this pins: the display-mode select changed the editor and
         // left the preview drawing the previous mode, so the window showed an
-        // infographic while Apply would have sent a solid field. Every control
+        // infographic while the row would have sent a solid field. Every control
         // on the screen mutates through one entry point now, and this walks
         // each kind of change that entry point has to carry.
         let mut screen = DisplayScreen::default();
@@ -453,7 +453,7 @@ mod tests {
             100 - 2 * BRIGHTNESS_STEP
         );
 
-        // Whatever the route in, the preview is the preset Apply would send.
+        // Whatever the route in, the preview is the preset the row would send.
         assert_eq!(&screen.preset().unwrap(), screen.preview());
     }
 

@@ -152,10 +152,10 @@ speed table, which is `normal`.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| A validated channel shows its name, LED count when known, confirmed mode, brightness and color | `app/src/shell.rs` (`lighting`, `channel_row_lighting`, `channel_headline`, `accessory_summary`), `core/src/ipc.rs` (`ChannelState`) | `a_channel_names_what_the_controller_detected_and_never_an_led_count`, `a_controller_that_answered_is_reported_with_its_channels_and_accessories`, `the_reported_state_carries_the_accessories_the_controller_named` |
-| A valid six-digit hex and 0-100% brightness update the preview immediately, then one rate-limited command follows | `app/src/lighting.rs` (`ChannelEditor::program`), `daemon/src/lighting.rs` (`LightingExecutor::apply`) | `a_command_sends_exactly_one_report_and_becomes_the_committed_state`, `brightness_dims_the_triplet_that_reaches_the_controller`, `a_fixed_color_is_encoded_green_red_blue_at_full_brightness` |
+| A validated channel shows its name, LED count when known, confirmed mode, brightness and color | `app/src/shell.rs` (`lighting`, `channel_row_lighting`, `channel_headline`, `channel_detail_lighting`, which heads the open row with the last program the daemon committed), `core/src/ipc.rs` (`ChannelState`) | `a_channel_names_what_the_controller_detected_and_never_an_led_count`, `a_controller_that_answered_is_reported_with_its_channels_and_accessories`, `the_reported_state_carries_the_accessories_the_controller_named` |
+| A valid six-digit hex and 0-100% brightness update the preview immediately, then one rate-limited command follows | `app/src/lighting.rs` (`ChannelEditor::program`), `app/src/shell.rs` (`WriteSchedule`, `schedule_lighting`, `flush_lighting`, `send_lighting`), `daemon/src/lighting.rs` (`LightingExecutor::apply`) | `a_command_sends_exactly_one_report_and_becomes_the_committed_state`, `brightness_dims_the_triplet_that_reaches_the_controller`, `a_fixed_color_is_encoded_green_red_blue_at_full_brightness`, `each_lighting_row_waits_out_its_own_quiet_period`, `the_quiet_period_clears_the_floor_the_daemon_enforces`. The command follows the edit rather than a button since 2026-08-10; see "The Apply step, removed" below |
 | Off emits zero light and the prior fixed color stays available | `core/src/lighting.rs` (`LightingProgram::Off`), `app/src/lighting.rs` | `off_sends_one_black_step_rather_than_no_step`, `switching_to_off_and_back_keeps_the_color_the_operator_chose` |
-| Invalid hex, an unsupported channel or a cadence above the limit produce no write and identify the field | `core/src/lighting.rs` (`validate_command`), `daemon/src/lighting.rs` (cadence), `daemon/src/state.rs` (`illuminate`) | `an_invalid_color_names_the_exact_problem`, `a_channel_outside_the_reported_topology_is_refused_before_any_write`, `a_command_faster_than_the_floor_is_refused_before_the_write`, `an_out_of_range_brightness_cannot_even_be_decoded`, `a_fixed_color_becomes_a_program_and_an_invalid_one_does_not` |
+| Invalid hex, an unsupported channel or a cadence above the limit produce no write and identify the field | `core/src/lighting.rs` (`validate_command`), `daemon/src/lighting.rs` (cadence), `daemon/src/state.rs` (`illuminate`), `app/src/shell.rs` (`send_lighting` sends nothing for a program that cannot be built, and every control carries the capability refusal itself) | `an_invalid_color_names_the_exact_problem`, `a_channel_outside_the_reported_topology_is_refused_before_any_write`, `a_command_faster_than_the_floor_is_refused_before_the_write`, `an_out_of_range_brightness_cannot_even_be_decoded`, `a_fixed_color_becomes_a_program_and_an_invalid_one_does_not` |
 | A daemon start restores the active profile's channels; a physical unplug is US-019's | `daemon/src/state.rs` (`apply_profile_lighting`, called from `restore_active_profile` and from `activate_profile`) | `a_saved_effect_round_trips_without_protocol_bytes_reaching_the_file` starts a second daemon over the same configuration directory and reads the same channel parameters back. Restoration runs before the socket is bound, so no client can observe the gap. The physical-unplug half moved to US-019 in PRD 1.3; what this epic leaves it is recorded below |
 
 ## US-015: Add only validated RGB effects
@@ -231,12 +231,17 @@ machine and the real controller.
 - [`ep-003-lighting-live.png`](./screenshots/ep-003-lighting-live.png): the same
   screen against the answering controller. Channel selector naming the detected
   F140 RGB Core, the LED count stated as not reported, the confirmed program,
-  and the write controls enabled. Apply was activated through the interface and
-  the confirmed row moved to *fixed #6F4EF2 at 60%*.
+  and the write controls enabled. A color was chosen through the interface and
+  the confirmed row moved to *fixed #6F4EF2 at 60%*. Taken while the screen
+  still carried an Apply button, which is what was activated here; the write
+  path it exercised is unchanged.
 - [`ep-003-lighting-deduplicated.png`](./screenshots/ep-003-lighting-deduplicated.png):
-  Apply activated a second time on the same program. *"Channel 1 already shows
-  this. Nothing was sent."* The deduplication US-014 requires, observed from the
-  interface rather than from a unit test.
+  The same program sent a second time. *"Channel 1 already shows this. Nothing
+  was sent."* The deduplication US-014 requires, observed from the interface
+  rather than from a unit test. Also taken before 2026-08-10; the client now
+  compares against the committed program first, so a repeat usually costs no
+  request at all and this answer is the daemon's backstop rather than the
+  common path.
 
 Three defects were found through these captures and fixed rather than accepted.
 
@@ -377,6 +382,58 @@ fixed here.
   `a_controller_that_answers_nothing_records_absence_rather_than_an_error`
   covers it. `Rgb::is_black` and two unused `FakeController` helpers were
   removed in the same pass.
+
+## The Apply step, removed, 2026-08-10
+
+The Lighting screen carried two buttons per open channel, **Apply** and **Turn
+off**, and the panel row carried a third. All three are gone. An edit now
+schedules its own write, `LIGHTING_QUIET` after the row last moved, and
+`WriteSchedule` keeps one deadline per row so two channels edited together are
+two independent writes rather than one queued behind the other.
+
+The quiet period is what replaces the button, and it is sized against the
+hardware rather than against taste. `MIN_COMMAND_INTERVAL_MS` is 50 ms per
+channel and the daemon *refuses* a command that arrives inside it: it does not
+queue it, and it keeps no last-value-wins, so a screen writing on every pointer
+move would have most of its writes refused and the value the operator stopped on
+could be one of them. 150 ms clears that floor three times over and still leaves
+most of the 500 ms the PRD budgets for reaching a confirmed state.
+`the_quiet_period_clears_the_floor_the_daemon_enforces` pins both ends of that
+window, and `each_lighting_row_waits_out_its_own_quiet_period` pins the
+per-row behavior a drag depends on. A pointer drag writes nothing at all until
+it is released, which is the rule the fixed-duty slider on Cooling already
+followed.
+
+Three consequences were not optional.
+
+**The refusal moved onto the controls.** A disabled Apply was where an unproven
+firmware, a read-only conflict and an unusable color all ended up. With no
+button, each control carries its own state: the channel color field now takes
+the capability state and withholds its click handler when it is refused, and the
+panel row's brightness slider, mode select, metric selects and color fields
+carry the panel's `LcdFrame` state instead of `ControlState::Enabled`. Before
+this change they were operable in front of a panel nothing could be written to,
+and only the button said so.
+
+**A program that cannot be built became a note.** It was the one refusal the
+Apply button owned that no single field can express, so the open channel row
+renders it as a warning note instead. Nothing is sent while it stands.
+
+**The confirmation had to become permanent.** A button that reads `Applied`
+says so for as long as the operator looks at it, and there is no button now. The
+open channel row is headed with the last program the daemon committed, `Last
+sent: fixed #6F4EF2 at 60%`, or with `Nothing sent to this channel yet`. That is
+the same fact the panel row already carried on its line, it is what US-014 asks
+for as the current confirmed mode, and it is what keeps an open row in Off from
+being an empty box now that the two buttons that used to fill it are gone.
+
+**The outcome note has to name its device.** One note serves four rows that all
+write on their own, so `Channel 2: ...` and `Panel: ...` are what keep it from
+being read against whichever row the operator is looking at. The panel's IPC
+refusal was the one message that did not name itself, and now does.
+
+Not done here: the captures under `docs/screenshots/` still show the buttons.
+They have to be retaken on the machine.
 
 ## Left for later stories
 - **LED counts.** The controller reports accessory identifiers and never a

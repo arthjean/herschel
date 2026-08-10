@@ -5,6 +5,7 @@
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.4 | 2026-08-10 | Arthur Jean | Replaced the explicit Apply step on Lighting and on the panel row with a settle-and-write model, and reworded US-009, US-010, US-012, US-014 and US-017 to describe the write the screen actually performs; the cooling wording had already diverged from the shipped screen |
 | 1.3 | 2026-08-06 | Arthur Jean | Scoped US-014's lighting restoration to a daemon start and moved restoration after a physical unplug to US-019, which already owns hotplug detection for both devices; made US-019 name the lighting side of that recovery explicitly |
 | 1.2 | 2026-08-06 | Arthur Jean | Revised the memory and CPU budgets against measured GPUI behavior; split resident set into a driver-dependent ceiling and an application-controlled figure |
 | 1.1 | 2026-07-30 | Arthur Jean | Renamed repository to `herschel` and aligned project documentation |
@@ -307,8 +308,8 @@ Deliver the daily monitoring and cooling jobs through the kernel-backed path, in
 
 - [ ] Given a supported pump or fan channel, when a fixed duty inside its validated range is applied, then the daemon writes it once and reports the resulting mode/value readback when available.
 - [ ] Given repeated requests for the current value, when they arrive, then the daemon deduplicates them and performs zero additional device writes.
-- [ ] Given a duty below the validated safe minimum, above the maximum or containing a non-number, when Apply is requested, then no write occurs and the control identifies the accepted range.
-- [ ] Given a write timeout or partial kernel error, when Apply fails, then the prior confirmed state remains active in the UI and the hardware state is marked uncertain until readback succeeds.
+- [ ] Given a duty below the validated safe minimum, above the maximum or containing a non-number, when a write would follow, then no write occurs and the control identifies the accepted range.
+- [ ] Given a write timeout or partial kernel error, when the write fails, then the prior confirmed state remains active in the UI and the hardware state is marked uncertain until readback succeeds.
 - [ ] Given a channel classified as read-only or absent by US-002, when the screen renders, then fixed control is disabled.
 
 #### US-010: Edit and apply a safe liquid-temperature curve
@@ -323,8 +324,8 @@ Deliver the daily monitoring and cooling jobs through the kernel-backed path, in
 
 - [ ] Given the validated 40-point kernel ABI, when the editor opens, then it presents 10 control nodes over 20-59 degrees Celsius and linearly interpolates exactly 40 integer PWM values.
 - [ ] Given an edited curve, when validation runs, then temperature order is fixed, PWM values remain within the channel's safe range and duty is monotonically non-decreasing.
-- [ ] Given pointer or keyboard movement of a node, when editing continues, then no hardware write occurs until Apply is explicitly activated.
-- [ ] Given Apply, when the daemon receives the curve, then it prevalidates all 40 values, serializes one curve transaction and records readback for every attribute that supports it.
+- [ ] Given pointer or keyboard movement of a node, when editing continues, then no hardware write occurs until the gesture ends and the edit settles.
+- [ ] Given a settled curve edit, when the daemon receives it, then it prevalidates all 40 values, serializes one curve transaction and records readback for every attribute that supports it.
 - [ ] Given a failure after one or more kernel attributes changed, when the transaction aborts, then restoration of the complete last known-good curve is attempted and the UI reports confirmed or uncertain hardware state.
 - [ ] Given liquid temperature at or above 60 degrees Celsius, when the driver/firmware failsafe is active, then the application neither disables nor overrides the 100% safety behavior.
 
@@ -355,10 +356,10 @@ Deliver the daily monitoring and cooling jobs through the kernel-backed path, in
 **Acceptance Criteria:**
 
 - [ ] Given connected hardware, when Cooling opens, then pump and fan rows show RPM, PWM, active mode, temperature source and profile selector above the curve.
-- [ ] Given a mode dropdown, when Fixed, Curve or a named profile is selected, then the pending selection is distinct from confirmed hardware state until Apply succeeds.
+- [ ] Given a mode dropdown, when Fixed, Curve or a named profile is selected, then the pending selection is distinct from confirmed hardware state until the write succeeds.
 - [ ] Given liquid temperature >=60 degrees Celsius, or RPM remains zero for three consecutive samples while commanded duty is non-zero, when the condition occurs, then a critical state is displayed within 2 seconds with the affected channel and current readback.
 - [ ] Given read-only conflict, lost permission, unplug or stale telemetry, when the condition occurs, then all write controls disable within 2 seconds and retain diagnostic context.
-- [ ] Given keyboard-only operation, when the curve and mode controls are used, then every edit, Apply and Cancel action is possible without pointer input.
+- [ ] Given keyboard-only operation, when the curve and mode controls are used, then every edit and every recovery action is possible without pointer input.
 
 ---
 
@@ -395,9 +396,9 @@ Validate the exact topology and expose only commands proven safe on the owned `1
 **Acceptance Criteria:**
 
 - [ ] Given a validated channel, when Lighting opens, then its name, LED count when known, current confirmed mode, brightness and color are shown.
-- [ ] Given a valid six-digit hexadecimal color and 0-100% brightness, when Apply is activated, then the preview updates immediately and one rate-limited hardware command follows.
-- [ ] Given Off, when applied, then the channel emits zero light and its prior fixed color remains available for restoration.
-- [ ] Given invalid hex, unsupported channel or command cadence above the US-013 limit, when Apply is requested, then no hardware write occurs and the exact invalid field is identified.
+- [ ] Given a valid six-digit hexadecimal color and 0-100% brightness, when the row settles, then the preview updates immediately and one rate-limited hardware command follows. No separate confirmation step stands between the edit and the command.
+- [ ] Given Off, when it is selected in the mode list, then the channel emits zero light and its prior fixed color remains available for restoration.
+- [ ] Given invalid hex, unsupported channel or command cadence above the US-013 limit, when a write would follow, then no hardware write occurs and the exact invalid field is identified on the control holding it.
 - [ ] Given a daemon start or restart, when the active profile carries compatible lighting, then every channel it names is restored within 5 seconds of the controller answering. Restoration after a physical unplug is US-019's, which owns hotplug detection for both devices.
 
 #### US-015: Add only validated RGB effects
@@ -451,9 +452,9 @@ Prove the LCD transport and deliver the specific native editor and dual-infograp
 **Acceptance Criteria:**
 
 - [ ] Given the panel row on the Lighting destination, when it opens, then it contains display-mode and metric selects, Reading 1/2 colors, Text 1/2 colors, Background, Logo color, Rotate Display and a circular or square preview matching the validated panel.
-- [ ] Given any editor change, when state updates, then the GPUI preview repaints within 16.7 ms at P95 without writing to hardware.
-- [ ] Given Apply, when rendering completes, then the same typed `DisplayPreset` produces both the preview and the exact-resolution offscreen framebuffer sent to the daemon.
-- [ ] Given a six-digit hexadecimal field, when input is invalid, incomplete or out of gamut, then Apply remains disabled, the prior valid preview remains visible and no frame is sent.
+- [ ] Given any editor change, when state updates, then the GPUI preview repaints within 16.7 ms at P95 without waiting on hardware, and the frame that follows waits for the row to settle rather than travelling with the repaint.
+- [ ] Given a settled edit, when rendering completes, then the same typed `DisplayPreset` produces both the preview and the exact-resolution offscreen framebuffer sent to the daemon.
+- [ ] Given a six-digit hexadecimal field, when input is invalid, incomplete or out of gamut, then no frame is sent, the field names the problem and the prior valid preview remains visible.
 - [ ] Given a user-provided static image, when decoding fails or dimensions exceed 8192x8192, then the file is rejected without panic and no partial frame reaches the device.
 - [ ] Given product branding, when the default preview renders, then it uses the project's own wordmark or no logo and never embeds the NZXT logo.
 
@@ -542,7 +543,7 @@ Prove lifecycle recovery across all supported features and package the applicati
 
 - **Performance:** median cold start to first visible frame <=700 ms across five launches; idle `RssAnon` <=110 MiB for Month 1 and <=100 MiB for Month 6; idle total `VmRSS` <=320 MiB throughout; 30-minute average idle CPU <=1.5% for Month 1 and <=1.2% for Month 6. Measured from `/proc/{pid}/status` with the window open and untouched. `RssAnon` is the figure this project controls; total `VmRSS` is dominated by the GPU driver and shader-compiler mappings GPUI links against, is shared with every other GPU client on the machine, and varies with the installed driver. See the GPUI measurement in Research Findings.
 - **Telemetry latency:** sampling interval 1 second; valid sample age <=1.5 seconds at P95; UI marks data stale after 2 seconds and unavailable after 10 seconds.
-- **Control latency:** a valid fixed-duty or RGB Apply command reaches confirmed state or a typed failure within 500 ms at P95 when the device is connected.
+- **Control latency:** a valid fixed-duty or RGB command reaches confirmed state or a typed failure within 500 ms at P95 when the device is connected, measured from the moment the screen queues it rather than from the edit that produced it.
 - **Rendering:** GPUI preview repaint <=16.7 ms at P95; LCD output frequency exactly 1 frame per second for the dual infographic; at most one unsent LCD frame.
 - **Security:** zero network requests, zero listening TCP/UDP sockets, zero GUI/daemon processes running as root, and udev access restricted to two allowlisted VID/PID pairs.
 - **Accessibility:** 100% of actions usable by keyboard; visible focus on every interactive control; text contrast >=4.5:1, meaningful non-text contrast >=3:1; no clipping at 200% scale.

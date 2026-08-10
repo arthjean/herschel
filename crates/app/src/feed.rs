@@ -15,8 +15,10 @@
 //! exists rather than on a timer of its own.
 //!
 //! A command does not wait for that cycle. The worker spends the gap between
-//! polls waiting *on the command queue* rather than sleeping through it, so an
-//! Apply leaves the process when it is pressed instead of at the next boundary.
+//! polls waiting *on the command queue* rather than sleeping through it, so a
+//! write leaves the process when the screen queues it instead of at the next
+//! boundary. That matters more now that no button holds an edit back: the only
+//! delay an operator can feel is the quiet period the screen imposes on itself.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -303,7 +305,7 @@ fn run(
         }
 
         if let Some(active) = session.as_mut() {
-            // Commands first: an Apply the operator just pressed must not wait
+            // Commands first: a write the screen just queued must not wait
             // a whole cycle behind a poll.
             let mut refresh_profiles = false;
             // `try_recv` treats an empty queue and a dropped sender alike here:
@@ -346,7 +348,7 @@ fn run(
 ///
 /// The waiting is what the operator feels. Sleeping through the remainder and
 /// looking at the queue only at the next cycle boundary put a full polling
-/// interval between pressing Apply and the request leaving the process: up to a
+/// interval between the screen queueing a write and the request leaving it: up to a
 /// second, against the 15 ms the daemon needs to render a frame and the panel
 /// needs to take it. Waiting *on the queue* costs nothing when it is empty and
 /// returns immediately when it is not.
@@ -427,7 +429,11 @@ fn execute(session: &mut Session, command: Command) -> (CommandOutcome, bool) {
         }
         Command::ApplyDisplay(preset) => match session.client.apply_display(preset) {
             Ok(outcome) => (CommandOutcome::from_display(&outcome), false),
-            Err(error) => (CommandOutcome::refused(error.to_string()), false),
+            // Named, like a channel refusal is. The Lighting screen shows one
+            // note for four rows that all write on their own, so a sentence
+            // that does not say which device it is about would be read against
+            // whichever row the operator is looking at.
+            Err(error) => (CommandOutcome::refused(format!("Panel: {error}")), false),
         },
         Command::SaveProfile(profile) => {
             let name = profile.name.clone();
@@ -519,7 +525,7 @@ mod tests {
     fn a_command_ends_the_wait_instead_of_serving_out_the_interval() {
         // The defect this pins: the worker used to sleep through the gap
         // between polls and look at the queue only at the next boundary, which
-        // put up to a whole interval between pressing Apply and the request
+        // put up to a whole interval between queueing a write and the request
         // leaving the process.
         let (sender, inbox) = channel();
         let stop = AtomicBool::new(false);

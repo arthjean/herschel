@@ -3,10 +3,14 @@
 
 //! The pending state of the Lighting screen.
 //!
-//! Mirrors [`crate::cooling`]: everything here is an edit that has not happened
-//! yet. Typing a color or moving the brightness slider changes this structure
-//! and nothing else. The controller is only touched when Apply is activated and
-//! the daemon accepts the command.
+//! Mirrors [`crate::cooling`]: everything here is an edit, and this structure
+//! holds it. Choosing a color or moving the brightness slider changes nothing
+//! else. What turns it into a command is the screen going quiet, not a button:
+//! the row schedules the write and the daemon accepts or refuses it.
+//!
+//! So this type is still the boundary it always was. It knows what the operator
+//! asked for and whether that can be expressed as a program; it does not know
+//! when, or whether, the controller will hear about it.
 //!
 //! One rule is specific to lighting. Switching a channel to Off must not lose
 //! the color it was showing, because Off is a mode the operator comes back
@@ -129,7 +133,7 @@ impl ChannelEditor {
         Rgb::parse_hex(&self.color)
     }
 
-    /// The program Apply would send, or the first reason it cannot be built.
+    /// The program this row would send, or the first reason it cannot be built.
     ///
     /// Off never consults the color field: a channel can always be turned off,
     /// including while an unfinished color sits in the input.
@@ -181,12 +185,14 @@ impl ChannelEditor {
     }
 }
 
-/// Every channel's pending state, plus what the daemon last confirmed.
+/// Every channel's pending state.
+///
+/// No selection. Each control on the screen is built for one channel and
+/// carries that channel with it, so there is no "current" channel an edit or a
+/// write could land on by mistake.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LightingEditor {
     channels: Vec<ChannelEditor>,
-    /// The channel the screen is editing.
-    pub selected: u8,
 }
 
 impl LightingEditor {
@@ -208,10 +214,6 @@ impl LightingEditor {
             .collect();
         next.sort_by_key(|editor| editor.channel);
         self.channels = next;
-
-        if !channels.contains(&self.selected) {
-            self.selected = channels.first().copied().unwrap_or(0);
-        }
     }
 
     pub fn channels(&self) -> &[ChannelEditor] {
@@ -228,22 +230,6 @@ impl LightingEditor {
         self.channels
             .iter_mut()
             .find(|editor| editor.channel == channel)
-    }
-
-    pub fn selected(&self) -> Option<&ChannelEditor> {
-        self.channel(self.selected)
-    }
-
-    pub fn selected_mut(&mut self) -> Option<&mut ChannelEditor> {
-        let selected = self.selected;
-        self.channel_mut(selected)
-    }
-
-    /// Move the edited channel, wrapping at both ends.
-    pub fn select(&mut self, channel: u8) {
-        if self.channels.iter().any(|editor| editor.channel == channel) {
-            self.selected = channel;
-        }
     }
 }
 
@@ -410,27 +396,25 @@ mod tests {
         let mut editor = LightingEditor::default();
         editor.sync(&[1, 2, 3]);
         assert_eq!(editor.channels().len(), 3);
-        assert_eq!(editor.selected, 1);
 
         if let Some(channel) = editor.channel_mut(2) {
             channel.color = "ABCDEF".to_string();
         }
-        editor.select(2);
 
         // A refresh must not discard what the operator typed.
         editor.sync(&[1, 2, 3]);
         assert_eq!(editor.channel(2).map(|c| c.color.as_str()), Some("ABCDEF"));
-        assert_eq!(editor.selected, 2);
 
-        // A channel that disappeared takes its edit and the selection with it.
+        // A channel that disappeared takes its pending edit with it, and is no
+        // longer addressable: a control built for it is gone from the screen in
+        // the same repaint, so nothing can write to a channel the controller
+        // stopped reporting.
         editor.sync(&[1]);
         assert_eq!(editor.channels().len(), 1);
         assert!(editor.channel(2).is_none());
-        assert_eq!(editor.selected, 1);
 
-        // And a controller reporting nothing leaves nothing selected.
         editor.sync(&[]);
         assert!(editor.channels().is_empty());
-        assert!(editor.selected().is_none());
+        assert!(editor.channel(1).is_none());
     }
 }

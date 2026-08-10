@@ -268,9 +268,9 @@ and the `hidraw` one silently does not, which looks exactly like a wrong rule.
 | Criterion | Implementation | Proof |
 |---|---|---|
 | Display-mode and metric selects, Reading 1/2, Text 1/2, Background and Logo colors, Rotate Display, and a preview matching the panel | `app/src/display.rs` (`DisplayEditor`, `DisplayColorField`), `app/src/shell.rs` (`lcd_row`, `lcd_detail`, `metric_select`, `color_group`, `color_field`) | `the_editor_exposes_the_six_color_controls_the_story_names`, `every_color_field_is_separately_addressable`, `the_six_fields_are_ordered_so_each_pair_sits_together`, `every_field_names_both_the_slot_it_belongs_to_and_what_it_paints`, `every_lighting_control_keeps_traversal_order_equal_to_visual_order`, `the_panel_row_follows_whatever_the_controller_reported`; captures [`ep-004-lcd-editor.png`](./screenshots/ep-004-lcd-editor.png) and [`ep-004-lcd-writable.png`](./screenshots/ep-004-lcd-writable.png), both against the answering panel, and [`lighting-panel-open.png`](./screenshots/lighting-panel-open.png) for the arrangement those controls are in now. All six controls are the same six; what the redesign below changed is that they are now grouped under the reading they color, and that the field the criterion calls Logo is labeled **Wordmark**, which is what it paints (AC-6 asks for the project's own wordmark or no logo, and there is no logo) |
-| Any editor change repaints the preview within 16.7 ms at P95, writing no hardware | `app/src/display.rs` (`DisplayScreen::edit`), `lcd-renderer` (`render`, `Framebuffer::to_png`), `app/src/preview.rs` (`panel_preview`) | `every_editor_change_moves_the_preview_with_it` covers *which* changes reach the preview, and `a_preview_repaint_stays_inside_the_frame_budget` covers how long one takes. Measured on this machine, release build, 300 repaints with a moving reading: render alone **1.12 ms** at P95, render plus PNG encode **1.50 ms** at P95, against a 16.7 ms budget. Nothing in the path opens a device |
-| Apply renders one typed `DisplayPreset` into both the preview and the exact-resolution framebuffer | `crates/lcd-renderer` called by `app/src/preview.rs` and by `daemon/src/display.rs` | `the_preview_renders_the_same_frame_the_daemon_would_send`, `a_frame_encodes_to_a_png_the_toolkit_can_decode` (asserts every preview pixel equals the frame pixel), `a_frame_is_exactly_the_panels_size_in_the_panels_format`, `rgb565_packs_five_six_five_most_significant_byte_first` |
-| An invalid, incomplete or out-of-gamut hex leaves Apply disabled, the prior valid preview visible, and sends no frame | `app/src/display.rs` (`parsed_color`, `PreviewState`), `app/src/shell.rs` (`apply` state) | `an_incomplete_color_names_its_own_field_and_blocks_apply`, `the_preview_keeps_the_last_valid_picture_while_a_field_is_mid_edit`, `a_preset_the_renderer_refuses_never_reaches_the_endpoint`, `an_invalid_preset_is_refused_before_the_capability_gate_is_even_reached` |
+| Any editor change repaints the preview within 16.7 ms at P95 without waiting on hardware, and the frame follows once the row settles | `app/src/display.rs` (`DisplayScreen::edit`), `lcd-renderer` (`render`, `Framebuffer::to_png`), `app/src/preview.rs` (`panel_preview`) | `every_editor_change_moves_the_preview_with_it` covers *which* changes reach the preview, and `a_preview_repaint_stays_inside_the_frame_budget` covers how long one takes. Measured on this machine, release build, 300 repaints with a moving reading: render alone **1.12 ms** at P95, render plus PNG encode **1.50 ms** at P95, against a 16.7 ms budget. Nothing in the path opens a device |
+| A settled edit renders one typed `DisplayPreset` into both the preview and the exact-resolution framebuffer | `crates/lcd-renderer` called by `app/src/preview.rs` and by `daemon/src/display.rs`, reached from `app/src/shell.rs` (`send_display`) | `the_preview_renders_the_same_frame_the_daemon_would_send`, `a_frame_encodes_to_a_png_the_toolkit_can_decode` (asserts every preview pixel equals the frame pixel), `a_frame_is_exactly_the_panels_size_in_the_panels_format`, `rgb565_packs_five_six_five_most_significant_byte_first` |
+| An invalid, incomplete or out-of-gamut hex sends no frame, names the problem on its field, and leaves the prior valid preview visible | `app/src/display.rs` (`parsed_color`, `PreviewState`), `app/src/shell.rs` (`send_display` returns without sending, `lcd_detail` renders the reason as a note) | `an_incomplete_color_names_its_own_field_and_stops_the_frame`, `the_preview_keeps_the_last_valid_picture_while_a_field_is_mid_edit`, `a_preset_the_renderer_refuses_never_reaches_the_endpoint`, `an_invalid_preset_is_refused_before_the_capability_gate_is_even_reached` |
 | A static image that fails to decode or exceeds 8192x8192 is rejected without panic, and no partial frame reaches the device | `lcd-renderer/src/lib.rs` (`draw_image`), `core/src/display.rs` (`MAX_IMAGE_DIMENSION`) | `a_file_that_is_not_an_image_is_rejected_without_panicking`, `an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded` (a 45-byte PNG declaring 9000x9000: the refusal comes from the size it claims, not from the file being large), `image_mode_without_a_file_is_refused_before_anything_is_drawn` |
 | The default preview uses the project's own wordmark and never NZXT's | `lcd-renderer/src/lib.rs`, which draws no wordmark at all | `the_panel_carries_no_wordmark_at_all`. The criterion allows "the project's own wordmark **or no logo**"; the panel now takes the second option, so the renderer no longer references `PRODUCT_NAME` and there is nothing on the glass to mistake for a vendor's mark |
 
@@ -319,7 +319,7 @@ characters the product can put on the glass is asserted against the subset
 (`the_screen_offers_only_the_modes_it_can_configure_completely`). The screen has
 no control that can name a file, because this codebase has no text-input
 primitive: US-004 built nine components and none of them accepts free text. A
-mode whose Apply could only ever refuse would be a control that says the feature
+mode the daemon could only ever refuse would be an entry that says the feature
 is here and then does nothing, which is the same rule that keeps an unproven
 lighting effect absent rather than disabled.
 
@@ -350,7 +350,7 @@ the channels'). The rail now holds three primary destinations, `ctrl-1` through
 | An unavailable metric renders `--` and a neutral arc rather than zero degrees | `core/src/display.rs` (`MetricSample::text`, `fraction`), `lcd-renderer` (the `None` arm of the arc) | `an_unavailable_reading_shows_dashes_and_never_a_zero_gauge` (asserts the gauge loses the reading's color while the dashes keep it, and that the frame differs from a reading of zero), `an_unavailable_metric_is_never_drawn_as_zero`, `a_reading_and_its_unavailable_marker_occupy_the_same_room` |
 | Rotate Display turns the preview and the physical output together by the validated increment, preserving text alignment | `core/src/display.rs` (`Orientation`), `lcd-renderer/src/lib.rs` (`rotate`) | `a_quarter_turn_moves_the_picture_and_keeps_every_pixel`, `four_quarter_turns_return_the_picture_unchanged`, `rotation_walks_the_validated_increment_and_returns_to_zero`; capture [`ep-004-lcd-rotated-180.png`](./screenshots/ep-004-lcd-rotated-180.png). The two turn together by construction rather than by coincidence: one framebuffer is both, the device is left on its own orientation zero, and the frames already proven to reach the glass verbatim carry the rotation as pixel content. A rotated frame has not been photographed on the panel, which is the one part of this row that rests on that inference rather than on an observation, and which is deferred to the polish iteration |
 | 30 minutes of output adds <=0.5 percentage points of average CPU and queues no more than one unsent frame | `daemon/src/display.rs` (synchronous send, no queue), `daemon/src/server.rs` (missed ticks are dropped, not caught up) | See "Thirty minutes of output". There is no queue that *can* exceed one: the transfer is synchronous, and a tick that runs late skips the intervals it missed and counts them rather than catching up (`dropped_frames_are_counted_rather_than_queued`) |
-| Backpressure or a transfer failure drops stale frames and retries only after a reconnect or an explicit recoverable state | `daemon/src/display.rs` (`faulted`, `refresh`, `apply`, `forget`) | `a_failed_transfer_reports_uncertain_and_forgets_the_picture`, `a_forgotten_panel_is_written_again_rather_than_deduplicated`, `dropped_frames_are_counted_rather_than_queued` |
+| Backpressure or a transfer failure drops stale frames and retries only after a reconnect or an explicit recoverable state | `daemon/src/display.rs` (`faulted`, `refresh`, `apply`, `forget`), published through `ipc::DisplayState::faulted`, offered by `app/src/shell.rs` (`resume_display`, the `lcd-resume` control) | `a_failed_transfer_reports_uncertain_and_forgets_the_picture`, `a_forgotten_panel_is_written_again_rather_than_deduplicated`, `dropped_frames_are_counted_rather_than_queued`, `a_stopped_stream_names_itself_so_the_screen_can_offer_a_way_back` (asserts the reason reaches the reported state, that a later tick does not restart the stream by itself, and that an explicit apply clears it) |
 
 ### Deduplication is on the picture, not the preset
 
@@ -399,6 +399,29 @@ preview repaint. It opens once and reads the size from the decoder's header, so
 the ceiling is still enforced before a pixel is decoded
 (`an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded` still passes
 against a 45-byte PNG claiming 9000x9000).
+
+### The panel row lost its Apply, and kept one button, 2026-08-10
+
+The screen writes on its own now, panel row included: an edit is sent
+`LIGHTING_QUIET` after the row last moved, and `send_display` compares the
+preset against what the daemon committed first, because an unchanged preset
+still costs the daemon a full render before it can compare the picture that
+came out.
+
+One button survived the removal, under a different name and a condition. This
+epic's own recovery rule is why. `DisplayExecutor::apply` is what clears
+`faulted`, and `is_streaming` is false while it is set, so a stopped stream
+restarts on a deliberate apply and on nothing else. That was fine while a button
+existed. Without one, the only thing left to clear a fault would have been the
+operator happening to change something, and a fault changes nothing about the
+preset for an automatic write to notice, so a panel could sit dark until it was
+touched by accident.
+
+`DisplayState` therefore carries `faulted`, and the panel row renders **Resume
+display** with the reason beside it, only while the stream has stopped. The
+flag alone could not have carried this: `streaming: false` is equally what a
+panel nobody has written to reports, and a screen with only that could not tell
+a fault from an idle panel.
 
 ## Boundaries this epic did not cross
 
@@ -483,7 +506,10 @@ module pins the shared identifiers so the two cannot drift onto different bytes
   `DisplayOutcome::brightness_sent`. Serde ignores an unknown field, so a
   version 4 client would read the new answer without complaint and report
   "nothing was sent" about a panel it had just dimmed. The bump makes that a
-  refusal at the handshake instead of a quiet disagreement.
+  refusal at the handshake instead of a quiet disagreement. 5 to 6, for
+  `DisplayState::faulted`: a client that could not see a stopped stream would
+  leave the operator no way to restart it, now that the panel row writes on its
+  own and no button remains to do it by hand.
 
 `DisplayError` is tagged `kind` rather than `error`, because `IpcError` wraps it
 and is itself tagged `error`: two `error` tags in one object is a frame neither
