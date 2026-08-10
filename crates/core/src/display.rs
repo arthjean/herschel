@@ -38,6 +38,36 @@ pub const MAX_IMAGE_DIMENSION: u32 = 8192;
 /// Longest path a preset may carry, so a peer cannot grow a frame without end.
 const MAX_IMAGE_PATH_BYTES: usize = 4096;
 
+/// Most frames this product will hold in memory for one animation.
+///
+/// A GIF header declares neither a frame count nor a duration, so the ceiling
+/// cannot be checked before decoding the way [`MAX_IMAGE_DIMENSION`] is: the
+/// decoder is stopped at this frame instead, and the file is refused rather than
+/// truncated into an animation that silently drops its tail.
+///
+/// The number is a memory budget. Each frame occupies the panel's own
+/// framebuffer twice over while it is being compiled: 240x240 at three bytes per
+/// pixel inside the renderer, 240x240 at two bytes per pixel in the daemon's
+/// table. At 120 frames that is 20.7 MiB transient and 13.8 MiB resident, which
+/// is what a few seconds of animation costs.
+pub const MAX_ANIMATION_FRAMES: usize = 120;
+
+/// Shortest a frame may stay on the glass, in milliseconds.
+///
+/// Measured, not chosen: one picture costs two transfer sequences and four
+/// acknowledgments, which EP-004 timed at 79 to 80 ms end to end. A GIF asking
+/// for less would not be played faster, it would be played late and forever
+/// further behind, so the delay is raised to what the transport can hold.
+pub const MIN_FRAME_DELAY_MS: u64 = 80;
+
+/// What a frame declaring no delay at all is given.
+///
+/// GIF writers emit a zero delay to mean "as fast as possible", which every
+/// viewer resolves to a tenth of a second rather than to a busy loop. This
+/// product does the same, one step above [`MIN_FRAME_DELAY_MS`] so an
+/// unspecified cadence is not also the fastest one the hardware allows.
+pub const DEFAULT_FRAME_DELAY_MS: u64 = 100;
+
 /// What kind of picture the panel shows.
 ///
 /// Four entries, each of which something in this product actually produces: the
@@ -53,7 +83,12 @@ pub enum DisplayMode {
     SingleReading,
     /// The background color across the whole panel, and nothing else.
     Solid,
-    /// A static image the operator chose, scaled to the panel.
+    /// A picture the operator chose, scaled to the panel.
+    ///
+    /// One mode rather than two. A GIF carrying more than one frame is played,
+    /// a GIF carrying one and a PNG or JPEG are held still, and the difference
+    /// is a property of the file rather than a choice the operator has to
+    /// restate in a select.
     Image,
 }
 
@@ -70,7 +105,7 @@ impl DisplayMode {
             Self::DualInfographic => "Dual infographic",
             Self::SingleReading => "Single reading",
             Self::Solid => "Solid color",
-            Self::Image => "Static image",
+            Self::Image => "Image or GIF",
         }
     }
 
@@ -450,7 +485,7 @@ pub enum DisplayError {
         #[source]
         source: LightingError,
     },
-    #[error("Static image mode needs a file to display.")]
+    #[error("Image mode needs a file to display.")]
     ImagePathMissing,
     #[error("Image path is {bytes} bytes, above the {max_bytes} byte limit.")]
     ImagePathTooLong { bytes: usize, max_bytes: usize },
@@ -458,6 +493,8 @@ pub enum DisplayError {
     ImageUndecodable { path: String, detail: String },
     #[error("Image is {width}x{height}, above the {max}x{max} limit.")]
     ImageTooLarge { width: u32, height: u32, max: u32 },
+    #[error("The animation has more than {max} frames, which is more than this panel holds.")]
+    AnimationTooLong { max: usize },
     #[error("The panel geometry is not known, so no frame can be laid out.")]
     PanelUnknown,
 }
@@ -470,7 +507,8 @@ impl DisplayError {
             Self::ImagePathMissing
             | Self::ImagePathTooLong { .. }
             | Self::ImageUndecodable { .. }
-            | Self::ImageTooLarge { .. } => Some("image"),
+            | Self::ImageTooLarge { .. }
+            | Self::AnimationTooLong { .. } => Some("image"),
             Self::PanelUnknown => None,
         }
     }
