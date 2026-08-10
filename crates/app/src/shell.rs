@@ -1773,16 +1773,43 @@ impl Shell {
         cx.notify();
     }
 
-    /// Store the pending program under a generated, valid name.
+    /// Store the pending state of the whole machine under a generated name.
+    ///
+    /// Cooling, lighting and the panel together, because that is what
+    /// reactivating a profile puts back: a profile that carried only the curve
+    /// would silently leave the lights and the glass on whatever the previous
+    /// selection left there, and the operator would have no way to tell which
+    /// half of the machine a name refers to.
+    ///
+    /// A channel whose color is mid-edit is left out rather than stored
+    /// half-typed, exactly as it is left out of the write that settles, and the
+    /// panel is stored only when this machine has one to write to.
     fn save_profile(&mut self, cx: &mut Context<Self>) {
         let existing = self.link.profiles().len();
         let name = format!("{} {}", self.cooling.mode.label(), existing);
+        let lighting = self
+            .lighting
+            .channels()
+            .iter()
+            .filter_map(|editor| {
+                editor.program().ok().map(|program| LightingCommand {
+                    channel: editor.channel,
+                    program,
+                })
+            })
+            .collect();
+        let display = self
+            .link
+            .control_state(KRAKEN_BASE, CapabilityId::LcdFrame)
+            .is_enabled()
+            .then(|| self.lcd.preset().ok())
+            .flatten();
         let profile = Profile {
             name: name.chars().take(48).collect(),
             program: self.cooling.program(),
             device: Some(KRAKEN_BASE),
-            lighting: Vec::new(),
-            display: None,
+            lighting,
+            display,
         };
         self.feed.send(Command::SaveProfile(profile));
         cx.notify();
