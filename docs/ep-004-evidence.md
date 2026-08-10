@@ -313,20 +313,21 @@ one advance, which is what keeps a reading from shifting sideways as it changes
 characters the product can put on the glass is asserted against the subset
 (`every_character_the_panel_can_be_asked_to_draw_has_a_glyph`).
 
-### What the screen does not offer
+### What the screen did not offer, and now does
 
-`DisplayMode::Image` is absent from the mode select
-(`the_screen_offers_only_the_modes_it_can_configure_completely`). The screen has
-no control that can name a file, because this codebase has no text-input
-primitive: US-004 built nine components and none of them accepts free text. A
-mode the daemon could only ever refuse would be an entry that says the feature
-is here and then does nothing, which is the same rule that keeps an unproven
-lighting effect absent rather than disabled.
+`DisplayMode::Image` was absent from the mode select. The screen had no control
+that could name a file, because this codebase has no text-input primitive:
+US-004 built nine components and none of them accepts free text. A mode the
+daemon could only ever refuse would be an entry that says the feature is here
+and then does nothing, which is the same rule that keeps an unproven lighting
+effect absent rather than disabled.
 
-The mode stays in the vocabulary, in the renderer and in the daemon, and a saved
-profile can select it. US-017 AC-1 lists the controls the screen must contain
-and an image picker is not among them; AC-5 asks only that a user-provided image
-be rejected safely, which the three tests above prove.
+That reasoning was right about the rule and wrong about the missing piece. What
+image mode needed was never a text field but a file picker, and the toolkit
+publishes the platform's own: `App::prompt_for_paths` (`gpui-0.2.2/src/app.rs`).
+The mode is offered as of the section below, and
+`the_screen_offers_every_mode_and_a_control_for_each_of_them` replaces the test
+this paragraph used to name.
 
 ### Where the editor lives now
 
@@ -679,3 +680,178 @@ screen must contain and US-018 specifies the dual infographic; neither excludes
 a second layout, and nothing in the tables above weakened. Whether it earns a
 story of its own is a scoping decision for the PRD rather than one this document
 should make quietly.
+
+## An animated picture on the panel, 2026-08-11
+
+The panel plays a GIF the operator picks, from the Lighting screen's Kraken row.
+Nothing about the transport, the capability gate or the validated-firmware list
+moved: the same `LcdLink` sends the same 115 200 bytes, twice per picture, with
+the same acknowledgment waits.
+
+### The panel cannot do this by itself
+
+liquidctl's `KrakenZ3` driver carries two ways to put an animation on this
+generation of glass, and only one of them exists for this unit.
+
+The **bucket path** gives the panel onboard asset memory: `_setup_bucket` sends
+`0x32 0x1` with a start bucket, an end bucket, an address and a size,
+`_send_data` brackets the payload in `0x36 0x01` and `0x36 0x02`, and
+`_switch_bucket` (`0x38 0x1 mode bucket`) tells the panel to play what was
+uploaded. Sixteen buckets over roughly 23.75 MiB. The host uploads the GIF once
+and stops.
+
+That path is for the Z-series and for 2023 models on **firmware 1.x**. On 2.x,
+which is what this Kraken reports, `set_screen` raises
+`NotSupportedByDriver("gif images are not supported on firmware 2.X.Y")`
+([liquidctl#631](https://github.com/liquidctl/liquidctl/issues/631)), and the
+[Kraken X3/Z3 guide](https://github.com/liquidctl/liquidctl/blob/main/docs/kraken-x3-z3-guide.md)
+says the same in prose. The 2.x sequence is the one this product already
+implements: start, header, payload, end, twice, with no bucket anywhere in it.
+
+So the host streams, frame after frame, or there is no animation. That is the
+constraint everything below is shaped around, and it is the reason the frames
+are compiled into memory rather than uploaded to the device.
+
+### What the cadence can actually be
+
+From this epic's own measurements, not from a specification:
+
+| Cost | Measured |
+|---|---|
+| One transfer sequence, no acknowledgment wait | 17.3 ms |
+| Two `0x36` acknowledgments per sequence | about 12 ms each |
+| One picture on the glass, two sequences | **79 to 80 ms** |
+
+`MIN_FRAME_DELAY_MS` is therefore 80, and a frame declaring less is raised to it
+(`a_cadence_the_transport_cannot_hold_is_slowed_to_what_it_can`). A GIF asking
+for a hundredth of a second is not played faster by trying: it is played one
+frame further behind on every frame. A frame declaring zero, which the format
+uses to mean "as fast as possible", takes `DEFAULT_FRAME_DELAY_MS` of 100, which
+is what every other viewer resolves it to.
+
+The ceiling this implies is roughly twelve frames a second, and this product
+does not try to raise it. There is a plausible way to: in a continuous stream
+the picture is swapped by the *next* transfer, so the doubling that
+`SEQUENCES_PER_FRAME` exists for is arguably redundant except on the last frame
+of a stopped animation. Halving the cost would roughly double the ceiling. It is
+not implemented, because the doubling was established on the glass and removing
+it would be established by argument. A `--lcd-write-probe` run is what would
+settle it.
+
+### Decoded once, then only copied
+
+`kori_lcd_renderer::render_image_frames` is the whole decode. It runs when a
+preset is applied, and what it leaves behind is a table of finished
+framebuffers. Playing a frame is a copy and a transfer; there is no decoder,
+no resize and no rasterizer in the tick loop.
+
+| Decision | Why |
+|---|---|
+| `image`'s `AnimationDecoder` rather than the raw `gif` crate | The format stores each frame as a sub-rectangle with a disposal method (`Keep`, `Background`, `Previous`), and compositing those over a canvas is exactly what `image::codecs::gif` already does and tests. It also types the delay; the raw crate reports hundredths of a second as a bare `u16`, which is a unit trap one cast wide |
+| One `Image or GIF` mode rather than two | Whether a file animates is a property of the file. A single-frame GIF holds still, and a select entry asking the operator to restate what the file already says is a control that can be set wrong |
+| Frames held as RGB565 in the daemon | Nothing downstream of the compile needs the pixels back, and two bytes per pixel rather than three is a third off the table |
+| `MAX_ANIMATION_FRAMES` refuses rather than truncates | The GIF header declares no frame count, so the ceiling cannot be checked ahead of the decode the way `MAX_IMAGE_DIMENSION` is. The decoder is stopped at the ceiling and the file is refused: an animation quietly cut short is a file the operator picked and this product then played something else instead of (`an_animation_past_the_ceiling_is_refused_rather_than_truncated`) |
+| No `fast_image_resize`, no second decoder | The cover sampler already in `draw_image` runs once per frame at compile time, not per tick. Adding a SIMD resizer for a cost that is paid once, on a file pick, would be a dependency bought with nothing |
+
+At 120 frames the table is 13.8 MiB in the daemon and about 20 MiB transient
+inside the renderer while it is being built. That is the number
+`MAX_ANIMATION_FRAMES` is, and the arithmetic is next to it in
+`core/src/display.rs`.
+
+### Two cadences, one thread, one writer
+
+The animation runs on the clock its file declares and the infographic runs at
+`FRAME_INTERVAL_MS`. Both are driven by `spawn_display_ticker`, which is still
+the one thread that writes to the panel. A second thread would have put the
+serialization back on the mutex to enforce, and the whole ownership design of
+this daemon exists so that it does not have to be.
+
+The ticker sleeps to whichever deadline comes first, never longer than
+`TICK_POLL` so shutdown stays prompt and never shorter than `TICK_FLOOR` so a
+past-due deadline cannot spin against the request handlers.
+
+Three rules the animation inherits rather than reinvents:
+
+* **The cursor walks the wall clock**, so a tick that ran late skips the frames
+  it slept through and counts them, exactly as a late telemetry frame is
+  counted and dropped (`a_late_tick_skips_the_frames_it_slept_through_rather_than_playing_them_all`).
+* **The deduplication still applies.** An animation frame goes through the same
+  `send_bytes` a rendered one does, so a GIF whose frames repeat costs no
+  transfer for the repeats.
+* **A fault stops it.** `advance_animation` returns no next deadline once a
+  transfer fails, and the row's Resume display button is what clears it, which
+  is the recovery rule US-018 already set
+  (`a_failed_transfer_stops_the_animation_instead_of_pushing_frames_at_a_refusing_panel`).
+
+One thing the animation does **not** inherit: `tick_display` records a
+`DisplayApplied` event per frame and the animation records none. At a dozen
+frames a second that would fill the diagnostics ring in a couple of minutes and
+push out the events that say what the hardware actually did. A fault still names
+itself, through the state the executor publishes.
+
+### The preview plays it too
+
+FR-14 asks that the preview and the glass come from one description. A preview
+frozen on frame zero would have satisfied that for one frame out of thirty, so
+the client compiles the same table through the same function and plays it.
+
+The compile is keyed on what the frames depend on: the file, the orientation,
+the background and the panel geometry. A brightness press or a color edit
+re-derives nothing (`a_second_sync_with_nothing_changed_does_not_decode_the_file_again`).
+The timer follows the pattern `schedule_lighting` already uses, with a
+generation counter so a picture that has been replaced leaves timers that fire
+into nothing rather than a second clock advancing the new one. It only runs
+while the row is open: a closed row repaints nothing, and ten wake-ups a second
+to move a cursor nobody can see is work with no output.
+
+### What this iteration did not prove
+
+**The coexistence measurement was taken at one frame per second.** The
+thirty-minute run above is what proves the two interfaces do not interfere:
+1800 frames out, 1800 `hwmon` samples back, zero gaps above 2 s. An animation
+occupies the bulk endpoint roughly ten times as much. Nothing suggests it
+breaks, and nothing here measures it. **That run has to be repeated with an
+animation playing before this is treated as settled**, and it is the one
+outstanding risk of the feature: everything else here fails toward a refusal,
+this one fails toward a thermal reading arriving late.
+
+### On the glass, 2026-08-11
+
+An animation ran on the panel and the operator watched it: *"ça marche, le gif
+tourne"*. Firmware `2.0.0`, the owned `1e71:300e`, `korid 0.1.0` holding both
+device locks, a 200x200 GIF of **36 frames** over roughly 4.2 s of loop,
+`/home/arthur/Téléchargements/claude-claude-code.gif`. The file's own cadence
+survived the compile: 390 ms on the first frame, then 80, 90, 90, 170, where the
+80 is a frame declaring 70 ms raised to `MIN_FRAME_DELAY_MS`.
+
+That closes the assertion this section used to make, which was that the frames
+were the right size in the right format on a path proven for one picture, and
+that they *moved* was inference. They move.
+
+**The static picture reached the glass first**, on the same firmware, before the
+GIF: image mode is proven for both shapes of file rather than only for the one
+that animates.
+
+One defect found by running it, and it was not in this product's logic. The
+first GIF apply showed a still picture, because the installed `korid` predated
+the change while the client did not: an old daemon accepts an image preset,
+draws one frame and reports nothing unusual, so the window animated its own
+preview against a panel that could not. Rebuilding and reinstalling the daemon
+was the whole fix. Worth recording because the symptom is indistinguishable from
+a transport that drops frames, and the two would be debugged in completely
+different places.
+
+**This is not in the PRD.** US-017 AC-1 lists the controls the screen must
+contain and a file picker is not among them; AC-5 asks only that a
+user-provided image be rejected safely, which still holds and now holds for the
+animated path too. Whether animated output earns a story of its own is a
+scoping decision for the PRD rather than one this document should make quietly.
+
+### Validation
+
+```
+cargo fmt --all -- --check                              pass
+cargo check --workspace --all-targets                   pass
+cargo clippy --workspace --all-targets -- -D warnings   pass
+cargo test --workspace                                  pass, 578 tests
+```

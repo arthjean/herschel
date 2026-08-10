@@ -113,7 +113,8 @@ cargo test --workspace
 ```text
 crates/core            shared vocabulary, touches no hardware
 crates/hardware-linux  sysfs, hwmon, USB probing, and the single write path
-crates/lcd-renderer    one DisplayPreset to one exact framebuffer
+crates/lcd-renderer    one DisplayPreset to one exact framebuffer, or to the
+                       frames an animated picture plays
 crates/daemon          ownership, sampling, serialized writes, Unix IPC
 crates/app             GPUI window, holds no hardware handle
 ```
