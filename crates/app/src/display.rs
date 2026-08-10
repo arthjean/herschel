@@ -13,6 +13,10 @@
 //! error while the preview keeps showing the last picture that was valid, which
 //! is what US-017 asks for instead of a field that silently reverts.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
+use kori_core::capability::LcdPanel;
 use kori_core::display::{
     DisplayError, DisplayMode, DisplayPreset, LcdMetric, Orientation, ReadingSlot,
 };
@@ -268,6 +272,14 @@ impl DisplayEditor {
 pub struct DisplayScreen {
     editor: DisplayEditor,
     last_valid: DisplayPreset,
+    film: Option<ImageFilm>,
+    /// Why the picture could not be compiled, when it could not be.
+    ///
+    /// Kept beside the film rather than derived from the preset: a path that
+    /// parses perfectly can still name a file that is not there, and that is a
+    /// refusal the operator has to read on the screen rather than discover as
+    /// an empty preview.
+    film_error: Option<DisplayError>,
 }
 
 impl Default for DisplayScreen {
@@ -276,7 +288,84 @@ impl Default for DisplayScreen {
         let last_valid = editor
             .preset()
             .unwrap_or_else(|_| DisplayPreset::default_infographic());
-        Self { editor, last_valid }
+        Self {
+            editor,
+            last_valid,
+            film: None,
+            film_error: None,
+        }
+    }
+}
+
+/// The picture an image preset names, already rendered.
+///
+/// Image mode is the one mode whose picture does not depend on telemetry, and
+/// the one whose source is expensive: an animated GIF is a compressed stream
+/// that has to be composited frame by frame. Rendering it the way the other
+/// modes are rendered, on every repaint, would put that cost on every pointer
+/// move and would still only ever show the first frame. So it is compiled when
+/// the file is chosen and the preview plays the result.
+///
+/// This is the same compile the daemon runs, from the same function, so the
+/// preview and the glass agree frame for frame rather than only on the first
+/// picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageFilm {
+    identity: FilmIdentity,
+    frames: Vec<FilmFrame>,
+    cursor: usize,
+}
+
+/// Everything the compiled frames depend on.
+///
+/// Anything else about the preset can change without the file being read again,
+/// which is what keeps the brightness stepper from re-decoding a GIF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FilmIdentity {
+    image: PathBuf,
+    orientation: Orientation,
+    background: Rgb,
+    panel: (u16, u16),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FilmFrame {
+    png: Vec<u8>,
+    delay: Duration,
+}
+
+impl ImageFilm {
+    /// The frame the preview should be showing.
+    pub fn frame(&self) -> Option<&[u8]> {
+        self.frames
+            .get(self.cursor)
+            .map(|frame| frame.png.as_slice())
+    }
+
+    /// How long that frame stays up.
+    pub fn delay(&self) -> Option<Duration> {
+        self.frames.get(self.cursor).map(|frame| frame.delay)
+    }
+
+    /// Whether there is anything to play.
+    pub fn is_animated(&self) -> bool {
+        self.frames.len() > 1
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// How long one pass through the whole animation takes.
+    pub fn duration(&self) -> Duration {
+        self.frames.iter().map(|frame| frame.delay).sum()
+    }
+
+    /// Move to the next frame, wrapping at the end.
+    fn advance(&mut self) {
+        if !self.frames.is_empty() {
+            self.cursor = (self.cursor + 1) % self.frames.len();
+        }
     }
 }
 
@@ -319,6 +408,88 @@ impl DisplayScreen {
     pub fn preset(&self) -> Result<DisplayPreset, DisplayError> {
         self.editor.preset()
     }
+
+    /// The compiled picture, when the preview is showing one.
+    pub fn film(&self) -> Option<&ImageFilm> {
+        self.film.as_ref()
+    }
+
+    /// Why the picture could not be compiled, when it could not be.
+    pub fn film_error(&self) -> Option<&DisplayError> {
+        self.film_error.as_ref()
+    }
+
+    /// Show the next frame of the animation, and say whether one is playing.
+    pub fn advance_film(&mut self) -> bool {
+        match self.film.as_mut().filter(|film| film.is_animated()) {
+            Some(film) => {
+                film.advance();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Compile the picture the preview needs, unless it is already held.
+    ///
+    /// Called after the edits that can change which file is shown, not on every
+    /// repaint: the identity carries everything the frames depend on, so a
+    /// second call with nothing changed costs one comparison and no decode.
+    pub fn sync_film(&mut self, panel: &LcdPanel) {
+        let preset = &self.last_valid;
+        let Some(image) = preset
+            .image
+            .clone()
+            .filter(|_| preset.mode.uses_image() && panel.width > 0 && panel.height > 0)
+        else {
+            self.film = None;
+            self.film_error = None;
+            return;
+        };
+
+        let identity = FilmIdentity {
+            image,
+            orientation: preset.orientation,
+            background: preset.background,
+            panel: (panel.width, panel.height),
+        };
+        if self
+            .film
+            .as_ref()
+            .is_some_and(|film| film.identity == identity)
+        {
+            return;
+        }
+
+        // Dropped before the new one is built, so a file that fails to decode
+        // leaves an empty preview naming the reason rather than the previous
+        // operator's picture with a warning under it.
+        self.film = None;
+        self.film_error = None;
+        match compile(preset, panel) {
+            Ok(frames) => {
+                self.film = Some(ImageFilm {
+                    identity,
+                    frames,
+                    cursor: 0,
+                })
+            }
+            Err(error) => self.film_error = Some(error),
+        }
+    }
+}
+
+/// Render every frame of the preset's picture, as the preview displays them.
+fn compile(preset: &DisplayPreset, panel: &LcdPanel) -> Result<Vec<FilmFrame>, DisplayError> {
+    let rendered = kori_lcd_renderer::render_image_frames(preset, panel)?;
+    let mut frames = Vec::with_capacity(rendered.len());
+    for frame in rendered {
+        frames.push(FilmFrame {
+            png: frame.frame.to_png()?,
+            delay: frame.delay,
+        });
+    }
+    Ok(frames)
 }
 
 #[cfg(test)]
@@ -659,5 +830,133 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn panel() -> LcdPanel {
+        crate::preview::assumed_panel()
+    }
+
+    /// A screen in image mode pointing at a GIF of `frames` solid colors.
+    fn screen_showing(name: &str, frames: usize) -> (DisplayScreen, std::path::PathBuf) {
+        let directory = kori_lcd_renderer::testing::scratch(name).unwrap();
+        let path = directory.join("picture.gif");
+        let pictures: Vec<(Rgb, u16)> = (0..frames)
+            .map(|index| (Rgb::new((index % 32) as u8 * 8, 0x40, 0x80), 10))
+            .collect();
+        kori_lcd_renderer::testing::write_gif(&path, 16, &pictures).unwrap();
+
+        let mut screen = DisplayScreen::default();
+        screen.edit(|editor| {
+            editor.mode = DisplayMode::Image;
+            editor.image_path = path.display().to_string();
+        });
+        (screen, path)
+    }
+
+    #[test]
+    fn an_animated_picture_compiles_to_a_film_the_preview_can_play() {
+        let (mut screen, _path) = screen_showing("film-animated", 3);
+        screen.sync_film(&panel());
+
+        let film = screen.film().expect("the picture compiled");
+        assert_eq!(film.frame_count(), 3);
+        assert!(film.is_animated());
+        assert!(film.frame().is_some(), "there is something to draw");
+        // Three frames at a tenth of a second each, once the transport floor
+        // has had its say on none of them.
+        assert_eq!(film.duration(), Duration::from_millis(300));
+        assert_eq!(screen.film_error(), None);
+    }
+
+    #[test]
+    fn a_still_picture_compiles_to_a_film_that_does_not_play() {
+        let (mut screen, _path) = screen_showing("film-still", 1);
+        screen.sync_film(&panel());
+
+        let film = screen.film().expect("the picture compiled");
+        assert_eq!(film.frame_count(), 1);
+        assert!(!film.is_animated());
+        assert!(
+            !screen.advance_film(),
+            "a still picture has no timer to arrange"
+        );
+    }
+
+    #[test]
+    fn the_cursor_walks_the_frames_and_returns_to_the_first() {
+        let (mut screen, _path) = screen_showing("film-cursor", 3);
+        screen.sync_film(&panel());
+
+        let first = screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec);
+        assert!(screen.advance_film());
+        let second = screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec);
+        assert_ne!(first, second, "the preview moved to another picture");
+
+        assert!(screen.advance_film());
+        assert!(screen.advance_film());
+        assert_eq!(
+            screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec),
+            first,
+            "three steps through three frames is back where it started"
+        );
+    }
+
+    #[test]
+    fn a_second_sync_with_nothing_changed_does_not_decode_the_file_again() {
+        // The identity is what keeps the brightness stepper from re-decoding a
+        // GIF on every press. Asserted through the cursor, because a rebuilt
+        // film is one that went back to its first frame.
+        let (mut screen, _path) = screen_showing("film-identity", 3);
+        screen.sync_film(&panel());
+        assert!(screen.advance_film());
+        let showing = screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec);
+
+        screen.edit(|editor| editor.brightness = 40);
+        screen.sync_film(&panel());
+        assert_eq!(
+            screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec),
+            showing,
+            "an edit the frames do not depend on left the film where it was"
+        );
+
+        // An edit they do depend on rebuilds it.
+        screen.edit(|editor| editor.orientation = Orientation::Deg90);
+        screen.sync_film(&panel());
+        assert_eq!(
+            screen.film().map(ImageFilm::frame_count),
+            Some(3),
+            "the rebuilt film still carries every frame"
+        );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_names_itself_and_leaves_no_picture() {
+        let mut screen = DisplayScreen::default();
+        screen.edit(|editor| {
+            editor.mode = DisplayMode::Image;
+            editor.image_path = "/nonexistent/kori/absent.gif".to_string();
+        });
+        screen.sync_film(&panel());
+
+        assert!(
+            screen.film().is_none(),
+            "no picture is better than a stale one"
+        );
+        assert!(matches!(
+            screen.film_error(),
+            Some(DisplayError::ImageUndecodable { .. })
+        ));
+    }
+
+    #[test]
+    fn leaving_image_mode_drops_the_film_and_its_error() {
+        let (mut screen, _path) = screen_showing("film-left", 2);
+        screen.sync_film(&panel());
+        assert!(screen.film().is_some());
+
+        screen.edit(|editor| editor.mode = DisplayMode::Solid);
+        screen.sync_film(&panel());
+        assert!(screen.film().is_none());
+        assert_eq!(screen.film_error(), None);
     }
 }

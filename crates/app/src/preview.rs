@@ -68,7 +68,16 @@ pub fn panel_preview(preset: &DisplayPreset, samples: &[MetricSample; 2], panel:
     let rendered = kori_lcd_renderer::render(preset, samples, panel)
         .and_then(|frame| frame.to_png())
         .ok();
+    panel_frame(rendered, preset.background)
+}
 
+/// The same disc, around a frame that was rendered somewhere else.
+///
+/// Image mode compiles its frames when the file is chosen rather than on every
+/// repaint, so what it has to show is already a PNG. It goes through this
+/// entry point and lands in the same disc, at the same size, with the same
+/// background behind whatever the picture leaves transparent.
+pub fn panel_frame(rendered: Option<Vec<u8>>, background: kori_core::lighting::Rgb) -> Div {
     div().flex().flex_col().items_center().child(
         // Round, always: the screen is square but the window in the cooler
         // is not, and the corners of the framebuffer are behind the housing
@@ -81,7 +90,7 @@ pub fn panel_preview(preset: &DisplayPreset, samples: &[MetricSample; 2], panel:
             .h(PREVIEW_SIDE)
             .rounded(PREVIEW_SIDE / 2.0)
             .overflow_hidden()
-            .bg(Color::rgb(pack(preset.background)).hsla())
+            .bg(Color::rgb(pack(background)).hsla())
             .border_1()
             .border_color(color::SEPARATOR.hsla())
             .children(rendered.map(|png| {

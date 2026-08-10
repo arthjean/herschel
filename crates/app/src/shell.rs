@@ -15,8 +15,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels,
-    Point, SharedString, Stateful, Window, actions, div, prelude::*, px,
+    AnyElement, App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton,
+    PathPromptOptions, Pixels, Point, SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
 use kori_core::capability::CapabilityId;
 use kori_core::display::{DisplayMode, LcdMetric, MetricSample};
@@ -236,6 +236,8 @@ pub const CHANNEL_OFFSET_DIRECTION: isize = 5;
 pub const LCD_OFFSET_METRIC_ONE: isize = 3;
 pub const LCD_OFFSET_METRIC_TWO: isize = 4;
 pub const LCD_OFFSET_COLOR_BASE: isize = 5;
+/// The file picker, which only image mode renders.
+pub const LCD_OFFSET_IMAGE: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
 /// The one action the panel row still carries, and only while it is faulted.
 ///
 /// Not an Apply: an edit is already on its way. A stopped stream is the one
@@ -243,7 +245,7 @@ pub const LCD_OFFSET_COLOR_BASE: isize = 5;
 /// transfer failed, so it takes a deliberate activation. The stop is reserved
 /// whether or not the control renders, for the same reason every other offset
 /// here is.
-pub const LCD_OFFSET_RESUME: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
+pub const LCD_OFFSET_RESUME: isize = LCD_OFFSET_IMAGE + 1;
 
 /// First tab stop of the channel row at `index` in the rendered list.
 pub fn lighting_row_tab(index: usize) -> isize {
@@ -468,16 +470,16 @@ pub const TRACK_GRAB_MARGIN: Pixels = px(6.0);
 
 /// Modes the screen can configure completely.
 ///
-/// [`DisplayMode::Image`] is deliberately absent. The screen has no control
-/// that can name a file, and a mode the daemon could only ever refuse would be
-/// an entry that says the feature is here and then does nothing. The renderer
-/// and the daemon support it, and a saved profile can select it; what is
-/// missing is a way to pick the file, which no criterion in US-017 asks the
-/// screen for.
-pub const SCREEN_MODES: [DisplayMode; 3] = [
+/// [`DisplayMode::Image`] was absent while the screen had no control that could
+/// name a file: a mode the daemon could only ever refuse is an entry that says
+/// the feature is here and then does nothing. What was missing was never a text
+/// input, which this codebase still has none of, but a file picker, and the
+/// toolkit publishes the platform's own through `prompt_for_paths`.
+pub const SCREEN_MODES: [DisplayMode; 4] = [
     DisplayMode::DualInfographic,
     DisplayMode::SingleReading,
     DisplayMode::Solid,
+    DisplayMode::Image,
 ];
 
 /// Which popover, if any, is open.
@@ -545,6 +547,12 @@ pub struct Shell {
     /// unfinished field keeps the previous picture on screen instead of
     /// blanking it, and so no control can move one without the other.
     lcd: DisplayScreen,
+    /// Which compiled picture the running animation timer belongs to.
+    ///
+    /// Bumped every time the picture is recompiled or the animation is
+    /// restarted, so a timer left over from a file the operator has replaced
+    /// stops instead of driving the new one alongside its own timer.
+    film_generation: u64,
     lighting: LightingEditor,
     /// The one row of the Lighting screen whose controls are revealed.
     ///
@@ -623,6 +631,7 @@ impl Shell {
             destination: Destination::Monitoring,
             popover: None,
             lcd: DisplayScreen::default(),
+            film_generation: 0,
             lighting: LightingEditor::default(),
             // The panel opens first: it is the row with something to look at,
             // and a screen where every row is shut hides the editor the last
@@ -660,6 +669,9 @@ impl Shell {
                 self.lcd_seeded = true;
                 if let Some(preset) = status.display.committed.clone() {
                     self.lcd.adopt(&preset);
+                    // A panel already showing a picture when the window opens
+                    // gets it compiled here, since no edit is going to happen.
+                    self.refresh_film(cx);
                 }
             }
             self.adopt_committed_program();
@@ -735,6 +747,12 @@ impl Shell {
         // A popover anchored to a control that just moved would be left
         // pointing at nothing.
         self.popover = None;
+        // An animation only runs while it is on screen. A closed row repaints
+        // nothing, so a timer firing into it would be ten wake-ups a second
+        // spent moving a cursor nobody can see.
+        if row == LightingRow::Lcd {
+            self.play_film(cx);
+        }
         cx.notify();
     }
 
@@ -2555,6 +2573,12 @@ impl Shell {
             .and_then(|status| status.display.faulted.clone())
             .filter(|_| frame.is_enabled());
 
+        // Image mode plays its own compiled frames rather than re-rendering the
+        // preset: the file was decoded when it was picked, and an animation has
+        // a frame to show that no repaint could work out on its own.
+        let film = self.lcd.film();
+        let picture = film.and_then(|film| film.frame().map(<[u8]>::to_vec));
+
         // One grid, two columns wide: slot 1 on the left, slot 2 on the right,
         // one line per thing being chosen. Built here rather than inside the
         // element tree because a `map` closure would have to hold the mutable
@@ -2595,6 +2619,9 @@ impl Shell {
                 lines.push(field_line(controls));
             }
         }
+        if editor.mode.uses_image() {
+            lines.push(self.image_field(editor, film, frame.clone(), base + LCD_OFFSET_IMAGE, cx));
+        }
 
         div()
             .flex()
@@ -2620,6 +2647,11 @@ impl Shell {
                         editor
                             .preset()
                             .err()
+                            // A file that cannot be read is named the same way
+                            // a color that cannot be parsed is. The preset
+                            // error comes first: it is the one that stops the
+                            // frame before the picture is even looked for.
+                            .or_else(|| self.lcd.film_error().cloned())
                             .map(|error| Note::new(NoteLevel::Warning, error.to_string()).render()),
                     )
                     .children(faulted.map(|reason| {
@@ -2666,11 +2698,72 @@ impl Shell {
                 div()
                     .flex_none()
                     .w(PREVIEW_COLUMN_WIDTH)
-                    .child(crate::preview::panel_preview(
-                        self.lcd.preview(),
-                        &samples,
-                        panel,
-                    )),
+                    .child(if editor.mode.uses_image() {
+                        crate::preview::panel_frame(picture, self.lcd.preview().background)
+                    } else {
+                        crate::preview::panel_preview(self.lcd.preview(), &samples, panel)
+                    }),
+            )
+    }
+
+    /// The file picker, and what it currently holds.
+    ///
+    /// The platform's own dialog rather than a field to type a path into. This
+    /// codebase has no text-input primitive and does not need one here: a file
+    /// name is not something an operator should have to spell, and the portal
+    /// already filters by what this product can decode.
+    fn image_field(
+        &self,
+        editor: &DisplayEditor,
+        film: Option<&crate::display::ImageFilm>,
+        state: ControlState,
+        tab_index: isize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let chosen = std::path::Path::new(editor.image_path.trim())
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+
+        // What the panel will actually do with the file, measured rather than
+        // guessed from the extension: a GIF carrying one frame holds still, and
+        // saying "animated" over it would be a fabricated capability.
+        let note = match (chosen.as_deref(), film) {
+            (None, _) => "No file chosen".to_string(),
+            (Some(name), Some(film)) if film.is_animated() => format!(
+                "{name}, {} frames over {:.1} s",
+                film.frame_count(),
+                film.duration().as_secs_f32()
+            ),
+            (Some(name), _) => format!("{name}, one still picture"),
+        };
+
+        // Not a `field_line`: the two color columns are a grid of equal boxes,
+        // and a file name is a sentence that needs the width of both.
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(space::MD)
+            .w_full()
+            .min_w_0()
+            .child(
+                Button::new("lcd-image", "Choose a picture")
+                    .state(state)
+                    .tab_index(tab_index)
+                    .render()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.popover = None;
+                        this.choose_image(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(color::TEXT_MUTED.hsla())
+                    .truncate()
+                    .child(note),
             )
     }
 
@@ -3124,6 +3217,11 @@ impl Shell {
     /// timers fire into nothing. No task has to be cancelled and no edit can be
     /// lost by cancelling the wrong one.
     fn schedule_lighting(&mut self, row: LightingRow, cx: &mut Context<Self>) {
+        // The picture is compiled at the edit rather than at the repaint, and
+        // this is where every panel edit passes.
+        if row == LightingRow::Lcd {
+            self.refresh_film(cx);
+        }
         self.lighting_due
             .touch(row, Instant::now() + LIGHTING_QUIET);
         cx.notify();
@@ -3207,6 +3305,92 @@ impl Shell {
             return;
         }
         self.feed.send(Command::ApplyDisplay(preset));
+    }
+
+    /// Ask the platform for a file, and put what comes back on the panel.
+    ///
+    /// The platform's own dialog rather than a path typed into a field. This
+    /// codebase has no text-input primitive, and the reason it does not need
+    /// one here is not that the picker is a workaround: a file name is not
+    /// something an operator should have to spell.
+    ///
+    /// The dialog is asynchronous and this window keeps drawing while it is
+    /// open, so a cancel is the same code path as never having opened it.
+    fn choose_image(&mut self, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Show on the panel".into()),
+        });
+        cx.spawn(async move |shell, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = shell.update(cx, |shell, cx| {
+                shell
+                    .lcd
+                    .edit(|editor| editor.image_path = path.display().to_string());
+                shell.schedule_lighting(LightingRow::Lcd, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Compile the picture the preview needs, and keep it moving.
+    ///
+    /// Cheap when nothing about the file changed: the compiled frames carry
+    /// what they depend on, so this is one comparison per edit and a decode
+    /// only when the operator actually picked something else.
+    fn refresh_film(&mut self, cx: &mut Context<Self>) {
+        let panel = self
+            .link
+            .status()
+            .and_then(|status| status.display.panel.clone())
+            .unwrap_or_else(crate::preview::assumed_panel);
+        self.lcd.sync_film(&panel);
+        self.play_film(cx);
+    }
+
+    /// Arrange for the next frame of the animation, if one is playing.
+    ///
+    /// Every call takes a fresh generation and every timer carries the one it
+    /// was spawned under, so a picture that has been replaced leaves timers
+    /// that fire into nothing rather than a second clock advancing the new one
+    /// at twice its cadence. Same shape as [`Shell::schedule_lighting`]: no
+    /// task is cancelled, because cancelling the wrong one is the failure this
+    /// avoids.
+    fn play_film(&mut self, cx: &mut Context<Self>) {
+        if !self.lighting_open.contains(&LightingRow::Lcd) {
+            return;
+        }
+        let Some(delay) = self
+            .lcd
+            .film()
+            .filter(|film| film.is_animated())
+            .and_then(|film| film.delay())
+        else {
+            return;
+        };
+
+        self.film_generation = self.film_generation.wrapping_add(1);
+        let generation = self.film_generation;
+        cx.spawn(async move |shell, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = shell.update(cx, |shell, cx| {
+                if shell.film_generation != generation {
+                    return;
+                }
+                if shell.lcd.advance_film() {
+                    shell.play_film(cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Send the panel's preset whatever it is showing, to restart a stopped
@@ -4037,6 +4221,7 @@ mod tests {
             (0..DisplayColorField::ALL.len() as isize)
                 .map(|index| base + LCD_OFFSET_COLOR_BASE + index),
         );
+        stops.push(base + LCD_OFFSET_IMAGE);
         stops.push(base + LCD_OFFSET_RESUME);
         stops
     }
@@ -4406,26 +4591,49 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_offers_only_the_modes_it_can_configure_completely() {
+    fn the_screen_offers_every_mode_and_a_control_for_each_of_them() {
         // A mode the daemon could only ever refuse is absent, not disabled,
         // which is the same rule the Lighting screen applies to an unproven
-        // effect. Static images stay in the vocabulary and in the renderer.
-        assert_eq!(SCREEN_MODES.len(), 3);
-        assert!(SCREEN_MODES.contains(&DisplayMode::DualInfographic));
-        assert!(SCREEN_MODES.contains(&DisplayMode::SingleReading));
-        assert!(SCREEN_MODES.contains(&DisplayMode::Solid));
+        // effect. Every mode the vocabulary carries is now offered, because
+        // every one of them has the control it needs.
+        assert_eq!(SCREEN_MODES.len(), DisplayMode::ALL.len());
+        for mode in DisplayMode::ALL {
+            assert!(SCREEN_MODES.contains(&mode), "{} is absent", mode.label());
+        }
+
+        // Every mode but one produces a preset from the defaults alone. Image
+        // mode is the exception by construction: it names a file, and the
+        // refusal it carries until one is picked is the whole reason the
+        // picker sits in the same detail as the select.
+        for mode in SCREEN_MODES {
+            let mut editor = DisplayEditor::default();
+            editor.mode = mode;
+            assert_eq!(
+                editor.preset().is_ok(),
+                mode != DisplayMode::Image,
+                "{} produced the wrong verdict from the defaults",
+                mode.label()
+            );
+        }
+
+        let mut editor = DisplayEditor::default();
+        editor.mode = DisplayMode::Image;
+        editor.image_path = "/home/a/loop.gif".to_string();
         assert!(
-            !SCREEN_MODES.contains(&DisplayMode::Image),
-            "the screen has no control that can name a file"
+            editor.preset().is_ok(),
+            "a picked file is all image mode is missing"
         );
-        assert!(
-            SCREEN_MODES.iter().all(|mode| {
-                let mut editor = DisplayEditor::default();
-                editor.mode = *mode;
-                editor.preset().is_ok()
-            }),
-            "every offered mode must produce a preset without further input"
+    }
+
+    #[test]
+    fn the_picker_takes_a_stop_of_its_own_ahead_of_the_recovery_button() {
+        // The offsets are fixed per control rather than per rendered control,
+        // so a mode that draws no picker does not renumber what follows it.
+        assert_eq!(
+            LCD_OFFSET_IMAGE,
+            LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize
         );
+        assert_eq!(LCD_OFFSET_RESUME, LCD_OFFSET_IMAGE + 1);
     }
 
     #[test]

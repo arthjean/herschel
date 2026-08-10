@@ -19,5 +19,10 @@ serde_json.workspace = true
 anyhow.workspace = true
 futures = "0.3"
 
+[dev-dependencies]
+# The picture fixtures: the compiled preview cannot be exercised without a real
+# file carrying more than one frame.
+kori-lcd-renderer = { workspace = true, features = ["testing"] }
+
 [lints]
 workspace = true
