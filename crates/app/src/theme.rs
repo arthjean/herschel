@@ -59,6 +59,23 @@ impl Color {
         .into()
     }
 
+    /// The ink to draw on top of this color.
+    ///
+    /// Every other pairing in this file is two tokens checked against each
+    /// other once, in the tests below. This one cannot be: the color under the
+    /// glyph is whatever the operator sent to a channel or set as the panel's
+    /// background, so the choice has to be made at paint time. Picking the
+    /// better of the two extremes of the palette never drops under 4:1, which
+    /// `readable_ink_clears_the_non_text_bar_on_any_color` measures over the
+    /// whole cube rather than over the colors this product happens to offer.
+    pub fn readable_ink(self) -> Self {
+        if self.contrast(color::TEXT_ON_ACCENT) >= self.contrast(color::RAIL) {
+            color::TEXT_ON_ACCENT
+        } else {
+            color::RAIL
+        }
+    }
+
     /// The same color at reduced opacity, for overlays and disabled fills.
     pub fn alpha(self, alpha: f32) -> Hsla {
         let mut hsla = self.hsla();
@@ -330,6 +347,29 @@ mod tests {
     #[test]
     fn the_accent_itself_is_distinguishable_from_the_surface() {
         assert!(ACCENT.contrast(SURFACE) >= NON_TEXT_MIN);
+    }
+
+    /// The glyph a device row draws over an operator's color.
+    ///
+    /// Swept rather than sampled: the fill is a color a channel or the panel was
+    /// sent, so the only honest check covers the cube. The worst pairing sits
+    /// near the luminance where white and [`RAIL`] are equally far away, which
+    /// the assertion below measures at just over 4:1, comfortably past the 3:1
+    /// bar a non-text mark has to clear.
+    #[test]
+    fn readable_ink_clears_the_non_text_bar_on_any_color() {
+        let mut worst = f32::INFINITY;
+        for r in (0u32..=255).step_by(15) {
+            for g in (0u32..=255).step_by(15) {
+                for b in (0u32..=255).step_by(15) {
+                    let fill = Color::rgb((r << 16) | (g << 8) | b);
+                    let ratio = fill.readable_ink().contrast(fill);
+                    assert!(ratio >= NON_TEXT_MIN, "ink on {fill:?} is {ratio:.2}:1");
+                    worst = worst.min(ratio);
+                }
+            }
+        }
+        assert!(worst >= 4.0, "worst pairing is {worst:.2}:1");
     }
 
     /// The destructive fill is the one place this interface knowingly sits under

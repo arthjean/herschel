@@ -290,6 +290,13 @@ pub const RGB_CONTROLLER_NAME: &str = "RGB & Fan Controller";
 pub const ROW_DETAIL_INDENT: Pixels = px(32.0);
 /// Side of the appearance thumbnail at the head of a device row.
 pub const ROW_THUMBNAIL: Pixels = px(34.0);
+/// Side of the glyph drawn inside that thumbnail.
+///
+/// Larger than [`ICON_SIZE`], which is the size of a glyph sitting beside text.
+/// This one sits inside a filled tile and has to survive the fill around it, so
+/// it takes a little under two thirds of the side, leaving a margin of the
+/// color on every edge.
+pub const ROW_THUMBNAIL_GLYPH: Pixels = px(20.0);
 
 /// One openable row of the Lighting screen.
 ///
@@ -1979,6 +1986,16 @@ impl Shell {
             // qualifier would repeat it word for word.
             None => (format!("Channel {channel}"), None),
         };
+        // The controller answers accessory identifiers, not what kind of thing
+        // carries them, so the fan is drawn only where it answered something at
+        // all. A channel that answered nothing gets an empty outline: the row
+        // exists and can be written to, and nothing on it claims a fan is
+        // plugged into it. Same rule as the headline right above, which stays
+        // "Channel N" until the controller names something.
+        let glyph = match detected {
+            Some(_) => Icon::Windmill,
+            None => Icon::CircleDashed,
+        };
 
         // The thumbnail is what the channel is pending, so a color chosen and
         // not yet applied is visible on the collapsed line rather than only in
@@ -2036,7 +2053,7 @@ impl Shell {
                     .child(self.row_disclosure(
                         LightingRow::Channel(channel),
                         base,
-                        row_thumbnail(swatch, false),
+                        row_thumbnail(swatch, glyph, false),
                         title,
                         qualifier.map(RowNote::Fragment),
                         cx,
@@ -2302,7 +2319,7 @@ impl Shell {
                     .child(self.row_disclosure(
                         LightingRow::Lcd,
                         base,
-                        row_thumbnail(background, true),
+                        row_thumbnail(background, Icon::Photo, true),
                         "LCD display".to_string(),
                         // The panel keeps a second line where a channel does
                         // not: what it is showing is a mode, an orientation and
@@ -3400,19 +3417,34 @@ fn screen(title: &'static str, subtitle: &'static str) -> Div {
 
 /// The appearance thumbnail at the head of a device row.
 ///
+/// The fill is still the color, because that is the one thing on the collapsed
+/// line that says what the channel is pending. The glyph on top says what the
+/// row drives, which a bare rectangle never did: a list of identical squares
+/// separated only by hue reads as a palette rather than as hardware.
+///
 /// `None` is a color the row cannot show: a channel that is off, or an entry
 /// the operator has not finished typing. It paints the empty surface rather
-/// than a black swatch, because black is also a color a channel can be set to.
-fn row_thumbnail(color_value: Option<Color>, round: bool) -> Div {
+/// than a black swatch, because black is also a color a channel can be set to,
+/// and dims the glyph to match, so an unset row is quiet rather than absent.
+///
+/// The ink is chosen against the fill rather than fixed: a white mark vanishes
+/// on a pale yellow and a dark one vanishes on the black the panel starts at.
+/// [`Color::readable_ink`] carries the measurement.
+fn row_thumbnail(color_value: Option<Color>, glyph: Icon, round: bool) -> Div {
+    let (fill, ink) = match color_value {
+        Some(value) => (value, value.readable_ink()),
+        None => (color::SURFACE, color::TEXT_DISABLED),
+    };
     div()
         .flex_none()
         .w(ROW_THUMBNAIL)
         .h(ROW_THUMBNAIL)
+        .flex()
+        .items_center()
+        .justify_center()
         .rounded(if round { ROW_THUMBNAIL / 2.0 } else { RADIUS })
-        .bg(match color_value {
-            Some(value) => value.hsla(),
-            None => color::SURFACE.hsla(),
-        })
+        .bg(fill.hsla())
+        .child(icon(glyph, ROW_THUMBNAIL_GLYPH, ink.hsla()))
 }
 
 /// How many swatches a color list puts on one line.

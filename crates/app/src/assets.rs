@@ -36,6 +36,13 @@ pub enum Icon {
     Bulb,
     /// Settings, in the rail.
     Settings,
+    /// A lighting channel the controller answered an accessory for, at the head
+    /// of its row.
+    Windmill,
+    /// A lighting channel that answered nothing, in the same place.
+    CircleDashed,
+    /// The panel, at the head of the LCD row.
+    Photo,
     /// The dim end of a brightness slider.
     SunLow,
     /// The bright end of one.
@@ -57,13 +64,16 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 15] = [
+    pub const ALL: [Icon; 18] = [
         Self::ChevronDown,
         Self::ChevronRight,
         Self::ChartLine,
         Self::Snowflake,
         Self::Bulb,
         Self::Settings,
+        Self::Windmill,
+        Self::CircleDashed,
+        Self::Photo,
         Self::SunLow,
         Self::SunHigh,
         Self::CircleCheck,
@@ -84,6 +94,9 @@ impl Icon {
             Self::Snowflake => "icons/snowflake.svg",
             Self::Bulb => "icons/bulb.svg",
             Self::Settings => "icons/settings.svg",
+            Self::Windmill => "icons/windmill.svg",
+            Self::CircleDashed => "icons/circle-dashed.svg",
+            Self::Photo => "icons/photo.svg",
             Self::SunLow => "icons/sun-low.svg",
             Self::SunHigh => "icons/sun-high.svg",
             Self::CircleCheck => "icons/circle-check.svg",
@@ -125,6 +138,18 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "icons/settings.svg",
         include_bytes!("../assets/icons/settings.svg"),
+    ),
+    (
+        "icons/windmill.svg",
+        include_bytes!("../assets/icons/windmill.svg"),
+    ),
+    (
+        "icons/circle-dashed.svg",
+        include_bytes!("../assets/icons/circle-dashed.svg"),
+    ),
+    (
+        "icons/photo.svg",
+        include_bytes!("../assets/icons/photo.svg"),
     ),
     (
         "icons/sun-low.svg",
