@@ -396,6 +396,27 @@ alone can show.
 - [`ep-002-cooling-delete-armed.png`](./screenshots/ep-002-cooling-delete-armed.png)
 - [`ep-002-cooling-delete-confirmed.png`](./screenshots/ep-002-cooling-delete-confirmed.png)
 
+## The write that a held slider let through, 2026-08-10
+
+The Cooling screen writes when an edit settles rather than when a button is
+pressed, and `flush_autosave` held a write back for three reasons: a deadline a
+later edit had moved, a curve drag still in progress, and a write already in
+flight. The duty slider was missing from the second one.
+
+Reachable in a few hundred milliseconds: schedule anything, by changing the mode
+or by nudging the duty with an arrow key, then grab the duty track inside
+`AUTOSAVE_QUIET`. The timer fired mid-gesture, wrote whatever duty sat under the
+cursor, and the release wrote again. Two commands for one gesture, and one of
+them a value nobody chose. Nothing unsafe reached the hardware, since the floors
+are enforced in `daemon/src/cooling.rs` and not at the screen, but it is a write
+the operator did not ask for.
+
+The rule now lives in `cooling_write_is_due`, free and pure, and
+`a_cooling_write_waits_for_the_deadline_the_gesture_and_the_one_in_flight`
+exercises all three reasons without a window. US-010's criterion reads "no
+hardware write occurs until the gesture ends and the edit settles" as of PRD
+1.4, which is what this makes true for the duty slider as well as for the curve.
+
 ## Outstanding
 
 **No write has yet reached the physical Kraken.** This machine has no udev rule

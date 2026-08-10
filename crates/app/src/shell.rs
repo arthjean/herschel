@@ -1732,19 +1732,20 @@ impl Shell {
     /// every pointer move would have most of its writes refused, and the value
     /// the operator actually stopped on could be one of them.
     fn flush_autosave(&mut self, cx: &mut Context<Self>) {
-        let Some(deadline) = self.autosave_at else {
-            return;
-        };
-        // A later edit moved the deadline; that edit's own timer will do this.
-        if Instant::now() < deadline || self.curve_drag.is_some() {
-            return;
-        }
-        // One write in flight at a time. Two overlapping Applies would let the
-        // first outcome be recorded against the second program, which is how
-        // the screen would come to claim a curve the hardware refused. The
-        // deadline is deliberately left standing: the next refresh runs this
-        // again, and by then the outcome has landed.
-        if self.sent.is_some() {
+        // Both sliders count, not just the curve. A timer that fired while the
+        // duty track was held wrote the value under the cursor and then wrote
+        // again on release, which is two commands for one gesture and one duty
+        // the operator never chose.
+        let gesturing = self.curve_drag.is_some() || self.duty_drag.is_some();
+        // Whichever reason holds the write back, the deadline is deliberately
+        // left standing: the next refresh runs this again, and by then the
+        // gesture has ended or the outcome has landed.
+        if !cooling_write_is_due(
+            self.autosave_at,
+            Instant::now(),
+            gesturing,
+            self.sent.is_some(),
+        ) {
             return;
         }
         self.autosave_at = None;
@@ -3596,6 +3597,22 @@ pub fn alert_message(alert: &SafetyAlert) -> String {
     alert.message()
 }
 
+/// Whether a scheduled cooling write should leave now.
+///
+/// Free and pure, so the rule can be exercised without a window. Each of the
+/// three reasons to hold a write back cost a real defect to find: a deadline a
+/// later edit moved, a gesture the pointer has not released, and a write whose
+/// outcome has not come back yet. The Lighting screen keeps the same three in
+/// [`WriteSchedule`] and [`Shell::flush_lighting`].
+pub fn cooling_write_is_due(
+    deadline: Option<Instant>,
+    now: Instant,
+    gesturing: bool,
+    in_flight: bool,
+) -> bool {
+    deadline.is_some_and(|deadline| now >= deadline) && !gesturing && !in_flight
+}
+
 /// State of the delete control for the currently active profile.
 ///
 /// `None` means no daemon answered. The built-in safe profile is refused here
@@ -3826,6 +3843,31 @@ mod tests {
                 "screen controls come after every rail entry"
             );
         }
+    }
+
+    #[test]
+    fn a_cooling_write_waits_for_the_deadline_the_gesture_and_the_one_in_flight() {
+        let now = Instant::now();
+        let passed = now - Duration::from_millis(1);
+        let moved = now + AUTOSAVE_QUIET;
+
+        assert!(cooling_write_is_due(Some(passed), now, false, false));
+        assert!(
+            !cooling_write_is_due(None, now, false, false),
+            "nothing is scheduled"
+        );
+        assert!(
+            !cooling_write_is_due(Some(moved), now, false, false),
+            "a later edit moved the deadline, and its own timer will do this"
+        );
+        // Either slider holds it back, not just the curve. A timer that fired
+        // mid-drag wrote the value under the cursor and then wrote again on
+        // release: two commands for one gesture, and a duty nobody chose.
+        assert!(!cooling_write_is_due(Some(passed), now, true, false));
+        assert!(
+            !cooling_write_is_due(Some(passed), now, false, true),
+            "one write in flight at a time, or an outcome lands against the wrong program"
+        );
     }
 
     #[test]
