@@ -15,13 +15,15 @@ use gpui::{
     Bounds, Div, ElementId, Hsla, PathBuilder, Pixels, Point, SharedString, Stateful, Svg, Window,
     canvas, div, fill, point, prelude::*, px, size, svg,
 };
-use herschel_core::profile::{CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent};
+use herschel_core::profile::{
+    CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent, duty_to_percent,
+};
 use herschel_core::telemetry::{History, MetricView};
 
 use crate::assets::Icon;
 use crate::theme::{
-    CONTROL_HEIGHT, Color, FOCUS_RING, MENU_GLYPH_SIZE, META_SEPARATOR, RADIUS, SWATCH_RADIUS,
-    SWATCH_SIZE, color, numeric_font, space,
+    CONTROL_HEIGHT, Color, DEGREE_C, FOCUS_RING, MENU_GLYPH_SIZE, META_SEPARATOR, RADIUS,
+    SWATCH_RADIUS, SWATCH_SIZE, color, numeric_font, space,
 };
 
 /// What a control is allowed to do right now.
@@ -1672,7 +1674,7 @@ impl CurveEditor {
                         sink.set(area);
                     }
                     paint_curve(window, area, &nodes, selected, line_color, marker_color);
-                    paint_liquid_marker(window, area, liquid_c);
+                    paint_liquid_marker(window, area, liquid_c, &nodes);
                 },
             )
             .size_full(),
@@ -1690,6 +1692,7 @@ impl CurveEditor {
             // plot does not move the axes around it.
             .border(FOCUS_RING)
             .border_color(color::PANEL.alpha(0.0))
+            .child(curve_caption(&nodes, selected, liquid_c))
             .child(
                 div()
                     .flex()
@@ -1727,6 +1730,57 @@ impl CurveEditor {
 const PLOT_INSET: Pixels = px(10.0);
 /// Width reserved for the duty labels down the left of the plot.
 const AXIS_LABEL_WIDTH: Pixels = px(34.0);
+/// Opacity of the envelope drawn under the curve.
+///
+/// Faint enough that the grid and its labels stay readable through it. The fill
+/// is there to give the curve a quantity, not to become the plot's background.
+const CURVE_AREA_ALPHA: f32 = 0.14;
+
+/// What the plot is showing, in words, above the plot itself.
+///
+/// Two facts a polyline cannot state: the exact value of the node the keyboard
+/// is on, which a pointer user reads off the axes but a keyboard user cannot,
+/// and the duty the curve is commanding at the coolant temperature right now.
+/// The second is what turns the plot from a drawing into a readout: the
+/// operator can see the program they wrote and the point of it in force at the
+/// same time.
+fn curve_caption(nodes: &CurveNodes, selected: usize, liquid_c: Option<f32>) -> Div {
+    let node = format!(
+        "Node {:.0}{DEGREE_C} {META_SEPARATOR} {}%",
+        CurveNodes::temperature_at(selected),
+        duty_to_percent(nodes.duty[selected.min(CURVE_NODE_COUNT - 1)])
+    );
+    let coolant = liquid_c.map(|celsius| {
+        match nodes.interpolate().duty_at(celsius) {
+            Some(duty) => format!(
+                "Coolant {celsius:.1}{DEGREE_C} {META_SEPARATOR} curve calls {}%",
+                duty_to_percent(duty)
+            ),
+            // A reading with no duty behind it is still worth stating: it is
+            // what the curve is steered by, and inventing a percentage for it
+            // would be worse than leaving the sentence short.
+            None => format!("Coolant {celsius:.1}{DEGREE_C}"),
+        }
+    });
+
+    div()
+        .flex()
+        .flex_wrap()
+        .items_baseline()
+        .justify_between()
+        .gap(space::SM)
+        .w_full()
+        .min_w_0()
+        .text_xs()
+        .font(numeric_font())
+        .child(div().flex_none().text_color(color::TEXT.hsla()).child(node))
+        .children(coolant.map(|coolant| {
+            div()
+                .flex_none()
+                .text_color(color::TEXT_MUTED.hsla())
+                .child(coolant)
+        }))
+}
 
 /// The duty scale, aligned with the grid lines it names.
 fn duty_axis(height: Pixels) -> Div {
@@ -1846,6 +1900,30 @@ fn paint_curve(
         );
     }
 
+    // The envelope under the line, so a curve reads as an amount of cooling
+    // rather than as a bare polyline. Painted over the grid rather than under
+    // it: at this opacity the grid still shows through, and drawing it first
+    // would put the fill's own edge behind the lines that bound the plot.
+    let mut area_color = line_color;
+    area_color.a = CURVE_AREA_ALPHA;
+    let floor = bounds.origin.y + bounds.size.height;
+    let mut area = PathBuilder::fill();
+    area.move_to(Point {
+        x: bounds.origin.x,
+        y: floor,
+    });
+    for (index, duty) in nodes.duty.iter().enumerate() {
+        area.line_to(plot_node(index, *duty, bounds));
+    }
+    area.line_to(Point {
+        x: bounds.origin.x + bounds.size.width,
+        y: floor,
+    });
+    area.close();
+    if let Ok(path) = area.build() {
+        window.paint_path(path, area_color);
+    }
+
     let mut builder = PathBuilder::stroke(px(2.0));
     for (index, duty) in nodes.duty.iter().enumerate() {
         let point = plot_node(index, *duty, bounds);
@@ -1944,11 +2022,23 @@ fn paint_dot(window: &mut Window, center: Point<Pixels>, radius: Pixels, color: 
     window.paint_quad(gpui::fill(bounds, color).corner_radii(radius));
 }
 
-/// Where the coolant currently sits on the temperature axis.
+/// Where the coolant currently sits on the temperature axis, and what the curve
+/// commands there.
 ///
 /// Drawn only when the reading falls inside the range the curve covers: a
 /// marker pinned to an edge would claim a temperature the plot cannot show.
-fn paint_liquid_marker(window: &mut Window, bounds: Bounds<Pixels>, liquid_c: Option<f32>) {
+///
+/// Dashed rather than solid, because everything else on the plot is an
+/// intention and this one line is a measurement. The dot where it meets the
+/// curve is the duty in force right now, taken from the same interpolation the
+/// daemon would write, so the plot shows the program and its current effect
+/// without the operator converting a temperature into a percentage by eye.
+fn paint_liquid_marker(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    liquid_c: Option<f32>,
+    nodes: &CurveNodes,
+) {
     let Some(celsius) = liquid_c else { return };
     let first = CurveNodes::temperature_at(0);
     let last = CurveNodes::temperature_at(CURVE_NODE_COUNT - 1);
@@ -1958,19 +2048,31 @@ fn paint_liquid_marker(window: &mut Window, bounds: Bounds<Pixels>, liquid_c: Op
 
     let across = (celsius - first) / (last - first);
     let x = bounds.origin.x + bounds.size.width * across;
-    stroke_line(
-        window,
-        Point {
-            x,
-            y: bounds.origin.y,
-        },
-        Point {
-            x,
-            y: bounds.origin.y + bounds.size.height,
-        },
-        px(1.5),
-        color::TEXT_MUTED.alpha(0.7),
-    );
+    let mut builder = PathBuilder::stroke(px(1.0)).dash_array(&[px(3.0), px(4.0)]);
+    builder.move_to(Point {
+        x,
+        y: bounds.origin.y,
+    });
+    builder.line_to(Point {
+        x,
+        y: bounds.origin.y + bounds.size.height,
+    });
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color::TEXT_MUTED.alpha(0.8));
+    }
+
+    let Some(duty) = nodes.interpolate().duty_at(celsius) else {
+        return;
+    };
+    let center = Point {
+        x,
+        y: bounds.origin.y + bounds.size.height * (1.0 - duty as f32 / 255.0),
+    };
+    // Ringed in the surface behind the plot so it is legible wherever it lands
+    // on the line, and filled in the text color rather than the accent: the
+    // accent is what the operator drew, and this dot is what is happening.
+    paint_dot(window, center, px(5.5), color::SURFACE.hsla());
+    paint_dot(window, center, px(3.5), color::TEXT.hsla());
 }
 
 fn stroke_line(
@@ -2364,11 +2466,11 @@ mod tests {
 
     #[test]
     fn a_metric_without_a_value_reads_as_unavailable_not_as_zero() {
-        let unavailable = Metric::new("GPU", None).unit(" C");
+        let unavailable = Metric::new("GPU", None).unit(DEGREE_C);
         assert_eq!(unavailable.readout(), "--");
 
-        let present = Metric::new("GPU", Some("51.0".to_string())).unit(" C");
-        assert_eq!(present.readout(), "51.0 C");
+        let present = Metric::new("GPU", Some("51.0".to_string())).unit(DEGREE_C);
+        assert_eq!(present.readout(), "51.0 \u{00b0}C");
     }
 
     #[test]
