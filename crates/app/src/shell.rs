@@ -23,11 +23,12 @@ use herschel_core::display::{DisplayMode, LcdMetric, MetricSample};
 use herschel_core::ipc::ChannelState;
 use herschel_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
 use herschel_core::profile::{
-    Channel, CoolingProgram, CurveNodes, MAX_DUTY, Profile, SAFE_PROFILE_NAME,
+    Channel, CoolingProgram, CurveNodes, MAX_DUTY, MAX_DUTY_PERCENT, Profile, SAFE_PROFILE_NAME,
+    duty_from_percent, duty_to_percent,
 };
 use herschel_core::telemetry::{
-    Collector, HISTORY_WINDOW_MS, KrakenTelemetry, MetricView, SafetyAlert, format_binary_bytes,
-    format_temperature,
+    Collector, HISTORY_WINDOW_MS, KrakenTelemetry, MetricView, PwmMode, SafetyAlert,
+    format_binary_bytes, format_temperature,
 };
 use herschel_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
@@ -45,8 +46,9 @@ use crate::link::LinkState;
 use crate::metrics::MetricBook;
 use crate::theme::{
     CARD_INSET, CARD_RADIUS, Color, DEGREE_C, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH,
-    MENU_MIN_WIDTH, MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, RAIL_WIDTH,
-    ROW_RADIUS, SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE, color, space,
+    MENU_MIN_WIDTH, MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, META_SEPARATOR,
+    RADIUS, RAIL_WIDTH, ROW_RADIUS, SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE,
+    color, space,
 };
 use crate::window_chrome::{self, DragLatch};
 
@@ -146,16 +148,39 @@ pub const SCREEN_TAB_BASE: isize = 10;
 /// sharing one detail range is what keeps keyboard traversal in visual order
 /// whichever row is open, since an open row's controls sit above the next row.
 pub const COOLING_TAB_MODE: isize = SCREEN_TAB_BASE;
-/// Width of the two selects that sit under the Cooling heading.
-pub const COOLING_SELECT_WIDTH: Pixels = px(260.0);
+/// Width of the two selects that sit in the Cooling header.
+///
+/// Narrower than the 260 they used to hold, which is what leaves the coolant
+/// readout beside them a column of its own at the 920-pixel target rather than
+/// pushing it onto a line by itself.
+pub const COOLING_SELECT_WIDTH: Pixels = px(228.0);
+/// Width reserved for one readback on a channel row, label and value together.
+///
+/// A floor rather than a fixed width, and for the same reason: an intrinsic
+/// width puts `RPM 964` and `RPM 1785` in different columns, and the two rows
+/// then read as two layouts. A floor still lets a reading longer than the target
+/// size allows for push the column out instead of being clipped by it, which is
+/// what the 200% interface scale needs.
+pub const COOLING_READBACK_WIDTH: Pixels = px(124.0);
 pub const COOLING_TAB_PROFILE: isize = COOLING_TAB_MODE + 1;
 pub const COOLING_TAB_ROW_BASE: isize = COOLING_TAB_PROFILE + 1;
-/// Stops one row occupies: its header, the stepper's two buttons and the plot.
+/// Stops one row occupies: its header, the duty slider and the plot.
+///
+/// Wider than the controls an open row renders, and deliberately: the stops are
+/// reserved per row whichever mode it is in, so a mode that hides the duty
+/// slider cannot renumber the row below it.
 pub const COOLING_ROW_STRIDE: isize = 4;
+/// Offsets inside a channel's block, named rather than counted at the call site.
+pub const COOLING_OFFSET_DUTY: isize = 1;
+pub const COOLING_OFFSET_CURVE: isize = 3;
+
 /// There is no Apply stop: an edit reaches the hardware on its own.
 pub const COOLING_TAB_REVERT: isize = COOLING_TAB_ROW_BASE + 2 * COOLING_ROW_STRIDE;
 pub const COOLING_TAB_SAVE: isize = COOLING_TAB_REVERT + 1;
 pub const COOLING_TAB_DELETE: isize = COOLING_TAB_SAVE + 1;
+
+/// Side of the dot that marks a write still in flight.
+const STATUS_DOT: Pixels = px(6.0);
 
 /// First tab stop of one channel row's block.
 pub fn cooling_row_tab(channel: Channel) -> isize {
@@ -293,7 +318,18 @@ struct CurveDrag {
     base: CurveNodes,
 }
 
-/// Where each operable brightness track was painted, by row.
+/// A fixed-duty drag in progress, tracked exactly as [`BrightnessDrag`] is.
+///
+/// Same reasoning: the rectangle is captured at the press so the pointer can
+/// leave the slider, and the channel is named so the other channel's track
+/// cannot answer for the one being dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DutyDrag {
+    pub channel: Channel,
+    pub track: Bounds<Pixels>,
+}
+
+/// Where each operable track was painted, by whatever names the control.
 ///
 /// The window decides which slider a press landed on, rather than the slider
 /// hearing about the press itself. A listener on the control was the first
@@ -304,16 +340,26 @@ struct CurveDrag {
 ///
 /// A disabled slider records nothing, so a track that cannot be moved cannot be
 /// grabbed either.
-#[derive(Debug, Default)]
-pub struct TrackMap(RefCell<Vec<(LightingRow, Bounds<Pixels>)>>);
+///
+/// Keyed by whatever names the control rather than by a lighting row: the same
+/// arrangement is what the fixed-duty sliders on Cooling need, and two copies of
+/// this bookkeeping would be two places for a stale rectangle to survive.
+#[derive(Debug)]
+pub struct TrackMap<K>(RefCell<Vec<(K, Bounds<Pixels>)>>);
 
-impl TrackMap {
-    /// Publish where one row's track was painted, replacing its last position.
-    pub fn record(&self, row: LightingRow, track: Bounds<Pixels>) {
+impl<K> Default for TrackMap<K> {
+    fn default() -> Self {
+        Self(RefCell::new(Vec::new()))
+    }
+}
+
+impl<K: Copy + PartialEq> TrackMap<K> {
+    /// Publish where one key's track was painted, replacing its last position.
+    pub fn record(&self, key: K, track: Bounds<Pixels>) {
         let mut tracks = self.0.borrow_mut();
-        match tracks.iter_mut().find(|(known, _)| *known == row) {
+        match tracks.iter_mut().find(|(known, _)| *known == key) {
             Some(entry) => entry.1 = track,
-            None => tracks.push((row, track)),
+            None => tracks.push((key, track)),
         }
     }
 
@@ -327,7 +373,7 @@ impl TrackMap {
     /// Dilated a little: the handle is 22 pixels tall inside a taller control,
     /// and a press a pixel above the track is a press on the track as far as
     /// the operator is concerned.
-    pub fn at(&self, position: Point<Pixels>) -> Option<(LightingRow, Bounds<Pixels>)> {
+    pub fn at(&self, position: Point<Pixels>) -> Option<(K, Bounds<Pixels>)> {
         self.0
             .borrow()
             .iter()
@@ -428,7 +474,11 @@ pub struct Shell {
     /// The brightness slider the pointer is currently dragging, if any.
     brightness_drag: Option<BrightnessDrag>,
     /// Where this frame painted each operable brightness track.
-    tracks: Rc<TrackMap>,
+    tracks: Rc<TrackMap<LightingRow>>,
+    /// The fixed-duty slider the pointer is currently dragging, if any.
+    duty_drag: Option<DutyDrag>,
+    /// Where this frame painted each operable fixed-duty track.
+    duty_tracks: Rc<TrackMap<Channel>>,
     /// Set while the pointer holds the title bar, before a move begins.
     window_drag: DragLatch,
     /// Wall clock of the last refresh, used to age every reading.
@@ -481,6 +531,8 @@ impl Shell {
             lighting_open: vec![LightingRow::Lcd],
             brightness_drag: None,
             tracks: Rc::new(TrackMap::default()),
+            duty_drag: None,
+            duty_tracks: Rc::new(TrackMap::default()),
             window_drag: DragLatch::default(),
             now_unix_ms: now_unix_ms(),
         }
@@ -978,45 +1030,57 @@ impl Shell {
             "Pump, fan and the onboard liquid-temperature curve.",
         )
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(space::MD)
-                .w_full()
-                .child(div().w(COOLING_SELECT_WIDTH).child(self.select(
-                    "cooling-mode",
-                    "Mode",
-                    Caption::Shown,
-                    mode_options,
-                    self.cooling.mode.value().to_string(),
-                    // Choosing a mode is an edit like any other now, so it
-                    // carries the same per-capability gate the profile selector
-                    // beside it does, and for the same reason.
-                    self.link.write_state(),
-                    COOLING_TAB_MODE,
-                    cx,
-                    |shell, value, cx| {
-                        if let Some(mode) = CoolingMode::from_value(value) {
-                            shell.cooling.set_mode(mode);
-                            shell.schedule_autosave(cx);
-                        }
-                    },
-                )))
-                .child(div().w(COOLING_SELECT_WIDTH).child(self.select(
-                    "profile",
-                    "Active profile",
-                    Caption::Shown,
-                    profiles,
-                    active,
-                    // Activating a profile is a write. It is disabled for
-                    // the same reasons every other write control is.
-                    self.link.write_state(),
-                    COOLING_TAB_PROFILE,
-                    cx,
-                    |shell, value, _| {
-                        shell.feed.send(Command::ActivateProfile(value.to_string()));
-                    },
-                ))),
+            // The program on its own surface, above the channels it governs.
+            // Which program is running and which profile selected it is one
+            // question, and it is a different one from what each channel is
+            // doing about it, so the two are separate cards rather than one
+            // list with a heading.
+            panel_surface().child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    // Every caption on one line, whichever of the two
+                    // selects is the taller once a message sits under it.
+                    .items_start()
+                    .gap(space::MD)
+                    .w_full()
+                    .min_w_0()
+                    .child(div().flex_none().w(COOLING_SELECT_WIDTH).child(self.select(
+                        "cooling-mode",
+                        "Mode",
+                        Caption::Shown,
+                        mode_options,
+                        self.cooling.mode.value().to_string(),
+                        // Choosing a mode is an edit like any other now, so
+                        // it carries the same per-capability gate the
+                        // profile selector beside it does, and for the same
+                        // reason.
+                        self.link.write_state(),
+                        COOLING_TAB_MODE,
+                        cx,
+                        |shell, value, cx| {
+                            if let Some(mode) = CoolingMode::from_value(value) {
+                                shell.cooling.set_mode(mode);
+                                shell.schedule_autosave(cx);
+                            }
+                        },
+                    )))
+                    .child(div().flex_none().w(COOLING_SELECT_WIDTH).child(self.select(
+                        "profile",
+                        "Active profile",
+                        Caption::Shown,
+                        profiles,
+                        active,
+                        // Activating a profile is a write. It is disabled
+                        // for the same reasons every other write control is.
+                        self.link.write_state(),
+                        COOLING_TAB_PROFILE,
+                        cx,
+                        |shell, value, _| {
+                            shell.feed.send(Command::ActivateProfile(value.to_string()));
+                        },
+                    ))),
+            ),
         );
 
         for alert in self.link.alerts() {
@@ -1037,46 +1101,50 @@ impl Shell {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(space::SM)
+                    .justify_between()
+                    .gap(space::MD)
+                    .w_full()
+                    .min_w_0()
                     .child(
-                        // The only way back. An edit is already on the
-                        // hardware, so this is not an undo: it puts the editor
-                        // back on what the device reports it is running, which
-                        // is what an operator needs after a refusal or after an
-                        // edit they did not mean to make.
-                        Button::new("cooling-revert", "Revert to hardware")
-                            .tab_index(COOLING_TAB_REVERT)
-                            .render()
-                            .on_click(cx.listener(|shell, _, _, cx| {
-                                let kraken = shell.kraken().cloned();
-                                shell.cooling.cancel(kraken.as_ref());
-                                shell.sent = None;
-                                shell.schedule_autosave(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("cooling-save", "Save as profile")
-                            .state(self.link.write_state())
-                            .tab_index(COOLING_TAB_SAVE)
-                            .render()
-                            .on_click(cx.listener(|shell, _, _, cx| shell.save_profile(cx))),
-                    )
-                    .child(self.delete_button(COOLING_TAB_DELETE, cx))
-                    .children(pending.then(|| {
-                        // Visible for the moment between the edit settling and
-                        // the daemon confirming it, and gone after. A steady
-                        // reading here means a write that did not land, which
-                        // is the one thing worth looking at.
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(space::SM)
                             .child(
-                                "Saving. The hardware keeps its previous program until this \
-                                 clears.",
+                                // The only way back. An edit is already on the
+                                // hardware, so this is not an undo: it puts the
+                                // editor back on what the device reports it is
+                                // running, which is what an operator needs after
+                                // a refusal or after an edit they did not mean
+                                // to make.
+                                Button::new("cooling-revert", "Revert to hardware")
+                                    .tab_index(COOLING_TAB_REVERT)
+                                    .render()
+                                    .on_click(cx.listener(|shell, _, _, cx| {
+                                        let kraken = shell.kraken().cloned();
+                                        shell.cooling.cancel(kraken.as_ref());
+                                        shell.sent = None;
+                                        shell.schedule_autosave(cx);
+                                    })),
                             )
-                    })),
+                            .child(
+                                Button::new("cooling-save", "Save as profile")
+                                    .state(self.link.write_state())
+                                    .tab_index(COOLING_TAB_SAVE)
+                                    .render()
+                                    .on_click(
+                                        cx.listener(|shell, _, _, cx| shell.save_profile(cx)),
+                                    ),
+                            )
+                            .child(self.delete_button(COOLING_TAB_DELETE, cx)),
+                    )
+                    // Opposite the buttons rather than after them: the status of
+                    // a write is not a fourth action, and a sentence that shares
+                    // a line with three buttons reads as a label for the last
+                    // one. It is the only thing on its side of the line, so it
+                    // appears and disappears without moving anything.
+                    .children(pending.then(write_status)),
             )
             .children(
                 program_state
@@ -1128,6 +1196,7 @@ impl Shell {
         let metrics = self.metrics.channel(channel);
         let rpm = metrics.rpm.view(now);
         let duty = metrics.duty.view(now);
+        let mode = metrics.mode.view(now).copied();
         let confirmed_percent = self
             .kraken()
             .and_then(|kraken| kraken.channel(channel).duty_percent());
@@ -1166,6 +1235,10 @@ impl Shell {
                     .min_w_0()
                     .min_h(TARGET_MIN)
                     .px(space::SM)
+                    // The head carries two lines, so it needs air of its own: at
+                    // the pointer-target floor alone the pair would sit flush
+                    // against the top and bottom of the row.
+                    .py(space::XS)
                     .rounded(RADIUS)
                     // The ring is reserved rather than added on focus, so
                     // focusing a row does not move the line it sits on.
@@ -1183,22 +1256,50 @@ impl Shell {
                     })
                     .child(chevron(open, color::TEXT_MUTED.hsla()))
                     .child(
+                        // Two lines where there was one: what the channel is,
+                        // and what it has been told to do. The second line is
+                        // the reported mode, not the pending edit, so a row that
+                        // still says "Onboard" after a mode change is a write
+                        // that has not landed rather than a stale label.
                         div()
+                            .flex()
+                            .flex_col()
                             .flex_none()
-                            .text_color(color::TEXT.hsla())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(channel.label()),
+                            .gap(px(1.0))
+                            .child(
+                                div()
+                                    .text_color(color::TEXT.hsla())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(channel.label()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(color::TEXT_MUTED.hsla())
+                                    .child(reported_program(mode, confirmed_percent)),
+                            ),
                     )
                     .child(div().flex_1().min_w_0())
-                    .child(readback("RPM", &rpm, |value| format!("{value:.0}")))
-                    .child(readback("PWM", &duty_view(&duty), move |value| {
-                        // The percentage comes from the reported duty, not from
-                        // the pending edit: this line is readback, not intent.
-                        match confirmed_percent {
-                            Some(percent) => format!("{value:.0} ({percent:.0}%)"),
-                            None => format!("{value:.0}"),
-                        }
-                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .min_w(COOLING_READBACK_WIDTH)
+                            .child(readback("RPM", &rpm, |value| format!("{value:.0}"))),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .min_w(COOLING_READBACK_WIDTH)
+                            .child(readback("PWM", &duty_view(&duty), move |value| {
+                                // The percentage comes from the reported duty,
+                                // not from the pending edit: this line is
+                                // readback, not intent.
+                                match confirmed_percent {
+                                    Some(percent) => format!("{value:.0} ({percent:.0}%)"),
+                                    None => format!("{value:.0}"),
+                                }
+                            })),
+                    )
                     .children(alerts.into_iter().map(|alert| {
                         div()
                             .flex_none()
@@ -1249,13 +1350,24 @@ impl Shell {
             .pb(space::MD)
             .pl(ROW_DETAIL_INDENT)
             .when(self.cooling.mode == CoolingMode::Fixed, |this| {
-                this.child(self.duty_stepper(channel, write, base + 1, cx))
+                this.child(self.duty_slider(channel, write, base + COOLING_OFFSET_DUTY, cx))
             })
-            .child(self.curve_editor(channel, curve_state, base + 3, cx))
+            .child(self.curve_editor(channel, curve_state, base + COOLING_OFFSET_CURVE, cx))
     }
 
-    /// The fixed duty of one channel, as a stepper.
-    fn duty_stepper(
+    /// The fixed duty of one channel, as a slider the pointer drags.
+    ///
+    /// A track rather than the pair of steppers this used to be. The value runs
+    /// over a hundred settings and the steppers moved one of them per press, so
+    /// reaching the other end of the range took thirty activations and the
+    /// control that did it was three boxes and a trailing sentence on one line.
+    /// The track is one object, it says where the value sits without being read,
+    /// and it is the same control the Lighting rows already carry.
+    ///
+    /// The keyboard keeps the precision the steppers had: Left and Right move a
+    /// single percentage point, which is exactly one setting on the device, and
+    /// Home and End reach the ends of the accepted range in one press.
+    fn duty_slider(
         &self,
         channel: Channel,
         write: &ControlState,
@@ -1263,67 +1375,71 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let target = self.cooling.duty(channel);
+        let percent = duty_to_percent(target);
+        let floor = duty_to_percent(channel.min_duty());
+        let enabled = write.is_enabled();
+
+        // Published per render and captured by this render's listeners, exactly
+        // as the brightness tracks are, so a press converts against the
+        // rectangle the track was just painted at. Only an operable track is
+        // recorded, so a press cannot grab a channel the hardware refused.
+        let sink: Option<Rc<dyn Fn(Bounds<Pixels>)>> = enabled.then(|| {
+            let tracks = Rc::clone(&self.duty_tracks);
+            Rc::new(move |bounds| tracks.record(channel, bounds)) as Rc<dyn Fn(Bounds<Pixels>)>
+        });
+
+        let mut slider = Slider::new(
+            SharedString::from(format!("{}-duty", channel.label().to_lowercase())),
+            "Fixed duty",
+            f32::from(percent),
+        )
+        // In percent, not in raw duty: the driver stores a percentage, so a
+        // track over 0-255 would offer two hundred and fifty-six positions for
+        // a hundred settings and most moves would change nothing.
+        .range(f32::from(floor), f32::from(MAX_DUTY_PERCENT))
+        .unit("%")
+        .state(write.clone())
+        .tab_index(tab_index);
+        if let Some(sink) = sink {
+            slider = slider.bounds_sink(sink);
+        }
+
+        let control = slider.render().when(enabled, |slider| {
+            slider.on_key_down(
+                cx.listener(move |shell, event: &gpui::KeyDownEvent, _, cx| {
+                    let steps = match event.keystroke.key.as_str() {
+                        "left" | "down" => -1,
+                        "right" | "up" => 1,
+                        "home" => i16::from(floor) - i16::from(percent),
+                        "end" => i16::from(MAX_DUTY_PERCENT) - i16::from(percent),
+                        _ => return,
+                    };
+                    shell.cooling.adjust_duty(channel, steps);
+                    shell.schedule_autosave(cx);
+                }),
+            )
+        });
 
         div()
             .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(space::SM)
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .gap(space::XS)
+            .child(control)
             .child(
-                div()
-                    .flex_none()
-                    .text_sm()
-                    .text_color(color::TEXT_MUTED.hsla())
-                    .child("Fixed duty"),
-            )
-            .child(
-                Button::new(
-                    SharedString::from(format!("{}-duty-down", channel.label())),
-                    "\u{2212}",
-                )
-                .state(write.clone())
-                .tab_index(tab_index)
-                .render()
-                .on_click(cx.listener(move |shell, _, _, cx| {
-                    shell.cooling.adjust_duty(channel, -1);
-                    shell.schedule_autosave(cx);
-                })),
-            )
-            .child(
-                // Wide enough for the longest reading this can hold,
-                // `255/255 (100%)`, and `flex_none` so it is never
-                // squeezed into wrapping mid-value.
+                // What the caption cannot hold: the byte the device is actually
+                // being told, and the floor this channel refuses to go under.
+                // Under the track rather than beside it, so the track keeps the
+                // width it needs to be aimed at.
                 div()
                     .font(numeric())
-                    .flex_none()
-                    .min_w(px(140.0))
-                    .text_align(gpui::TextAlign::Center)
-                    .text_color(color::TEXT.hsla())
-                    .child(format!(
-                        "{target}/{MAX_DUTY} ({:.0}%)",
-                        target as f32 / MAX_DUTY as f32 * 100.0
-                    )),
-            )
-            .child(
-                Button::new(
-                    SharedString::from(format!("{}-duty-up", channel.label())),
-                    "+",
-                )
-                .state(write.clone())
-                .tab_index(tab_index + 1)
-                .render()
-                .on_click(cx.listener(move |shell, _, _, cx| {
-                    shell.cooling.adjust_duty(channel, 1);
-                    shell.schedule_autosave(cx);
-                })),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
+                    .text_xs()
                     .text_color(color::TEXT_MUTED.hsla())
-                    .child(format!("Accepted range {}-{MAX_DUTY}", channel.min_duty())),
+                    .child(format!(
+                        "{target}/{MAX_DUTY} {META_SEPARATOR} accepted {floor} to \
+                         {MAX_DUTY_PERCENT}%",
+                    )),
             )
     }
 
@@ -2401,6 +2517,26 @@ impl Shell {
         cx.notify();
     }
 
+    /// Move the dragged channel's fixed duty to a pointer position.
+    ///
+    /// Read as whole percent for the reason `node_at` reads the plot that way:
+    /// the driver stores a percentage, so a finer reading would offer positions
+    /// the hardware cannot hold and would let a pixel of hand tremor produce a
+    /// write that changes nothing.
+    fn drag_duty(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(drag) = self.duty_drag else {
+            return;
+        };
+        if drag.track.size.width <= px(0.0) {
+            return;
+        }
+        let floor = f32::from(duty_to_percent(drag.channel.min_duty()));
+        let percent = Slider::value_at(drag.track, position, floor, f32::from(MAX_DUTY_PERCENT));
+        self.cooling
+            .set_duty(drag.channel, duty_from_percent(percent.round() as u8));
+        cx.notify();
+    }
+
     /// Set one row's pending brightness, clamped to what the daemon accepts.
     ///
     /// Takes a signed value so a keyboard step past either end arrives here to
@@ -2736,6 +2872,7 @@ impl Render for Shell {
         // keeps a row that has gone away, or a screen that no longer shows one,
         // from leaving a rectangle behind that a press could still grab.
         self.tracks.clear();
+        self.duty_tracks.clear();
 
         let content = match self.destination {
             Destination::Monitoring => self.monitoring(),
@@ -2783,6 +2920,17 @@ impl Render for Shell {
                     this.brightness_drag = Some(BrightnessDrag { row, track });
                     this.drag_brightness(event.position, cx);
                 }
+                // A fixed-duty track is grabbed from the same place, for the
+                // same reason, and against its own book: the two screens are
+                // never on screen together, but a rectangle left behind by one
+                // must not be reachable from the other.
+                if event.button == MouseButton::Left
+                    && let Some((channel, track)) = this.duty_tracks.at(event.position)
+                {
+                    this.popover = None;
+                    this.duty_drag = Some(DutyDrag { channel, track });
+                    this.drag_duty(event.position, cx);
+                }
                 // A press on the curve plot starts a node drag, decided from
                 // the same place and for the same reason.
                 if event.button == MouseButton::Left {
@@ -2797,6 +2945,9 @@ impl Render for Shell {
                 if this.brightness_drag.is_some() {
                     this.drag_brightness(event.position, cx);
                 }
+                if this.duty_drag.is_some() {
+                    this.drag_duty(event.position, cx);
+                }
                 this.drag_node_to(event.position, cx);
             }))
             .on_mouse_up(
@@ -2806,7 +2957,8 @@ impl Render for Shell {
                     // Releasing ends the gesture wherever the pointer is. A
                     // release the plot never heard is what used to leave a node
                     // following the cursor with no button held.
-                    if this.curve_drag.take().is_some() {
+                    let released = this.duty_drag.take().is_some();
+                    if this.curve_drag.take().is_some() || released {
                         // The gesture is over, so the value it stopped on is
                         // the one worth writing.
                         this.schedule_autosave(cx);
@@ -3061,6 +3213,62 @@ fn readback(label: &'static str, view: &MetricView<f32>, format: impl Fn(f32) ->
                 .text_color(color::WARNING.hsla())
                 .child(qualifier)
         }))
+}
+
+/// The one moment a cooling edit is in flight, on its own mark.
+///
+/// Visible between the edit settling and the daemon confirming it, and gone
+/// after. A reading that stays put means a write that did not land, which is the
+/// only thing on this line worth looking at, so it carries a fill and a dot
+/// rather than being a fourth gray sentence beside three buttons. The fill is
+/// the neutral control color, not the warning one: this is the normal path of
+/// every edit, and a screen that flashes amber on success teaches its operator
+/// to ignore amber.
+fn write_status() -> Div {
+    div()
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .items_center()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .rounded(RADIUS)
+        .bg(color::CONTROL.alpha(0.6))
+        .child(
+            div()
+                .flex_none()
+                .w(STATUS_DOT)
+                .h(STATUS_DOT)
+                .rounded(STATUS_DOT / 2.0)
+                .bg(color::ACCENT.hsla()),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .text_sm()
+                .text_color(color::TEXT_MUTED.hsla())
+                .child("Saving. The hardware holds its previous program until this clears."),
+        )
+}
+
+/// What the device says a channel is running, in the words of the mode select.
+///
+/// Read back from the hardware rather than taken from the pending edit. A row
+/// that still names the previous program after a mode change is a write that has
+/// not landed yet, and that is exactly what this line has to be able to say.
+/// The failsafe mode is named without a percentage on purpose. The kernel calls
+/// it "100% failsafe", but the duty read back beside this line is whatever the
+/// firmware is actually running, and a label claiming 100% next to a reading of
+/// 52% states a number the hardware is not at.
+fn reported_program(mode: Option<PwmMode>, percent: Option<f32>) -> String {
+    match (mode, percent) {
+        (None, _) => "Mode not reported".to_string(),
+        (Some(PwmMode::FullSpeed), _) => "Firmware failsafe".to_string(),
+        (Some(PwmMode::Fixed), Some(percent)) => format!("Fixed duty {percent:.0}%"),
+        (Some(PwmMode::Fixed), None) => "Fixed duty".to_string(),
+        (Some(PwmMode::Curve), _) => "Onboard curve".to_string(),
+    }
 }
 
 /// A duty readback, converted from the tracked byte to a plottable number.
@@ -3358,14 +3566,13 @@ mod tests {
             COOLING_TAB_MODE,
             COOLING_TAB_PROFILE,
             pump,
-            // The widest detail, which is the Fixed mode: the stepper's two
-            // buttons, then the curve plot. The plot carries its own editing
-            // through the arrow keys, so it is one stop rather than a row of
-            // buttons, and the stops stay reserved whichever mode the row is
-            // in so a mode change never renumbers the row below it.
-            pump + 1,
-            pump + 2,
-            pump + 3,
+            // The widest detail, which is the Fixed mode: the duty slider, then
+            // the curve plot. Both carry their own editing through the arrow
+            // keys, so each is one stop rather than a row of buttons, and the
+            // stops stay reserved whichever mode the row is in so a mode change
+            // never renumbers the row below it.
+            pump + COOLING_OFFSET_DUTY,
+            pump + COOLING_OFFSET_CURVE,
             fan,
             COOLING_TAB_REVERT,
             COOLING_TAB_SAVE,
@@ -3422,6 +3629,84 @@ mod tests {
         indices.dedup();
         assert_eq!(indices.len(), 4, "every entry needs its own tab stop");
         assert!(indices.iter().all(|index| *index < SCREEN_TAB_BASE));
+    }
+
+    #[test]
+    fn a_channel_row_names_the_program_the_device_reports_not_the_one_pending() {
+        // The reported mode is the whole point of this line: after a mode
+        // change it keeps naming the old program until the write lands, which
+        // is how an operator sees that it has not.
+        assert_eq!(
+            reported_program(Some(PwmMode::Fixed), Some(70.6)),
+            "Fixed duty 71%"
+        );
+        assert_eq!(
+            reported_program(Some(PwmMode::Curve), None),
+            "Onboard curve"
+        );
+        // The failsafe carries no percentage of its own: the duty printed
+        // beside it is what the firmware is running, and the kernel's "100%
+        // failsafe" wording routinely disagrees with that reading.
+        assert_eq!(
+            reported_program(Some(PwmMode::FullSpeed), Some(52.0)),
+            "Firmware failsafe"
+        );
+        // A mode nothing answered for is said to be unreported rather than
+        // shown as the safe-looking default, which would be a fabricated fact.
+        assert_eq!(reported_program(None, Some(50.0)), "Mode not reported");
+    }
+
+    #[test]
+    fn a_duty_track_spans_the_range_the_channel_actually_accepts() {
+        // The pump refuses to stop, so its track starts at its floor instead of
+        // carrying a fifth of its length that no press can reach. Both ends of
+        // the track have to be values the daemon would take.
+        for channel in [Channel::Pump, Channel::Fan] {
+            let floor = duty_to_percent(channel.min_duty());
+            let track = Bounds {
+                origin: Point {
+                    x: px(0.0),
+                    y: px(0.0),
+                },
+                size: gpui::size(px(200.0), px(22.0)),
+            };
+            for (x, expected) in [(px(-40.0), floor), (px(400.0), MAX_DUTY_PERCENT)] {
+                let percent = Slider::value_at(
+                    track,
+                    Point { x, y: px(10.0) },
+                    f32::from(floor),
+                    f32::from(MAX_DUTY_PERCENT),
+                );
+                let duty = duty_from_percent(percent.round() as u8);
+                assert_eq!(duty_to_percent(duty), expected, "{channel:?} at {x:?}");
+                assert!(duty >= channel.min_duty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_duty_track_and_a_brightness_track_never_answer_for_each_other() {
+        // Two books rather than one keyed by a sum type: a rectangle left
+        // behind by a screen that is no longer drawn must not be grabbable, and
+        // the press handler asks each book for its own kind of drag.
+        let duty: TrackMap<Channel> = TrackMap::default();
+        let at = Point {
+            x: px(300.0),
+            y: px(200.0),
+        };
+        duty.record(
+            Channel::Pump,
+            Bounds {
+                origin: Point {
+                    x: px(200.0),
+                    y: px(190.0),
+                },
+                size: gpui::size(px(200.0), px(22.0)),
+            },
+        );
+        assert_eq!(duty.at(at).map(|(channel, _)| channel), Some(Channel::Pump));
+        duty.clear();
+        assert_eq!(duty.at(at), None);
     }
 
     #[test]
