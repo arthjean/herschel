@@ -35,7 +35,7 @@ cooling, so the hardware rules below outrank convenience.
   on that firmware, not editing the list. A Kraken that never answers
   `0x31 0x01` may carry no display at all, and is reported that way rather than
   assumed to have one.
-- Never make either binary require root. `herscheld` refuses to start as
+- Never make either binary require root. `korid` refuses to start as
   root (`crates/daemon/src/main.rs`). Missing permission degrades to read-only
   with a stated reason; it never escalates.
 - Keep the safety floors enforced before the write, not at the UI: `MIN_PUMP_DUTY`
@@ -67,17 +67,17 @@ cargo test --workspace
   exempt through `clippy.toml` plus the crate-root line
   `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]`.
   Carry that line into any new crate root; do not add per-call allows.
-- Stop `herscheld` before `cargo test --workspace`. The fixtures mirror the
+- Stop `korid` before `cargo test --workspace`. The fixtures mirror the
   machine down to the `hidraw` numbers, and `usb::hidraw_node` maps a fixture
   node onto the real `/dev` path, so a running daemon is correctly detected as a
   competing writer and the ownership assertions in `crates/daemon/tests/ipc.rs`
   fail. That is the conflict detector working, not a broken test.
 - Tests run against a fake tree, never the machine's real sysfs: use
-  `herschel_hardware_linux::testing::FakeSysfs` (feature `testing`) and the
-  `HERSCHEL_SYSFS_ROOT` / `HERSCHEL_PROC_ROOT` overrides. `crates/daemon/tests/ipc.rs`
+  `kori_hardware_linux::testing::FakeSysfs` (feature `testing`) and the
+  `KORI_SYSFS_ROOT` / `KORI_PROC_ROOT` overrides. `crates/daemon/tests/ipc.rs`
   is the reference: exercise the daemon over a real socket from the client entry
   point rather than reaching into internals.
-- `./target/release/herscheld --capabilities` reads sysfs only: no socket,
+- `./target/release/korid --capabilities` reads sysfs only: no socket,
   no device node, serials redacted. `--rgb-probe` and `--lcd-probe` add one
   device's own answer, at the cost of two query reports that carry no color, no
   mode, no picture and no parameter. `--probe` asks both and is what re-records
@@ -142,8 +142,8 @@ asserted. Neither extracts pixels from the other.
 
 ## Delivery
 
-- `tasks/prd-native-herschel-hardware-control.md` is the plan of record and
-  `tasks/prd-native-herschel-hardware-control-status.json` tracks `EP-NNN` and
+- `tasks/prd-native-kori-hardware-control.md` is the plan of record and
+  `tasks/prd-native-kori-hardware-control-status.json` tracks `EP-NNN` and
   `US-NNN` status. Update the tracker in the same change as the work it
   describes.
 - A completed epic gets `docs/ep-NNN-evidence.md`: one row per acceptance
@@ -161,7 +161,7 @@ asserted. Neither extracts pixels from the other.
 
 ## Reference
 
-- Product scope, quality gates and story acceptance: `tasks/prd-native-herschel-hardware-control.md`
+- Product scope, quality gates and story acceptance: `tasks/prd-native-kori-hardware-control.md`
 - Kernel ABI, observed attribute modes and measured evidence: `docs/ep-002-evidence.md`
 - LCD transport, panel geometry and what is still unproven: `docs/ep-004-evidence.md`
 - Startup, memory and CPU measurements: `docs/ep-001-evidence.md`

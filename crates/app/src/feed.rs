@@ -27,11 +27,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use herschel_core::client::{Client, ClientError};
-use herschel_core::display::DisplayPreset;
-use herschel_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome, Request, Response};
-use herschel_core::lighting::LightingCommand;
-use herschel_core::profile::{CoolingProgram, Profile};
+use kori_core::client::{Client, ClientError};
+use kori_core::display::DisplayPreset;
+use kori_core::ipc::{ApplyOutcome, HardwareState, LightingOutcome, Request, Response};
+use kori_core::lighting::LightingCommand;
+use kori_core::profile::{CoolingProgram, Profile};
 
 use crate::link::LinkState;
 
@@ -93,7 +93,7 @@ impl CommandOutcome {
     /// pixels do, so the two are reported separately instead of collapsed into
     /// one "nothing was sent" that would be false exactly when the operator had
     /// just changed the brightness.
-    fn from_display(outcome: &herschel_core::ipc::DisplayOutcome) -> Self {
+    fn from_display(outcome: &kori_core::ipc::DisplayOutcome) -> Self {
         let (severity, message) = match &outcome.hardware {
             HardwareState::Confirmed if outcome.deduplicated && outcome.brightness_sent => (
                 OutcomeSeverity::Confirmed,
@@ -278,7 +278,7 @@ impl std::fmt::Debug for Feed {
 /// Everything the worker carries between cycles.
 struct Session {
     client: Client,
-    capabilities: Arc<herschel_core::capability::CapabilityRecord>,
+    capabilities: Arc<kori_core::capability::CapabilityRecord>,
     profiles: Arc<[Profile]>,
 }
 
@@ -517,9 +517,9 @@ pub fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_core::ipc::{ChannelReadback, DisplayOutcome};
-    use herschel_core::lighting::Brightness;
-    use herschel_core::profile::Channel;
+    use kori_core::ipc::{ChannelReadback, DisplayOutcome};
+    use kori_core::lighting::Brightness;
+    use kori_core::profile::Channel;
 
     #[test]
     fn a_command_ends_the_wait_instead_of_serving_out_the_interval() {
@@ -576,9 +576,9 @@ mod tests {
 
     #[test]
     fn a_brightness_only_change_is_reported_as_applied_rather_than_as_nothing() {
-        let preset = herschel_core::display::DisplayPreset {
+        let preset = kori_core::display::DisplayPreset {
             brightness: Brightness::new(20).unwrap(),
-            ..herschel_core::display::DisplayPreset::default_infographic()
+            ..kori_core::display::DisplayPreset::default_infographic()
         };
         let dimmed = DisplayOutcome {
             preset,

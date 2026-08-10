@@ -18,19 +18,19 @@ use gpui::{
     AnyElement, App, Bounds, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels,
     Point, SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
-use herschel_core::capability::CapabilityId;
-use herschel_core::display::{DisplayMode, LcdMetric, MetricSample};
-use herschel_core::ipc::ChannelState;
-use herschel_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
-use herschel_core::profile::{
+use kori_core::capability::CapabilityId;
+use kori_core::display::{DisplayMode, LcdMetric, MetricSample};
+use kori_core::ipc::ChannelState;
+use kori_core::lighting::{EffectDirection, EffectSpeed, LightingCommand};
+use kori_core::profile::{
     Channel, CoolingProgram, CurveNodes, MAX_DUTY, MAX_DUTY_PERCENT, Profile, SAFE_PROFILE_NAME,
     duty_from_percent, duty_to_percent,
 };
-use herschel_core::telemetry::{
+use kori_core::telemetry::{
     Collector, HISTORY_WINDOW_MS, KrakenTelemetry, MetricView, PwmMode, SafetyAlert,
     format_binary_bytes, format_temperature,
 };
-use herschel_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
+use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::assets::Icon;
 use crate::components::{
@@ -2460,7 +2460,7 @@ impl Shell {
         &self,
         base: isize,
         editor: &DisplayEditor,
-        panel: &herschel_core::capability::LcdPanel,
+        panel: &kori_core::capability::LcdPanel,
         frame: ControlState,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -2732,7 +2732,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let enabled = state.is_enabled();
-        let max = f32::from(herschel_core::lighting::MAX_BRIGHTNESS);
+        let max = f32::from(kori_core::lighting::MAX_BRIGHTNESS);
         // Created per render and captured by this render's listeners, so the
         // rectangle a press reads is the one the track was just painted at.
         // Only an operable track is published, so a press cannot grab a slider
@@ -2767,7 +2767,7 @@ impl Shell {
                         "left" | "down" => i16::from(value) - step,
                         "right" | "up" => i16::from(value) + step,
                         "home" => 0,
-                        "end" => i16::from(herschel_core::lighting::MAX_BRIGHTNESS),
+                        "end" => i16::from(kori_core::lighting::MAX_BRIGHTNESS),
                         _ => return,
                     };
                     shell.popover = None;
@@ -2791,7 +2791,7 @@ impl Shell {
         if drag.track.size.width <= px(0.0) {
             return;
         }
-        let max = f32::from(herschel_core::lighting::MAX_BRIGHTNESS);
+        let max = f32::from(kori_core::lighting::MAX_BRIGHTNESS);
         let value = Slider::value_at(drag.track, position, 0.0, max);
         self.set_brightness(drag.row, value.round() as i16);
         cx.notify();
@@ -2822,7 +2822,7 @@ impl Shell {
     /// Takes a signed value so a keyboard step past either end arrives here to
     /// be clamped rather than wrapping around in the caller.
     fn set_brightness(&mut self, row: LightingRow, percent: i16) {
-        let percent = percent.clamp(0, i16::from(herschel_core::lighting::MAX_BRIGHTNESS)) as u8;
+        let percent = percent.clamp(0, i16::from(kori_core::lighting::MAX_BRIGHTNESS)) as u8;
         match row {
             LightingRow::Channel(channel) => {
                 if let Some(editor) = self.lighting.channel_mut(channel) {
@@ -4048,8 +4048,7 @@ mod tests {
         // queueing it, and keeps no last-value-wins, so a quiet period shorter
         // than the floor would turn a settled edit into a refusal.
         assert!(
-            LIGHTING_QUIET
-                > Duration::from_millis(herschel_core::lighting::MIN_COMMAND_INTERVAL_MS),
+            LIGHTING_QUIET > Duration::from_millis(kori_core::lighting::MIN_COMMAND_INTERVAL_MS),
             "an edit must not be written faster than the controller accepts"
         );
         // And short enough that the whole round trip stays inside the 500 ms

@@ -16,12 +16,12 @@ RGB Controller `1e71:2021` (bcdDevice 0105).
 | Median first frame <=700 ms over five cold launches; idle `RssAnon` <=110 MiB; idle `VmRSS` <=320 MiB; five-minute idle CPU <=1.5% | `crates/app/src/startup.rs`, `crates/app/src/main.rs` | Measurements below |
 | Keyboard-only traversal in a logical order with a visible focus state | `Destination::tab_index`, `SCREEN_TAB_BASE`, `interactive()` focus style | `docs/screenshots/monitoring-keyboard-focus.png`; `rail_tab_order_is_stable_and_precedes_screen_controls` |
 | No clipping at 200% desktop scale | Layout uses `min_w_0` and wrapping text throughout | `docs/screenshots/monitoring-200-percent.png` (1840x1280 device pixels for 920x640 logical) |
-| Unavailable backend exits without panic, naming the backend and the next action | `startup::detect_backend`, `main.rs` preflight | `no_backend_reports_what_was_attempted_and_the_next_action`; manual: `env -u WAYLAND_DISPLAY -u DISPLAY ./target/release/herschel` exits 1 with the diagnostic |
+| Unavailable backend exits without panic, naming the backend and the next action | `startup::detect_backend`, `main.rs` preflight | `no_backend_reports_what_was_attempted_and_the_next_action`; manual: `env -u WAYLAND_DISPLAY -u DISPLAY ./target/release/kori` exits 1 with the diagnostic |
 | Workspace matches the hardware-only scope in `README.md`, no browser runtime | `Cargo.toml`, `README.md`, `crates/app/src/offline.rs` | `cargo tree` contains no browser engine, WebView or HTTP server; see the network note below |
 
 ### Measurements
 
-Release build, five cold launches, `HERSCHEL_STARTUP_TRACE=1`:
+Release build, five cold launches, `KORI_STARTUP_TRACE=1`:
 
 | Launch | Wayland | X11 |
 |---|---|---|
@@ -101,7 +101,7 @@ evidence US-016 needs, recorded rather than assumed.
 
 | Criterion | Implementation | Proof |
 |---|---|---|
-| One process lock per device, one user-owned Unix socket | `daemon/src/ownership.rs`, `daemon/src/server.rs`, `core::ipc::socket_path_from_env` | `one_lock_is_held_per_supported_device`, `the_socket_is_owner_only`, `the_first_holder_wins_and_the_second_is_told_who_holds_it`, `the_daemon_binds_the_socket_the_client_connects_to`; live: `srw-------` at `/run/user/1000/herschel/herschel.sock`, two locks held |
+| One process lock per device, one user-owned Unix socket | `daemon/src/ownership.rs`, `daemon/src/server.rs`, `core::ipc::socket_path_from_env` | `one_lock_is_held_per_supported_device`, `the_socket_is_owner_only`, `the_first_holder_wins_and_the_second_is_told_who_holds_it`, `the_daemon_binds_the_socket_the_client_connects_to`; live: `srw-------` at `/run/user/1000/kori/kori.sock`, two locks held |
 | Local peer authenticated, typed message validated, operation serialized | `server::peer_credentials` (SO_PEERCRED), `Arc<Mutex<Daemon>>` | `a_client_completes_the_handshake_and_reads_status`, `several_clients_are_served_without_interleaving` |
 | A conflicting holder puts the application in read-only mode without forcing access | `Daemon::access_mode`, `ownership::observed_holders` | `read_only_mode_names_the_conflict`, `one_lock_is_held_per_supported_device` (second daemon is read-only) |
 | Out-of-range, unknown or malformed commands produce zero hardware writes and a typed rejection | `Daemon::dispatch`, `ipc::read_frame` ceiling | `malformed_and_oversized_frames_are_refused_without_touching_hardware`, `out_of_range_values_are_rejected_with_their_accepted_range` (both compare a full mtime snapshot of the hwmon tree) |
@@ -140,8 +140,8 @@ Three defects were found while certifying this epic and corrected in place.
 
 1. **The client and the daemon resolved the socket path separately, and the two
    fallbacks disagreed.** With `XDG_RUNTIME_DIR` unset the daemon bound
-   `$HOME/.cache/herschel/herschel.sock` while the window connected to
-   `/tmp/herschel.sock`, so the window reported "the background service is
+   `$HOME/.cache/kori/kori.sock` while the window connected to
+   `/tmp/kori.sock`, so the window reported "the background service is
    not running" against a daemon that was running. `/tmp` is world-writable:
    another local user could create that socket first and hand the window a
    fabricated device list, ownership state and capability record, which is
@@ -151,7 +151,7 @@ Three defects were found while certifying this epic and corrected in place.
    Both sides now resolve through `core::ipc::socket_path_from_env`, so a
    divergence is no longer expressible. Proven live: with `XDG_RUNTIME_DIR`
    unset, the daemon binds under `$HOME/.cache` and a client following the same
-   resolution completes the handshake, while `/tmp/herschel.sock` is never
+   resolution completes the handshake, while `/tmp/kori.sock` is never
    created. `the_daemon_binds_the_socket_the_client_connects_to` fails if either
    side grows its own fallback again.
 

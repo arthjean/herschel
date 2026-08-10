@@ -31,9 +31,9 @@
 use std::io::Write;
 use std::path::Path;
 
-use herschel_core::ipc::ChannelReadback;
-use herschel_core::profile::{CURVE_POINT_COUNT, Channel, MAX_DUTY, TemperatureCurve};
-use herschel_core::telemetry::PwmMode;
+use kori_core::ipc::ChannelReadback;
+use kori_core::profile::{CURVE_POINT_COUNT, Channel, MAX_DUTY, TemperatureCurve};
+use kori_core::telemetry::PwmMode;
 
 use crate::hwmon::{KrakenHwmon, curve_point_attribute, duty_attribute, mode_attribute};
 
@@ -389,7 +389,7 @@ fn describe_duty(duty: Option<u8>) -> String {
 mod tests {
     use super::*;
     use crate::testing::{FakeSysfs, running_as_root};
-    use herschel_core::profile::CurveNodes;
+    use kori_core::profile::CurveNodes;
 
     /// A fixture with an installed udev rule: both channels writable.
     ///

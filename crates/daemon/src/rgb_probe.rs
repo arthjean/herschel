@@ -24,12 +24,12 @@
 use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
 
-use herschel_core::capability::{Evidenced, RgbChannel, RgbTopology};
-use herschel_core::lighting::{
+use kori_core::capability::{Evidenced, RgbChannel, RgbTopology};
+use kori_core::lighting::{
     Brightness, EffectDirection, EffectSpeed, LightingEffect, LightingProgram, PROBE_BRIGHTNESS,
     Rgb,
 };
-use herschel_hardware_linux::rgb::{self, HidTransport};
+use kori_hardware_linux::rgb::{self, HidTransport};
 use serde::{Deserialize, Serialize};
 
 /// What the operator must type to authorize a write to the controller.
@@ -357,7 +357,7 @@ pub fn run<T: HidTransport + ?Sized, O: Operator>(
 
     Ok(WriteProbeReport {
         scope: scope.key().to_string(),
-        device: herschel_core::RGB_CONTROLLER.to_string(),
+        device: kori_core::RGB_CONTROLLER.to_string(),
         node: transport.source(),
         firmware: topology.firmware.clone(),
         channels: reported,
@@ -541,7 +541,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_hardware_linux::testing::FakeController;
+    use kori_hardware_linux::testing::FakeController;
 
     /// An operator with a scripted set of answers.
     struct Script {
@@ -783,7 +783,7 @@ mod tests {
         // Every swept program is one the daemon would accept, so the probe
         // cannot record evidence for a command the product then refuses.
         for program in &programs {
-            herschel_core::lighting::validate_program(program)
+            kori_core::lighting::validate_program(program)
                 .unwrap_or_else(|error| panic!("{program:?} is not a valid program: {error}"));
         }
         assert_eq!(programs.last(), Some(&LightingProgram::Off), "it ends dark");
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn a_controller_that_refuses_every_write_is_reported_rather_than_retried() {
         let mut controller = FakeController::new("1.2.3", 1);
-        controller.write_failure = Some(herschel_hardware_linux::rgb::RgbError::PermissionDenied {
+        controller.write_failure = Some(kori_hardware_linux::rgb::RgbError::PermissionDenied {
             path: "/dev/hidraw12".to_string(),
         });
         let mut operator = Script::new(&[CONFIRMATION_PHRASE, "purple", "", "", "", "", "", ""]);

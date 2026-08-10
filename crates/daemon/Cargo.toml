@@ -1,5 +1,5 @@
 [package]
-name = "herschel-daemon"
+name = "kori-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,17 +8,17 @@ repository.workspace = true
 description = "Per-user daemon owning every write to allowlisted NZXT hardware"
 
 [[bin]]
-name = "herscheld"
+name = "korid"
 path = "src/main.rs"
 
 [lib]
-name = "herschel_daemon"
+name = "kori_daemon"
 path = "src/lib.rs"
 
 [dependencies]
-herschel-core.workspace = true
-herschel-hardware-linux.workspace = true
-herschel-lcd-renderer.workspace = true
+kori-core.workspace = true
+kori-hardware-linux.workspace = true
+kori-lcd-renderer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -26,7 +26,7 @@ toml.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
-herschel-hardware-linux = { workspace = true, features = ["testing"] }
+kori-hardware-linux = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

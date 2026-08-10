@@ -3,7 +3,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-//! Types shared by the Herschel daemon and the GPUI client.
+//! Types shared by the Kori daemon and the GPUI client.
 //!
 //! Nothing in this crate touches hardware. It defines the vocabulary both
 //! processes agree on: what a device can do, what a reading is worth, what a
@@ -23,7 +23,7 @@ pub mod telemetry;
 /// FR-20: original branding, never NZXT's. It lives here rather than in the
 /// client's theme because the daemon draws it onto the panel too, and the
 /// wordmark on the hardware and the wordmark in the window must be one string.
-pub const PRODUCT_NAME: &str = "Herschel";
+pub const PRODUCT_NAME: &str = "Kori";
 
 /// Vendor and product identifiers of a USB device.
 ///

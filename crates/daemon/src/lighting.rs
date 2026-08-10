@@ -11,18 +11,18 @@
 //! Two rules are enforced here rather than at the screen, because the screen is
 //! not a trusted input. A request identical to the committed state is
 //! deduplicated and writes nothing. A request arriving sooner than
-//! [`herschel_core::lighting::MIN_COMMAND_INTERVAL_MS`] after the previous one on
+//! [`kori_core::lighting::MIN_COMMAND_INTERVAL_MS`] after the previous one on
 //! the same channel is refused, because the controller acknowledges nothing and
 //! cadence is the only backpressure there is.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use herschel_core::ipc::{ChannelState, HardwareState, LightingOutcome};
-use herschel_core::lighting::{
+use kori_core::ipc::{ChannelState, HardwareState, LightingOutcome};
+use kori_core::lighting::{
     LightingCommand, LightingError, LightingProgram, MIN_COMMAND_INTERVAL_MS,
 };
-use herschel_hardware_linux::rgb::{self, HidTransport};
+use kori_hardware_linux::rgb::{self, HidTransport};
 
 /// Owns the controller handle and the record of what it was told.
 pub struct LightingExecutor {
@@ -60,7 +60,7 @@ impl LightingExecutor {
     /// An executor bound to a controller that answered its topology.
     pub fn connected(
         transport: Box<dyn HidTransport>,
-        channels: &[herschel_core::capability::RgbChannel],
+        channels: &[kori_core::capability::RgbChannel],
     ) -> Self {
         Self {
             transport: Some(transport),
@@ -85,7 +85,7 @@ impl LightingExecutor {
         self.channels.len() as u8
     }
 
-    /// Per-channel state for [`herschel_core::ipc::DaemonStatus`].
+    /// Per-channel state for [`kori_core::ipc::DaemonStatus`].
     pub fn state(&self) -> Vec<ChannelState> {
         self.channels
             .iter()
@@ -219,9 +219,9 @@ impl LightingExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_core::capability::{Evidenced, RgbAccessory, RgbChannel};
-    use herschel_core::lighting::{Brightness, Rgb};
-    use herschel_hardware_linux::testing::FakeController;
+    use kori_core::capability::{Evidenced, RgbAccessory, RgbChannel};
+    use kori_core::lighting::{Brightness, Rgb};
+    use kori_hardware_linux::testing::FakeController;
     use std::time::Duration;
 
     fn channels(count: u8) -> Vec<RgbChannel> {
@@ -262,7 +262,7 @@ mod tests {
 
     #[derive(Default)]
     struct Recorder {
-        commands: std::sync::Mutex<Vec<[u8; herschel_hardware_linux::rgb::REPORT_BYTES]>>,
+        commands: std::sync::Mutex<Vec<[u8; kori_hardware_linux::rgb::REPORT_BYTES]>>,
         fail: std::sync::atomic::AtomicBool,
     }
 
@@ -271,7 +271,7 @@ mod tests {
             self.commands.lock().map(|c| c.len()).unwrap_or(0)
         }
 
-        fn last(&self) -> Option<[u8; herschel_hardware_linux::rgb::REPORT_BYTES]> {
+        fn last(&self) -> Option<[u8; kori_hardware_linux::rgb::REPORT_BYTES]> {
             self.commands.lock().ok().and_then(|c| c.last().copied())
         }
     }
@@ -284,15 +284,15 @@ mod tests {
     impl HidTransport for RecordingController {
         fn write_report(
             &mut self,
-            report: &[u8; herschel_hardware_linux::rgb::REPORT_BYTES],
-        ) -> Result<(), herschel_hardware_linux::rgb::RgbError> {
+            report: &[u8; kori_hardware_linux::rgb::REPORT_BYTES],
+        ) -> Result<(), kori_hardware_linux::rgb::RgbError> {
             if self.recorder.fail.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(herschel_hardware_linux::rgb::RgbError::PermissionDenied {
+                return Err(kori_hardware_linux::rgb::RgbError::PermissionDenied {
                     path: "/dev/hidraw12".to_string(),
                 });
             }
             self.inner.write_report(report)?;
-            if [report[0], report[1]] == herschel_hardware_linux::rgb::packet::COLOR_COMMAND
+            if [report[0], report[1]] == kori_hardware_linux::rgb::packet::COLOR_COMMAND
                 && let Ok(mut commands) = self.recorder.commands.lock()
             {
                 commands.push(*report);
@@ -304,8 +304,8 @@ mod tests {
             &mut self,
             timeout: Duration,
         ) -> Result<
-            Option<[u8; herschel_hardware_linux::rgb::REPORT_BYTES]>,
-            herschel_hardware_linux::rgb::RgbError,
+            Option<[u8; kori_hardware_linux::rgb::REPORT_BYTES]>,
+            kori_hardware_linux::rgb::RgbError,
         > {
             self.inner.read_report(timeout)
         }

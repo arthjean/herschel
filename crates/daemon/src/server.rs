@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use herschel_core::display::FRAME_INTERVAL_MS;
-use herschel_core::ipc::{IpcError, PROTOCOL_VERSION, Request, Response, read_frame, write_frame};
+use kori_core::display::FRAME_INTERVAL_MS;
+use kori_core::ipc::{IpcError, PROTOCOL_VERSION, Request, Response, read_frame, write_frame};
 
 use crate::state::Daemon;
 

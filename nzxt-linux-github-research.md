@@ -2,7 +2,7 @@
 
 > Research state: 30 July 2026. Sources limited to the official `NZXTCorp` GitHub organization, its repositories, its code, its tags and its releases.
 >
-> Decision note: this document keeps the exploration and its initial recommendation as history. The current direction is a hardware-only GPUI application, defined in the [PRD](./tasks/prd-native-herschel-hardware-control.md). Web Integrations are out of scope.
+> Decision note: this document keeps the exploration and its initial recommendation as history. The current direction is a hardware-only GPUI application, defined in the [PRD](./tasks/prd-native-kori-hardware-control.md). Web Integrations are out of scope.
 
 ## Verdict
 

@@ -18,12 +18,12 @@
 pub mod canvas;
 pub mod text;
 
-use herschel_core::capability::LcdPanel;
-use herschel_core::display::{
+use kori_core::capability::LcdPanel;
+use kori_core::display::{
     DisplayError, DisplayMode, DisplayPreset, MAX_IMAGE_DIMENSION, MetricSample, Orientation,
     ReadingSlot,
 };
-use herschel_core::lighting::Rgb;
+use kori_core::lighting::Rgb;
 
 use image::{ImageDecoder, ImageEncoder};
 
@@ -591,8 +591,8 @@ fn rotate(canvas: &Canvas, orientation: Orientation) -> Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_core::capability::LcdPanelShape;
-    use herschel_core::display::{LcdMetric, ReadingSlot};
+    use kori_core::capability::LcdPanelShape;
+    use kori_core::display::{LcdMetric, ReadingSlot};
 
     fn panel() -> LcdPanel {
         LcdPanel {
@@ -1059,7 +1059,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_an_image_is_rejected_without_panicking() {
-        let directory = std::env::temp_dir().join(format!("herschel-lcd-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("kori-lcd-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("not-an-image.png");
         std::fs::write(&path, b"this is not a PNG, whatever the extension says").unwrap();
@@ -1085,8 +1085,7 @@ mod tests {
 
     #[test]
     fn an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded() {
-        let directory =
-            std::env::temp_dir().join(format!("herschel-lcd-big-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("kori-lcd-big-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("enormous.png");
 

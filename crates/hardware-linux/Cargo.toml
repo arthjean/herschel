@@ -1,5 +1,5 @@
 [package]
-name = "herschel-hardware-linux"
+name = "kori-hardware-linux"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,7 @@ testing = []
 # without the NVIDIA driver still builds and reports the GPU as unavailable.
 # MIT OR Apache-2.0, compatible with the project's GPL-3.0-or-later.
 nvml-wrapper = "0.12"
-herschel-core.workspace = true
+kori-core.workspace = true
 rustix.workspace = true
 serde.workspace = true
 thiserror.workspace = true

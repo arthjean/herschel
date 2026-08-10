@@ -32,7 +32,7 @@ read-only naming the missing permission. That refusal path was captured before
 the rule was installed and is kept below as evidence of US-013 AC-4.
 
 ```
-# /etc/udev/rules.d/70-herschel.rules
+# /etc/udev/rules.d/70-kori.rules
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2021", TAG+="uaccess"
 ```
 

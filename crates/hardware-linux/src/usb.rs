@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use herschel_core::DeviceId;
-use herschel_core::capability::{Evidenced, UsbEndpoint, UsbIdentity, UsbInterface};
+use kori_core::DeviceId;
+use kori_core::capability::{Evidenced, UsbEndpoint, UsbIdentity, UsbInterface};
 
 use crate::sysfs::{
     SysfsRoot, bound_driver, read_attribute, read_hex_u8, read_hex_u16, sorted_entries,
@@ -185,7 +185,7 @@ pub fn owning_device(start: &Path) -> Option<(DeviceId, PathBuf)> {
 mod tests {
     use super::*;
     use crate::testing::FakeSysfs;
-    use herschel_core::KRAKEN_BASE;
+    use kori_core::KRAKEN_BASE;
 
     #[test]
     fn enumeration_skips_entries_without_identifiers() {

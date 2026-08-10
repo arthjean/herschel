@@ -2437,63 +2437,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
-name = "herschel-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "gpui",
- "herschel-core",
- "herschel-lcd-renderer",
- "serde_json",
-]
-
-[[package]]
-name = "herschel-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "herschel-daemon"
-version = "0.1.0"
-dependencies = [
- "herschel-core",
- "herschel-hardware-linux",
- "herschel-lcd-renderer",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "toml 1.1.4+spec-1.1.0",
-]
-
-[[package]]
-name = "herschel-hardware-linux"
-version = "0.1.0"
-dependencies = [
- "herschel-core",
- "nvml-wrapper",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "herschel-lcd-renderer"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "herschel-core",
- "image",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2944,6 +2887,63 @@ checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "kori-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gpui",
+ "kori-core",
+ "kori-lcd-renderer",
+ "serde_json",
+]
+
+[[package]]
+name = "kori-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "kori-daemon"
+version = "0.1.0"
+dependencies = [
+ "kori-core",
+ "kori-hardware-linux",
+ "kori-lcd-renderer",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "toml 1.1.4+spec-1.1.0",
+]
+
+[[package]]
+name = "kori-hardware-linux"
+version = "0.1.0"
+dependencies = [
+ "kori-core",
+ "nvml-wrapper",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "kori-lcd-renderer"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "image",
+ "kori-core",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "herschel-app"
+name = "kori-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,12 +8,12 @@ repository.workspace = true
 description = "Native GPUI control surface for allowlisted NZXT hardware"
 
 [[bin]]
-name = "herschel"
+name = "kori"
 path = "src/main.rs"
 
 [dependencies]
-herschel-core.workspace = true
-herschel-lcd-renderer.workspace = true
+kori-core.workspace = true
+kori-lcd-renderer.workspace = true
 gpui = "0.2.2"
 serde_json.workspace = true
 anyhow.workspace = true

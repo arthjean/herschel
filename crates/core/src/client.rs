@@ -41,8 +41,7 @@ impl ClientError {
     pub fn operator_message(&self) -> String {
         match self {
             Self::Unreachable { .. } => {
-                "The background service is not running. Start herscheld to enable controls."
-                    .to_string()
+                "The background service is not running. Start korid to enable controls.".to_string()
             }
             other => other.to_string(),
         }

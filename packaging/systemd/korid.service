@@ -6,8 +6,8 @@
 # is a session ACL that only exists inside that user's session.
 
 [Unit]
-Description=Herschel cooling daemon
-Documentation=https://github.com/arthjean/herschel
+Description=Kori cooling daemon
+Documentation=https://github.com/arthjean/kori
 
 # The daemon probes each device once at startup and reports what it could not
 # reach for the rest of its life. That probe must happen after logind has placed
@@ -21,7 +21,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/herscheld
+ExecStart=%h/.local/bin/korid
 
 # The daemon holds one lock per device. Restarting instantly on a failure makes
 # those locks flap, so a failed start waits before the next attempt.

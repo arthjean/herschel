@@ -44,7 +44,7 @@ impl FakeSysfs {
     pub fn new(name: &str) -> Self {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(
-            "herschel-fake-sysfs-{name}-{}-{unique}",
+            "kori-fake-sysfs-{name}-{}-{unique}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&base);
@@ -57,7 +57,7 @@ impl FakeSysfs {
         SysfsRoot::new(self.base.join("sys"))
     }
 
-    /// Path of the fake sysfs root, for `HERSCHEL_SYSFS_ROOT`.
+    /// Path of the fake sysfs root, for `KORI_SYSFS_ROOT`.
     pub fn root_path(&self) -> PathBuf {
         self.base.join("sys")
     }
@@ -640,7 +640,7 @@ impl crate::usbfs::BulkTransport for RecordingBulk {
 pub struct FakeKraken {
     firmware: String,
     /// `None` for a Kraken whose cap carries no display.
-    panel: Option<herschel_core::capability::LcdDisplaySettings>,
+    panel: Option<kori_core::capability::LcdDisplaySettings>,
     pending: std::collections::VecDeque<[u8; crate::hid::REPORT_BYTES]>,
     /// Every report the device received, in order.
     reports: std::sync::Arc<ReportRecorder>,
@@ -654,7 +654,7 @@ impl FakeKraken {
     pub fn new(firmware: &str) -> Self {
         Self {
             firmware: firmware.to_string(),
-            panel: Some(herschel_core::capability::LcdDisplaySettings {
+            panel: Some(kori_core::capability::LcdDisplaySettings {
                 brightness_percent: 60,
                 quarter_turns: 0,
             }),
@@ -679,7 +679,7 @@ impl FakeKraken {
 
     /// The panel's reported settings, for a fixture that needs them changed.
     pub fn with_display(mut self, brightness_percent: u8, quarter_turns: u8) -> Self {
-        self.panel = Some(herschel_core::capability::LcdDisplaySettings {
+        self.panel = Some(kori_core::capability::LcdDisplaySettings {
             brightness_percent,
             quarter_turns,
         });
@@ -719,7 +719,7 @@ impl FakeKraken {
 
     fn display_answer(
         &self,
-        settings: herschel_core::capability::LcdDisplaySettings,
+        settings: kori_core::capability::LcdDisplaySettings,
     ) -> [u8; crate::hid::REPORT_BYTES] {
         let mut report = [0u8; crate::hid::REPORT_BYTES];
         report[0] = 0x31;

@@ -15,25 +15,25 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime};
 
-use herschel_core::capability::CapabilityId;
-use herschel_core::client::Client;
-use herschel_core::display::{DisplayMode, DisplayPreset};
-use herschel_core::ipc::{
+use kori_core::capability::CapabilityId;
+use kori_core::client::Client;
+use kori_core::display::{DisplayMode, DisplayPreset};
+use kori_core::ipc::{
     AccessMode, ConfigState, HardwareState, IpcError, MAX_FRAME_BYTES, PROTOCOL_VERSION, Request,
     Response, read_frame, write_frame,
 };
-use herschel_core::lighting::{Brightness, LightingCommand, LightingProgram, Rgb};
-use herschel_core::profile::{
+use kori_core::lighting::{Brightness, LightingCommand, LightingProgram, Rgb};
+use kori_core::profile::{
     CURVE_POINT_COUNT, Channel, CoolingProgram, CurveNodes, MIN_PUMP_DUTY, Profile,
     SAFE_PROFILE_NAME, TemperatureCurve,
 };
-use herschel_core::telemetry::{Collector, PwmMode, SafetyAlert, TelemetrySnapshot};
-use herschel_core::{KRAKEN_BASE, RGB_CONTROLLER};
-use herschel_daemon::server::ShutdownHandle;
-use herschel_daemon::state::{Daemon, LcdBackend, RgbBackend};
-use herschel_daemon::{Paths, Server};
-use herschel_hardware_linux::SysfsRoot;
-use herschel_hardware_linux::testing::{FakeController, FakeKraken, FakeSysfs};
+use kori_core::telemetry::{Collector, PwmMode, SafetyAlert, TelemetrySnapshot};
+use kori_core::{KRAKEN_BASE, RGB_CONTROLLER};
+use kori_daemon::server::ShutdownHandle;
+use kori_daemon::state::{Daemon, LcdBackend, RgbBackend};
+use kori_daemon::{Paths, Server};
+use kori_hardware_linux::SysfsRoot;
+use kori_hardware_linux::testing::{FakeController, FakeKraken, FakeSysfs};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -123,10 +123,8 @@ impl Harness {
         lcd: LcdBackend,
     ) -> Self {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!(
-            "herschel-ipc-{name}-{}-{unique}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("kori-ipc-{name}-{}-{unique}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
 
         let fake = FakeSysfs::new(&format!("ipc-{name}-{unique}"));
@@ -159,7 +157,7 @@ impl Harness {
             lcd,
         )
         .unwrap();
-        let listener = herschel_daemon::server::bind_socket(&paths.socket).unwrap();
+        let listener = kori_daemon::server::bind_socket(&paths.socket).unwrap();
         let server = Server::attach(listener, daemon);
         let shutdown = server.shutdown_handle();
         let thread = std::thread::spawn(move || server.run());
@@ -268,7 +266,7 @@ fn read_attribute(hwmon: &Path, attribute: &str) -> String {
 }
 
 /// Send an Apply and return the outcome the daemon reported.
-fn apply(client: &mut Client, program: CoolingProgram) -> herschel_core::ipc::ApplyOutcome {
+fn apply(client: &mut Client, program: CoolingProgram) -> kori_core::ipc::ApplyOutcome {
     match client.request(Request::ApplyProgram { program }).unwrap() {
         Response::Applied(outcome) => *outcome,
         other => panic!("expected an apply outcome, got {other:?}"),
@@ -280,7 +278,7 @@ fn a_client_completes_the_handshake_and_reads_status() {
     let harness = Harness::start("handshake");
     let mut client = harness.client();
 
-    assert_eq!(client.daemon_version(), herschel_daemon::DAEMON_VERSION);
+    assert_eq!(client.daemon_version(), kori_daemon::DAEMON_VERSION);
 
     let status = client.status().unwrap();
     assert_eq!(status.protocol_version, PROTOCOL_VERSION);
@@ -680,7 +678,7 @@ fn a_profile_bound_to_an_absent_device_is_refused() {
     let profile = Profile {
         name: "Other machine".into(),
         program: CoolingProgram::Fixed { pump: 120, fan: 80 },
-        device: Some(herschel_core::DeviceId::new(0x1e71, 0x2007)),
+        device: Some(kori_core::DeviceId::new(0x1e71, 0x2007)),
         lighting: Vec::new(),
         display: None,
     };
@@ -716,11 +714,11 @@ fn diagnostics_are_exported_without_serial_numbers() {
 
     let json = serde_json::to_string(&export).unwrap();
     assert!(
-        !json.contains(herschel_hardware_linux::testing::KRAKEN_FIXTURE_SERIAL),
+        !json.contains(kori_hardware_linux::testing::KRAKEN_FIXTURE_SERIAL),
         "kraken serial leaked"
     );
     assert!(
-        !json.contains(herschel_hardware_linux::testing::RGB_FIXTURE_SERIAL),
+        !json.contains(kori_hardware_linux::testing::RGB_FIXTURE_SERIAL),
         "rgb serial leaked"
     );
     assert!(json.contains("device_discovered"), "{json}");
@@ -928,7 +926,7 @@ fn a_sample_reaches_the_client_inside_the_freshness_budget() {
     let harness = Harness::start_paced(
         "telemetry-age",
         true,
-        Duration::from_millis(herschel_core::telemetry::SAMPLE_INTERVAL_MS),
+        Duration::from_millis(kori_core::telemetry::SAMPLE_INTERVAL_MS),
         |_, _| {},
     );
     let mut client = harness.client();
@@ -936,7 +934,7 @@ fn a_sample_reaches_the_client_inside_the_freshness_budget() {
     let mut ages = Vec::new();
     for _ in 0..6 {
         std::thread::sleep(Duration::from_millis(
-            herschel_core::telemetry::SAMPLE_INTERVAL_MS,
+            kori_core::telemetry::SAMPLE_INTERVAL_MS,
         ));
         let snapshot = client.telemetry().unwrap();
         if !snapshot.kraken.liquid_temperature_c.is_valid() {
@@ -1309,7 +1307,7 @@ fn a_diagnostics_export_records_what_reached_the_hardware() {
     let json = serde_json::to_string(&export).unwrap();
     assert!(json.contains("program_applied"), "{json}");
     assert!(json.contains("\"writes\":4"), "{json}");
-    assert!(!json.contains(herschel_hardware_linux::testing::KRAKEN_FIXTURE_SERIAL));
+    assert!(!json.contains(kori_hardware_linux::testing::KRAKEN_FIXTURE_SERIAL));
 }
 
 // ---------------------------------------------------------------------------
@@ -1368,7 +1366,7 @@ fn an_unvalidated_firmware_refuses_every_write_and_names_the_missing_evidence() 
     assert!(
         matches!(
             &error,
-            herschel_core::client::ClientError::Refused(IpcError::Incompatible { .. })
+            kori_core::client::ClientError::Refused(IpcError::Incompatible { .. })
         ),
         "{error:?}"
     );
@@ -1404,7 +1402,7 @@ fn a_channel_outside_the_reported_topology_is_refused_before_any_write() {
     let mut client = harness.client();
 
     match client.apply_lighting(lighting(4, "FFFFFF")) {
-        Err(herschel_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
+        Err(kori_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
             let message = error.to_string();
             assert!(message.contains("exposes 3"), "{message}");
         }
@@ -1462,7 +1460,7 @@ fn an_absent_controller_reports_no_channels_and_accepts_no_command() {
 
 #[test]
 fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
-    match herschel_hardware_linux::rgb::VALIDATED_FIRMWARE.first() {
+    match kori_hardware_linux::rgb::VALIDATED_FIRMWARE.first() {
         Some(firmware) => {
             let harness = Harness::start_lit("lighting-validated", firmware, 3);
             let mut client = harness.client();
@@ -1490,7 +1488,7 @@ fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
 
             // A different color inside the cadence floor is refused outright.
             match client.apply_lighting(lighting(2, "00FF00")) {
-                Err(herschel_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
+                Err(kori_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
                     assert!(error.to_string().contains("one every"), "{error}");
                 }
                 other => panic!("expected a cadence rejection, got {other:?}"),
@@ -1499,7 +1497,7 @@ fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
             // Off is a different program, so it is a real write once the floor
             // has passed.
             std::thread::sleep(Duration::from_millis(
-                herschel_core::lighting::MIN_COMMAND_INTERVAL_MS + 10,
+                kori_core::lighting::MIN_COMMAND_INTERVAL_MS + 10,
             ));
             let off = client
                 .apply_lighting(LightingCommand {
@@ -1537,11 +1535,11 @@ fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
 fn a_saved_effect_round_trips_without_protocol_bytes_reaching_the_file() {
     let harness = Harness::start_lit("lighting-profile", "9.9.9", 3);
     let effect = LightingProgram::Effect {
-        effect: herschel_core::lighting::LightingEffect::SpectrumWave,
+        effect: kori_core::lighting::LightingEffect::SpectrumWave,
         colors: Vec::new(),
         brightness: Brightness::new(80).unwrap(),
-        speed: herschel_core::lighting::EffectSpeed::Faster,
-        direction: herschel_core::lighting::EffectDirection::Backward,
+        speed: kori_core::lighting::EffectSpeed::Faster,
+        direction: kori_core::lighting::EffectDirection::Backward,
     };
     let profile = Profile {
         name: "Wave".into(),
@@ -1794,7 +1792,7 @@ fn a_machine_with_no_reachable_panel_reports_no_geometry_and_refuses_frames() {
     assert!(
         matches!(
             &error,
-            herschel_core::client::ClientError::Refused(IpcError::Incompatible { .. })
+            kori_core::client::ClientError::Refused(IpcError::Incompatible { .. })
         ),
         "{error:?}"
     );
@@ -1819,7 +1817,7 @@ fn a_panel_that_answered_is_recorded_with_its_geometry_and_its_settings() {
     // The geometry is a candidate this product carries, and the record says so
     // rather than implying the device reported it.
     match &lcd.panel {
-        herschel_core::capability::Evidenced::Known { source, .. } => {
+        kori_core::capability::Evidenced::Known { source, .. } => {
             assert!(source.contains("candidate"), "{source}");
             assert!(source.contains("reports no"), "{source}");
         }
@@ -1843,7 +1841,7 @@ fn an_unvalidated_firmware_refuses_every_frame_and_names_the_missing_evidence() 
     assert!(
         matches!(
             &error,
-            herschel_core::client::ClientError::Refused(IpcError::Incompatible { .. })
+            kori_core::client::ClientError::Refused(IpcError::Incompatible { .. })
         ),
         "{error:?}"
     );
@@ -1877,7 +1875,7 @@ fn an_invalid_preset_is_refused_before_the_capability_gate_is_even_reached() {
         .apply_display(preset(DisplayMode::Image))
         .unwrap_err();
     match &error {
-        herschel_core::client::ClientError::Refused(IpcError::Display(display)) => {
+        kori_core::client::ClientError::Refused(IpcError::Display(display)) => {
             assert_eq!(display.field(), Some("image"));
         }
         other => panic!("expected a typed display refusal, got {other:?}"),
@@ -1890,7 +1888,7 @@ fn every_validated_firmware_completes_the_whole_frame_path_from_the_client() {
     // which is the correct failure direction: nothing is claimed to work on a
     // firmware nobody has driven. Once filled, this proves the round trip from
     // the client's own entry point.
-    for firmware in herschel_hardware_linux::lcd::VALIDATED_FIRMWARE {
+    for firmware in kori_hardware_linux::lcd::VALIDATED_FIRMWARE {
         let harness = Harness::start_lcd("lcd-validated", firmware);
         let mut client = harness.client();
 
@@ -1917,8 +1915,8 @@ fn every_validated_firmware_completes_the_whole_frame_path_from_the_client() {
 fn a_saved_profile_round_trips_its_panel_preset_without_pixels_reaching_the_file() {
     let harness = Harness::start_lcd("lcd-profile", "2.0.4");
     let mut wanted = preset(DisplayMode::DualInfographic);
-    wanted.readings[0].metric = herschel_core::display::LcdMetric::LiquidTemperature;
-    wanted.orientation = herschel_core::display::Orientation::Deg180;
+    wanted.readings[0].metric = kori_core::display::LcdMetric::LiquidTemperature;
+    wanted.orientation = kori_core::display::Orientation::Deg180;
 
     let profile = Profile {
         name: "Panel".into(),

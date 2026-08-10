@@ -1,4 +1,4 @@
-# Herschel
+# Kori
 
 Native open source Linux application to monitor and control NZXT hardware.
 
@@ -72,12 +72,12 @@ The daemon stays independent from the window in order to serialize commands, det
 
 ## Access
 
-Neither binary ever runs as root, so writing needs the kernel files to be reachable as your own user. `packaging/udev/70-herschel.rules` grants exactly that, on the two allowlisted devices and nothing else:
+Neither binary ever runs as root, so writing needs the kernel files to be reachable as your own user. `packaging/udev/70-kori.rules` grants exactly that, on the two allowlisted devices and nothing else:
 
 ```bash
-sudo groupadd --system herschel
-sudo usermod --append --groups herschel "$USER"
-sudo install -m 0644 packaging/udev/70-herschel.rules /etc/udev/rules.d/
+sudo groupadd --system kori
+sudo usermod --append --groups kori "$USER"
+sudo install -m 0644 packaging/udev/70-kori.rules /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo udevadm trigger --action=change --subsystem-match=hwmon
 ```
@@ -92,11 +92,11 @@ The two `hidraw` nodes and the Kraken's `usbfs` node are handed to the logged-in
 cargo build --release
 
 # Record the real capabilities of the machine (read only, no socket).
-./target/release/herscheld --capabilities > docs/capability-record.json
+./target/release/korid --capabilities > docs/capability-record.json
 
 # Start the service, then the interface.
-./target/release/herscheld &
-./target/release/herschel
+./target/release/korid &
+./target/release/kori
 ```
 
 To start the daemon with your desktop session, install it as a user unit.
@@ -104,15 +104,15 @@ Nothing here needs root: the binary goes to your own `~/.local/bin` and the unit
 to your own `systemd --user` instance.
 
 ```bash
-install -Dm0755 target/release/herscheld ~/.local/bin/herscheld
-install -Dm0644 packaging/systemd/herscheld.service ~/.config/systemd/user/herscheld.service
+install -Dm0755 target/release/korid ~/.local/bin/korid
+install -Dm0644 packaging/systemd/korid.service ~/.config/systemd/user/korid.service
 systemctl --user daemon-reload
-systemctl --user enable --now herscheld.service
+systemctl --user enable --now korid.service
 ```
 
-`systemctl --user status herscheld` reports the socket it bound and how many
+`systemctl --user status korid` reports the socket it bound and how many
 attributes it found writable on each device. Reinstall the binary and run
-`systemctl --user restart herscheld` after a rebuild, because capabilities are
+`systemctl --user restart korid` after a rebuild, because capabilities are
 resolved when the daemon opens the devices.
 
 The unit is wanted by `graphical-session.target`, not `default.target`, so it
@@ -120,7 +120,7 @@ starts with your session rather than with the machine. `uaccess` grants the
 hidraw nodes through a session ACL, and a daemon started before that ACL exists
 reports the panel and the RGB controller as permission denied until it is
 restarted. If you enabled an earlier version of the unit, run
-`systemctl --user disable herscheld.service` once before enabling it again, so
+`systemctl --user disable korid.service` once before enabling it again, so
 the stale `default.target` link goes away.
 
 The daemon refuses to start as root. Without the udev rule above, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
@@ -129,13 +129,13 @@ Environment variables read:
 
 | Variable | Role |
 |---|---|
-| `HERSCHEL_SOCKET` | Unix socket path |
-| `HERSCHEL_CONFIG_DIR` | Configuration directory |
-| `HERSCHEL_RUNTIME_DIR` | Lock and socket directory |
-| `HERSCHEL_SYSFS_ROOT` | sysfs root, for tests against a fake tree |
-| `HERSCHEL_PROC_ROOT` | `/proc` root, for the same tests |
-| `HERSCHEL_STARTUP_TRACE` | Prints the delay to the first frame |
-| `HERSCHEL_EXIT_AFTER_FIRST_FRAME` | Exits after the first frame, to measure startup |
+| `KORI_SOCKET` | Unix socket path |
+| `KORI_CONFIG_DIR` | Configuration directory |
+| `KORI_RUNTIME_DIR` | Lock and socket directory |
+| `KORI_SYSFS_ROOT` | sysfs root, for tests against a fake tree |
+| `KORI_PROC_ROOT` | `/proc` root, for the same tests |
+| `KORI_STARTUP_TRACE` | Prints the delay to the first frame |
+| `KORI_EXIT_AFTER_FIRST_FRAME` | Exits after the first frame, to measure startup |
 
 ## Validation
 
@@ -158,8 +158,8 @@ Explicitly out of scope: Web Integrations, cloud, accounts, firmware updates, re
 
 ## Product plan
 
-- [Full PRD](./tasks/prd-native-herschel-hardware-control.md)
-- [Epic and story tracking](./tasks/prd-native-herschel-hardware-control-status.json)
+- [Full PRD](./tasks/prd-native-kori-hardware-control.md)
+- [Epic and story tracking](./tasks/prd-native-kori-hardware-control-status.json)
 
 The first story validates GPUI under Wayland and X11 with a representative LCD screen, then measures startup, memory, CPU, keyboard focus and scaling before extending the interface.
 

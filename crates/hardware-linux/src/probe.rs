@@ -9,12 +9,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use herschel_core::capability::{
+use kori_core::capability::{
     CAPABILITY_SCHEMA_VERSION, Capability, CapabilityId, CapabilityRecord, CapabilityState,
     DeviceRecord, Evidenced, HwmonCapabilities, LcdTopology, ProbeContext, RejectedDevice,
     RgbTopology, SupportState,
 };
-use herschel_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, is_allowlisted};
+use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, is_allowlisted};
 
 use crate::hwmon::{self, HwmonInstance, curve_is_complete};
 use crate::sysfs::SysfsRoot;
@@ -566,7 +566,7 @@ mod tests {
 
     /// A topology as a healthy controller would report it.
     fn answered_topology(firmware: &str, channels: u8) -> RgbTopology {
-        use herschel_core::capability::RgbChannel;
+        use kori_core::capability::RgbChannel;
         RgbTopology {
             node: Evidenced::known("/dev/hidraw12".into(), "sysfs"),
             firmware: Evidenced::known(firmware.into(), "report 0x11 0x01"),
@@ -678,7 +678,7 @@ mod tests {
 
     /// A Kraken topology as an answering unit with a panel reports it.
     fn answered_lcd(firmware: &str) -> LcdTopology {
-        use herschel_core::capability::LcdDisplaySettings;
+        use kori_core::capability::LcdDisplaySettings;
         LcdTopology {
             hid_node: Evidenced::known("/dev/hidraw10".into(), "sysfs"),
             bulk_node: Evidenced::known("/dev/bus/usb/001/004 interface 0".into(), "sysfs"),

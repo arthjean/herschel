@@ -161,7 +161,7 @@ that the pump stopped, and it is not proof that it is turning.
 ### Telemetry, through the real socket
 
 Read with a plain newline-JSON client against
-`/run/user/1000/herschel/herschel.sock`:
+`/run/user/1000/kori/kori.sock`:
 
 | Section | Reading |
 |---|---|
@@ -302,7 +302,7 @@ as the static shell did. `RssAnon` rises by 2.1 MiB over EP-001, which is the
 four rolling windows plus the client's tracked metrics, and stays inside the
 Month-6 target as well as the Month-1 one.
 
-Cold start, five launches with `HERSCHEL_STARTUP_TRACE=1` on Wayland: 374.8, 289.4,
+Cold start, five launches with `KORI_STARTUP_TRACE=1` on Wayland: 374.8, 289.4,
 326.8, 299.2, 344.0 ms. Median **326.8 ms** against a 700 ms budget. Startup is
 unchanged from EP-001 because the daemon connection moved off the launch path:
 the worker thread connects while the window is already opening.

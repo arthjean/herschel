@@ -9,23 +9,23 @@
 
 use std::time::{Duration, Instant};
 
-use herschel_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord, LcdTopology};
-use herschel_core::diagnostics::{DiagnosticsLog, EventKind};
-use herschel_core::display::DisplayPreset;
-use herschel_core::ipc::{
+use kori_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord, LcdTopology};
+use kori_core::diagnostics::{DiagnosticsLog, EventKind};
+use kori_core::display::DisplayPreset;
+use kori_core::ipc::{
     AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, ConfigState, DaemonStatus,
     DeviceStatus, DisplayOutcome, HardwareState, IpcError, LightingOutcome, OwnershipConflict,
     PROTOCOL_VERSION, Request, Response,
 };
-use herschel_core::lighting::{LightingCommand, validate_command};
-use herschel_core::profile::{
+use kori_core::lighting::{LightingCommand, validate_command};
+use kori_core::profile::{
     CoolingProgram, Incompatibility, Profile, incompatibilities, program_incompatibilities,
     validate_program,
 };
-use herschel_core::telemetry::{CollectorFailure, TelemetrySnapshot};
-use herschel_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, capability::Evidenced};
-use herschel_hardware_linux::SysfsRoot;
-use herschel_hardware_linux::probe::probe;
+use kori_core::telemetry::{CollectorFailure, TelemetrySnapshot};
+use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, capability::Evidenced};
+use kori_hardware_linux::SysfsRoot;
+use kori_hardware_linux::probe::probe;
 
 use crate::config::{ConfigError, Configuration};
 use crate::cooling::CoolingExecutor;
@@ -48,7 +48,7 @@ pub enum RgbBackend {
     /// Open the `hidraw` node the sysfs probe resolved.
     Hidraw,
     /// Talk to a supplied transport instead.
-    Transport(Box<dyn herschel_hardware_linux::rgb::HidTransport>),
+    Transport(Box<dyn kori_hardware_linux::rgb::HidTransport>),
     /// Do not talk to the controller at all.
     None,
 }
@@ -63,7 +63,7 @@ pub enum LcdBackend {
     /// Open the `hidraw` node and claim the bulk interface sysfs resolved.
     Nodes,
     /// Talk to a supplied link instead.
-    Link(Box<herschel_hardware_linux::lcd::LcdLink>),
+    Link(Box<kori_hardware_linux::lcd::LcdLink>),
     /// Do not talk to the panel at all.
     None,
 }
@@ -98,7 +98,7 @@ impl Daemon {
         Self::start_with(
             paths,
             sysfs,
-            &herschel_hardware_linux::sensors::proc_root_from_env(),
+            &kori_hardware_linux::sensors::proc_root_from_env(),
             default_interval(),
             RgbBackend::Hidraw,
             LcdBackend::Nodes,
@@ -973,16 +973,16 @@ impl Daemon {
 /// is what keeps "the topology is unknown" and "the write is refused" the same
 /// fact rather than two that could drift apart.
 fn connect_lighting(capabilities: &mut CapabilityRecord, backend: RgbBackend) -> LightingExecutor {
-    use herschel_hardware_linux::rgb::{self, HidTransport};
+    use kori_hardware_linux::rgb::{self, HidTransport};
 
     let (topology, transport): (_, Option<Box<dyn HidTransport>>) = match backend {
         RgbBackend::None => return LightingExecutor::absent(),
         RgbBackend::Hidraw => {
             let node = capabilities
-                .device(herschel_core::RGB_CONTROLLER)
+                .device(kori_core::RGB_CONTROLLER)
                 .filter(|device| device.is_supported())
                 .and_then(|device| {
-                    herschel_hardware_linux::usb::hidraw_node(std::path::Path::new(
+                    kori_hardware_linux::usb::hidraw_node(std::path::Path::new(
                         &device.usb.sysfs_path,
                     ))
                 });
@@ -1000,7 +1000,7 @@ fn connect_lighting(capabilities: &mut CapabilityRecord, backend: RgbBackend) ->
     };
 
     let channels = topology.channels.value().cloned().unwrap_or_default();
-    herschel_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
+    kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
 
     // A controller reporting zero channels is not a controller this daemon can
     // address, so it holds no handle to it.
@@ -1018,7 +1018,7 @@ fn connect_lighting(capabilities: &mut CapabilityRecord, backend: RgbBackend) ->
 /// Half a transport is worse than none: a link that could send a display
 /// command but not a frame would let the daemon dim a panel it cannot draw on.
 fn connect_display(capabilities: &mut CapabilityRecord, backend: LcdBackend) -> DisplayExecutor {
-    use herschel_hardware_linux::lcd;
+    use kori_hardware_linux::lcd;
 
     let (topology, link): (LcdTopology, _) = match backend {
         LcdBackend::None => return DisplayExecutor::absent(),
@@ -1029,7 +1029,7 @@ fn connect_display(capabilities: &mut CapabilityRecord, backend: LcdBackend) -> 
                 .map(|device| std::path::PathBuf::from(&device.usb.sysfs_path));
             let node = device
                 .as_deref()
-                .and_then(herschel_hardware_linux::usb::hidraw_node);
+                .and_then(kori_hardware_linux::usb::hidraw_node);
             lcd::connect(device.as_deref(), node)
         }
         LcdBackend::Link(mut link) => {
@@ -1041,7 +1041,7 @@ fn connect_display(capabilities: &mut CapabilityRecord, backend: LcdBackend) -> 
     };
 
     let panel = topology.panel.value().cloned();
-    herschel_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
+    kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
 
     match (link, panel) {
         (Some(link), Some(panel)) => DisplayExecutor::connected(link, panel),

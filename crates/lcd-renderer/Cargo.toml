@@ -1,5 +1,5 @@
 [package]
-name = "herschel-lcd-renderer"
+name = "kori-lcd-renderer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Turns one DisplayPreset into the exact framebuffer the Kraken panel takes"
 
 [dependencies]
-herschel-core.workspace = true
+kori-core.workspace = true
 thiserror.workspace = true
 
 # Decodes the static image US-017 lets an operator pick. Default features are

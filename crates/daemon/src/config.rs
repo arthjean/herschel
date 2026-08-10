@@ -12,10 +12,10 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use herschel_core::display::DisplayPreset;
-use herschel_core::ipc::ConfigState;
-use herschel_core::lighting::LightingCommand;
-use herschel_core::profile::{
+use kori_core::display::DisplayPreset;
+use kori_core::ipc::ConfigState;
+use kori_core::lighting::LightingCommand;
+use kori_core::profile::{
     CONFIG_SCHEMA_VERSION, CoolingProgram, Profile, SAFE_PROFILE_NAME, ValidationError,
     validate_profile,
 };
@@ -464,7 +464,7 @@ fn write_atomically(path: &Path, document: &ConfigDocument) -> Result<(), Config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_core::profile::{CoolingProgram, TemperatureCurve};
+    use kori_core::profile::{CoolingProgram, TemperatureCurve};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -477,7 +477,7 @@ mod tests {
         fn new(name: &str) -> Self {
             let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
             let dir = std::env::temp_dir().join(format!(
-                "herschel-config-{name}-{}-{unique}",
+                "kori-config-{name}-{}-{unique}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
@@ -509,9 +509,9 @@ mod tests {
     fn lit(channel: u8, red: u8) -> LightingCommand {
         LightingCommand {
             channel,
-            program: herschel_core::lighting::LightingProgram::Fixed {
-                color: herschel_core::lighting::Rgb::new(red, 0, 0),
-                brightness: herschel_core::lighting::Brightness::FULL,
+            program: kori_core::lighting::LightingProgram::Fixed {
+                color: kori_core::lighting::Rgb::new(red, 0, 0),
+                brightness: kori_core::lighting::Brightness::FULL,
             },
         }
     }
@@ -522,9 +522,9 @@ mod tests {
         // was left on, without the operator having saved a profile for it.
         let temp = TempConfig::new("session-display");
         let mut preset = DisplayPreset::default_infographic();
-        preset.mode = herschel_core::display::DisplayMode::SingleReading;
-        preset.orientation = herschel_core::display::Orientation::Deg180;
-        preset.brightness = herschel_core::lighting::Brightness::new(45).unwrap();
+        preset.mode = kori_core::display::DisplayMode::SingleReading;
+        preset.orientation = kori_core::display::Orientation::Deg180;
+        preset.brightness = kori_core::lighting::Brightness::new(45).unwrap();
 
         let mut config = Configuration::load(temp.file());
         assert_eq!(config.display_to_restore(), None);
@@ -709,7 +709,7 @@ mod tests {
                 pump: curve.clone(),
                 fan: curve.clone(),
             },
-            device: Some(herschel_core::KRAKEN_BASE),
+            device: Some(kori_core::KRAKEN_BASE),
             lighting: Vec::new(),
             display: None,
         };

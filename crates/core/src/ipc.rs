@@ -57,17 +57,17 @@ pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 
 /// Environment variable that overrides the socket path, used by tests and by
 /// anyone running a second daemon against a fake sysfs root.
-pub const SOCKET_PATH_ENV: &str = "HERSCHEL_SOCKET";
+pub const SOCKET_PATH_ENV: &str = "KORI_SOCKET";
 
 /// Socket file name inside the per-user runtime directory.
-pub const SOCKET_FILE_NAME: &str = "herschel.sock";
+pub const SOCKET_FILE_NAME: &str = "kori.sock";
 
 /// Environment variable that overrides the runtime directory holding the
 /// socket and the per-device locks.
-pub const RUNTIME_DIR_ENV: &str = "HERSCHEL_RUNTIME_DIR";
+pub const RUNTIME_DIR_ENV: &str = "KORI_RUNTIME_DIR";
 
 /// Directory name both processes append to a base runtime directory.
-const APP_DIR: &str = "herschel";
+const APP_DIR: &str = "kori";
 
 /// Resolve the runtime directory from explicit inputs.
 ///
@@ -679,7 +679,7 @@ mod tests {
                 Some(Path::new("/run/user/1000")),
                 Some(Path::new("/home/a"))
             ),
-            Path::new("/run/user/1000/herschel")
+            Path::new("/run/user/1000/kori")
         );
     }
 
@@ -688,7 +688,7 @@ mod tests {
         let directory = runtime_dir(None, Some(Path::new("/run/user/1000")), None);
         assert_eq!(
             directory.join(SOCKET_FILE_NAME),
-            Path::new("/run/user/1000/herschel/herschel.sock")
+            Path::new("/run/user/1000/kori/kori.sock")
         );
     }
 
@@ -696,7 +696,7 @@ mod tests {
     fn config_recovery_message_names_the_preserved_file() {
         let state = ConfigState::Recovered {
             detail: "expected schema 1, found 9".into(),
-            preserved_path: "/home/a/.config/herschel/config.toml.corrupt".into(),
+            preserved_path: "/home/a/.config/kori/config.toml.corrupt".into(),
             recovery_action: "Re-save a profile to replace it.".into(),
         };
         let message = state.recovery_message().unwrap();

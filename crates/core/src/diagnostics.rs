@@ -455,7 +455,7 @@ mod tests {
             1,
             EventKind::DaemonStarted {
                 version: "0.1.0".into(),
-                socket_path: "/run/user/1000/herschel.sock".into(),
+                socket_path: "/run/user/1000/kori.sock".into(),
             },
         );
         let export = log.export(2, "0.1.0", None);

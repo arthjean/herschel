@@ -12,15 +12,15 @@
 use std::process::ExitCode;
 
 use gpui::{AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
-use herschel_app::assets::Assets;
-use herschel_app::feed::Feed;
-use herschel_app::offline::NoNetwork;
-use herschel_app::shell::{Shell, key_bindings};
-use herschel_app::startup::{
+use kori_app::assets::Assets;
+use kori_app::feed::Feed;
+use kori_app::offline::NoNetwork;
+use kori_app::shell::{Shell, key_bindings};
+use kori_app::startup::{
     EXIT_AFTER_FIRST_FRAME_ENV, StartupTrace, detect_backend_from_env, is_enabled,
 };
-use herschel_app::theme::{PRODUCT_NAME, WINDOW_HEIGHT, WINDOW_WIDTH};
-use herschel_core::ipc::socket_path_from_env;
+use kori_app::theme::{PRODUCT_NAME, WINDOW_HEIGHT, WINDOW_WIDTH};
+use kori_core::ipc::socket_path_from_env;
 
 fn main() -> ExitCode {
     let mut trace = StartupTrace::start();
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
     let socket = socket_path_from_env();
     let (feed, notifications) = Feed::spawn(
         socket,
-        std::time::Duration::from_millis(herschel_core::telemetry::SAMPLE_INTERVAL_MS),
+        std::time::Duration::from_millis(kori_core::telemetry::SAMPLE_INTERVAL_MS),
     );
     let exit_after_first_frame = is_enabled(EXIT_AFTER_FIRST_FRAME_ENV);
 
@@ -74,7 +74,7 @@ fn main() -> ExitCode {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     // The window draws its own caption bar, its own frame and
-                    // its own resize band: see `herschel_app::window_chrome`. The
+                    // its own resize band: see `kori_app::window_chrome`. The
                     // title is still declared, because that is what a task
                     // switcher and a window list read.
                     window_decorations: Some(gpui::WindowDecorations::Client),

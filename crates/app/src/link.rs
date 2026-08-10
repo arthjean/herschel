@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
-use herschel_core::DeviceId;
-use herschel_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
-use herschel_core::ipc::{AccessMode, ChannelState, DaemonStatus};
-use herschel_core::profile::{Channel, Profile};
-use herschel_core::telemetry::{
+use kori_core::DeviceId;
+use kori_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
+use kori_core::ipc::{AccessMode, ChannelState, DaemonStatus};
+use kori_core::profile::{Channel, Profile};
+use kori_core::telemetry::{
     Collector, CollectorFailure, STALE_AFTER_MS, SafetyAlert, TelemetrySnapshot,
 };
 
@@ -276,7 +276,7 @@ impl LinkState {
     ///
     /// A program is offered only when *every* capability it writes is
     /// available, and the list comes from
-    /// [`herschel_core::profile::CoolingProgram::required_capabilities`], which is
+    /// [`kori_core::profile::CoolingProgram::required_capabilities`], which is
     /// the same list the daemon checks in `program_incompatibilities`. A
     /// control that stays enabled here is therefore one the daemon would
     /// accept, rather than one that fails on the far side of the socket.
@@ -382,19 +382,19 @@ impl DeviceSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_core::capability::{
+    use kori_core::capability::{
         CAPABILITY_SCHEMA_VERSION, Capability, CapabilityState, Evidenced, ProbeContext,
         SupportState, UsbIdentity,
     };
-    use herschel_core::ipc::{
+    use kori_core::ipc::{
         BlockedCapability, ConfigState, DeviceStatus, OwnershipConflict, PROTOCOL_VERSION,
     };
-    use herschel_core::profile::{CoolingProgram, TemperatureCurve};
-    use herschel_core::telemetry::{
+    use kori_core::profile::{CoolingProgram, TemperatureCurve};
+    use kori_core::telemetry::{
         ChannelTelemetry, GpuTelemetry, KrakenTelemetry, PwmMode, Reading, SystemTelemetry,
         Unavailable,
     };
-    use herschel_core::{KRAKEN_BASE, RGB_CONTROLLER};
+    use kori_core::{KRAKEN_BASE, RGB_CONTROLLER};
 
     fn device_record(id: DeviceId, capabilities: Vec<Capability>) -> DeviceRecord {
         DeviceRecord {
@@ -478,14 +478,14 @@ mod tests {
                 config: ConfigState::Loaded,
                 cooling: None,
                 lighting: Vec::new(),
-                display: herschel_core::ipc::DisplayState {
+                display: kori_core::ipc::DisplayState {
                     panel: None,
                     committed: None,
                     streaming: false,
                     faulted: None,
                     dropped_frames: 0,
                 },
-                socket_path: "/run/user/1000/herschel/herschel.sock".into(),
+                socket_path: "/run/user/1000/kori/kori.sock".into(),
             }),
             capabilities: Arc::new(CapabilityRecord {
                 schema_version: CAPABILITY_SCHEMA_VERSION,
@@ -598,14 +598,14 @@ mod tests {
     #[test]
     fn without_a_daemon_every_control_is_disabled_with_one_actionable_message() {
         let link = LinkState::Unavailable {
-            message: "The background service is not running. Start herscheld to enable controls."
+            message: "The background service is not running. Start korid to enable controls."
                 .into(),
         };
 
         let state = link.control_state(KRAKEN_BASE, CapabilityId::PumpDuty);
         assert!(state.is_disabled());
         assert!(state.message().unwrap().contains("background service"));
-        assert!(link.banner().unwrap().contains("herscheld"));
+        assert!(link.banner().unwrap().contains("korid"));
         assert!(link.device_rows().is_empty());
         assert!(link.profiles().is_empty());
         assert!(link.telemetry().is_none());
@@ -929,7 +929,7 @@ mod tests {
             *status = Arc::new(DaemonStatus {
                 config: ConfigState::Recovered {
                     detail: "expected schema 1, found 9".into(),
-                    preserved_path: "/home/a/.config/herschel/config.toml.corrupt.1".into(),
+                    preserved_path: "/home/a/.config/kori/config.toml.corrupt.1".into(),
                     recovery_action: "Save a profile to write a fresh configuration.".into(),
                 },
                 ..(**status).clone()

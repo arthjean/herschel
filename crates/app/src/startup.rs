@@ -14,13 +14,13 @@ use std::time::Instant;
 ///
 /// Set to `1` to print the milliseconds from process start to the first
 /// painted frame, which is how the cold-start budget is measured.
-pub const STARTUP_TRACE_ENV: &str = "HERSCHEL_STARTUP_TRACE";
+pub const STARTUP_TRACE_ENV: &str = "KORI_STARTUP_TRACE";
 
 /// Environment variable that closes the window after the first frame.
 ///
 /// Used by the cold-start measurement so a launch can be timed without a human
 /// closing the window.
-pub const EXIT_AFTER_FIRST_FRAME_ENV: &str = "HERSCHEL_EXIT_AFTER_FIRST_FRAME";
+pub const EXIT_AFTER_FIRST_FRAME_ENV: &str = "KORI_EXIT_AFTER_FIRST_FRAME";
 
 /// A display backend the process can run against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn truthy_environment_values_are_recognized() {
-        let key = "HERSCHEL_TEST_FLAG_TRUTHY";
+        let key = "KORI_TEST_FLAG_TRUTHY";
         for value in ["1", "true", "yes", "on", " 1 "] {
             unsafe { std::env::set_var(key, value) };
             assert!(is_enabled(key), "{value:?} should be truthy");

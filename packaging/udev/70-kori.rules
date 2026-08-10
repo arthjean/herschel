@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Arthur Jean
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# herschel grants access to exactly two devices, 1e71:300e (Kraken
+# kori grants access to exactly two devices, 1e71:300e (Kraken
 # Base) and 1e71:2021 (RGB Controller), and to nothing else. Every rule below
 # names one of those two identifiers.
 
@@ -31,4 +31,4 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="300e", TAG+="uaccess
 # leaves the attributes root-owned instead of world-writable, and systemd-udevd
 # logs the failure rather than swallowing it.
 ACTION=="add|change", SUBSYSTEM=="hwmon", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300e", \
-  RUN+="/bin/sh -c 'cd %S%p && chgrp herschel pwm[12] pwm[12]_enable temp[12]_auto_point*_pwm && chmod g+w pwm[12] pwm[12]_enable temp[12]_auto_point*_pwm'"
+  RUN+="/bin/sh -c 'cd %S%p && chgrp kori pwm[12] pwm[12]_enable temp[12]_auto_point*_pwm && chmod g+w pwm[12] pwm[12]_enable temp[12]_auto_point*_pwm'"

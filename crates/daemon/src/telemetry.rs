@@ -21,14 +21,14 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use herschel_core::telemetry::{
+use kori_core::telemetry::{
     AlertTracker, Collector, CollectorFailure, GpuTelemetry, KrakenTelemetry, SAMPLE_INTERVAL_MS,
     SafetyAlert, SystemTelemetry, TelemetrySnapshot, Unavailable,
 };
-use herschel_hardware_linux::SysfsRoot;
-use herschel_hardware_linux::gpu::GpuSensor;
-use herschel_hardware_linux::hwmon::KrakenHwmon;
-use herschel_hardware_linux::sensors::SystemSensors;
+use kori_hardware_linux::SysfsRoot;
+use kori_hardware_linux::gpu::GpuSensor;
+use kori_hardware_linux::hwmon::KrakenHwmon;
+use kori_hardware_linux::sensors::SystemSensors;
 
 /// Longest a collector waits before noticing a shutdown request.
 const SHUTDOWN_GRANULARITY: Duration = Duration::from_millis(50);
@@ -324,7 +324,7 @@ pub fn default_interval() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_hardware_linux::testing::FakeSysfs;
+    use kori_hardware_linux::testing::FakeSysfs;
 
     /// Wait until `condition` holds, or give up after `limit`.
     fn wait_for(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {

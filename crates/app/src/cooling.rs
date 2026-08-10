@@ -10,11 +10,11 @@
 //! readback is what lets the screen tell the two apart, and it is the whole
 //! basis for saying a write did not land.
 
-use herschel_core::profile::{
+use kori_core::profile::{
     CURVE_NODE_COUNT, Channel, CoolingProgram, CurveNodes, MAX_DUTY, MAX_DUTY_PERCENT,
     ValidationError, duty_from_percent, duty_to_percent, validate_program,
 };
-use herschel_core::telemetry::{KrakenTelemetry, PwmMode};
+use kori_core::telemetry::{KrakenTelemetry, PwmMode};
 
 /// What the Cooling screen is asking the hardware to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,8 +377,8 @@ fn confirms_mode(kraken: Option<&KrakenTelemetry>, channel: Channel, mode: PwmMo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use herschel_core::profile::MIN_PUMP_DUTY;
-    use herschel_core::telemetry::{ChannelTelemetry, Reading};
+    use kori_core::profile::MIN_PUMP_DUTY;
+    use kori_core::telemetry::{ChannelTelemetry, Reading};
 
     fn kraken(mode: PwmMode, pump_duty: u8, fan_duty: u8) -> KrakenTelemetry {
         KrakenTelemetry {
@@ -671,7 +671,7 @@ mod tests {
     fn a_curve_that_does_not_round_trip_leaves_the_plot_alone() {
         let mut editor = CoolingEditor::new();
         let before = *editor.curve(Channel::Pump);
-        let short = herschel_core::profile::TemperatureCurve { points: Vec::new() };
+        let short = kori_core::profile::TemperatureCurve { points: Vec::new() };
         editor.adopt(&CoolingProgram::Curve {
             pump: short.clone(),
             fan: short,
