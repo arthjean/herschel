@@ -242,6 +242,13 @@ pub const RESIZE_BORDER: Pixels = px(10.0);
 /// punctuation inside the fragments it separates.
 pub const META_SEPARATOR: &str = "\u{00b7}";
 
+/// Unit every temperature in the interface is written in.
+///
+/// One constant rather than a literal per readout: a Celsius reading spelled
+/// `31.4 C` on one screen and `31.4 °C` on the next reads as two different
+/// products, and the degree sign is the one part of the unit a reader looks for.
+pub const DEGREE_C: &str = " \u{00b0}C";
+
 /// Font for numeric readouts.
 ///
 /// A fixed-advance family plus `tnum` keeps digit width constant, so a value

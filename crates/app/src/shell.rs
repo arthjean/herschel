@@ -44,9 +44,9 @@ use crate::lighting::{LightingEditor, LightingMode};
 use crate::link::LinkState;
 use crate::metrics::MetricBook;
 use crate::theme::{
-    CARD_INSET, CARD_RADIUS, Color, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH, MENU_MIN_WIDTH,
-    MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, RAIL_WIDTH, ROW_RADIUS,
-    SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE, color, space,
+    CARD_INSET, CARD_RADIUS, Color, DEGREE_C, FOCUS_RING, MENU_MAX_HEIGHT, MENU_MAX_WIDTH,
+    MENU_MIN_WIDTH, MENU_OFFSET, MENU_RADIUS, MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, RAIL_WIDTH,
+    ROW_RADIUS, SWATCH_RADIUS, SWATCH_SIZE, TARGET_MIN, UNOFFICIAL_NOTICE, color, space,
 };
 use crate::window_chrome::{self, DragLatch};
 
@@ -794,7 +794,7 @@ impl Shell {
                                     &book.cpu_temperature.view(now),
                                     temperature,
                                 )
-                                .unit(" C")
+                                .unit(DEGREE_C)
                                 .bar(
                                     book.cpu_temperature
                                         .view(now)
@@ -824,7 +824,7 @@ impl Shell {
                                     &book.gpu_temperature.view(now),
                                     temperature,
                                 )
-                                .unit(" C")
+                                .unit(DEGREE_C)
                                 .bar(
                                     book.gpu_temperature
                                         .view(now)
@@ -866,7 +866,7 @@ impl Shell {
                         metric_row()
                             .child(
                                 Metric::from_view("Liquid", &book.liquid.view(now), temperature)
-                                    .unit(" C")
+                                    .unit(DEGREE_C)
                                     .bar(
                                         book.liquid
                                             .view(now)
