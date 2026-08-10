@@ -1826,9 +1826,6 @@ impl Shell {
                 .gap(space::MD)
                 .w_full()
                 .min_w_0()
-                .pb(space::SM)
-                .border_b_1()
-                .border_color(color::SEPARATOR.hsla())
                 .child(
                     // Claims the line rather than being sized by its own text.
                     // Left to measure itself, the block collapsed to its
@@ -1843,7 +1840,7 @@ impl Shell {
                         .child(
                             div()
                                 .text_color(color::TEXT.hsla())
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui::FontWeight::BOLD)
                                 .child(name),
                         ),
                 ),
