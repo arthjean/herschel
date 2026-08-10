@@ -13,7 +13,6 @@ use std::sync::Arc;
 use herschel_core::DeviceId;
 use herschel_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
 use herschel_core::ipc::{AccessMode, ChannelState, DaemonStatus};
-use herschel_core::lighting::LightingProgram;
 use herschel_core::profile::{Channel, Profile};
 use herschel_core::telemetry::{
     Collector, CollectorFailure, STALE_AFTER_MS, SafetyAlert, TelemetrySnapshot,
@@ -106,15 +105,6 @@ impl LinkState {
             Some(status) => &status.lighting,
             None => &[],
         }
-    }
-
-    /// The program the daemon last committed to a channel, if any.
-    pub fn committed_lighting(&self, channel: u8) -> Option<&LightingProgram> {
-        self.lighting_channels()
-            .iter()
-            .find(|state| state.channel == channel)?
-            .committed
-            .as_ref()
     }
 
     pub fn active_profile(&self) -> Option<&str> {

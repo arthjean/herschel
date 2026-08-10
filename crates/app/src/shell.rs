@@ -292,6 +292,21 @@ impl LightingRow {
     }
 }
 
+/// The second fact a device row carries, if it has one.
+///
+/// A fragment rides on the name's own line, muted and after a separator, and
+/// leaves the row one line tall. A sentence takes a line of its own. Which shape
+/// a row uses is a property of what it has to say rather than of the row: a
+/// channel's is "Channel 1", and a panel's is a mode, an orientation and a
+/// brightness.
+///
+/// One value rather than two optional strings, so a row cannot ask for both and
+/// end up back at the two lines the fragment exists to avoid.
+enum RowNote {
+    Fragment(String),
+    Sentence(String),
+}
+
 /// A brightness drag in progress.
 ///
 /// The track's rectangle is captured when the drag starts rather than read
@@ -1858,28 +1873,30 @@ impl Shell {
             fixed.clone()
         };
 
-        // Short enough to stay on one line beside the controls. What the
-        // controller reported about the channel's contents is a sentence, and
-        // it belongs in the open detail rather than on the line.
-        let activity = match self.link.committed_lighting(channel) {
-            Some(program) => program.summary(),
-            None => "nothing sent yet".to_string(),
-        };
-        // What is plugged in leads, because that is what the operator is
-        // looking at inside the case. The channel number stays on the line
-        // under it, since that is what the write is addressed to.
-        let (title, subtitle) = match self
+        // One line, not two. What is plugged in leads, because that is what the
+        // operator is looking at inside the case, and the channel follows it as
+        // a qualifier because that is what the write is addressed to.
+        //
+        // The accessory name is what the controller answered for the identifier
+        // byte it returned, never a label this product chose. Nothing in that
+        // answer says what kind of thing is on the channel, so nothing here
+        // calls it one: a strip named "Fan 2" would be a fabricated fact sitting
+        // next to a control that writes to real hardware.
+        //
+        // What the channel last had sent to it moved into the open detail with
+        // the accessory summary. Both are sentences, and a line that also
+        // carries a slider and a select has room for neither.
+        let detected = self
             .link
             .lighting_channels()
             .iter()
             .find(|state| state.channel == channel)
-            .filter(|state| !state.accessories.is_empty())
-        {
-            Some(state) => (
-                channel_headline(state),
-                format!("Channel {channel} \u{b7} {activity}"),
-            ),
-            None => (format!("Channel {channel}"), activity),
+            .filter(|state| !state.accessories.is_empty());
+        let (title, qualifier) = match detected {
+            Some(state) => (channel_headline(state), Some(format!("Channel {channel}"))),
+            // With nothing detected the headline is already the channel, so the
+            // qualifier would repeat it word for word.
+            None => (format!("Channel {channel}"), None),
         };
 
         // The thumbnail is what the channel is pending, so a color chosen and
@@ -1940,7 +1957,7 @@ impl Shell {
                         base,
                         row_thumbnail(swatch, false),
                         title,
-                        subtitle,
+                        qualifier.map(RowNote::Fragment),
                         cx,
                     ))
                     .child(self.brightness_slider(
@@ -2197,7 +2214,12 @@ impl Shell {
                         base,
                         row_thumbnail(background, true),
                         "LCD display".to_string(),
-                        subtitle,
+                        // The panel keeps a second line where a channel does
+                        // not: what it is showing is a mode, an orientation and
+                        // a brightness, which is a sentence rather than a
+                        // fragment, and there is one panel row instead of a list
+                        // of them to keep even.
+                        Some(RowNote::Sentence(subtitle)),
                         cx,
                     ))
                     .child(self.brightness_slider(
@@ -2368,19 +2390,27 @@ impl Shell {
     /// Only this part of the line toggles. The brightness and mode controls sit
     /// beside it rather than inside it, so operating one of them cannot also
     /// collapse the row it belongs to.
+    ///
+    /// `note` is the second fact the row carries, if it has one. See
+    /// [`RowNote`] for which of the two shapes to give it.
     fn row_disclosure(
         &self,
         row: LightingRow,
         tab_index: isize,
         thumbnail: Div,
         title: String,
-        subtitle: String,
+        note: Option<RowNote>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let open = self.lighting_open.contains(&row);
         let id = match row {
             LightingRow::Channel(channel) => format!("lighting-row-{channel}"),
             LightingRow::Lcd => "lighting-row-lcd".to_string(),
+        };
+        let (fragment, sentence) = match note {
+            Some(RowNote::Fragment(text)) => (Some(text), None),
+            Some(RowNote::Sentence(text)) => (None, Some(text)),
+            None => (None, None),
         };
 
         div()
@@ -2419,18 +2449,45 @@ impl Shell {
                     .min_w_0()
                     .child(
                         div()
-                            .truncate()
-                            .text_color(color::TEXT.hsla())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(title),
+                            .flex()
+                            .items_baseline()
+                            .gap(space::SM)
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(color::TEXT.hsla())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            // The fragment gives up the width first: the name
+                            // is what the row is, and losing the last word of
+                            // "Channel 1" costs less than losing the last word
+                            // of what is plugged into it.
+                            .children(fragment.map(|fragment| {
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_baseline()
+                                    .gap(space::SM)
+                                    .text_xs()
+                                    .child(
+                                        div()
+                                            .text_color(color::TEXT_DISABLED.hsla())
+                                            .child(META_SEPARATOR),
+                                    )
+                                    .child(
+                                        div().text_color(color::TEXT_MUTED.hsla()).child(fragment),
+                                    )
+                            })),
                     )
-                    .child(
+                    .children(sentence.map(|sentence| {
                         div()
                             .truncate()
                             .text_sm()
                             .text_color(color::TEXT_MUTED.hsla())
-                            .child(subtitle),
-                    ),
+                            .child(sentence)
+                    })),
             )
             .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_lighting_row(row, cx)))
     }
@@ -3339,21 +3396,6 @@ pub fn channel_headline(state: &ChannelState) -> String {
     }
 }
 
-/// What the controller reported about one channel's contents.
-///
-/// The controller reports accessory identifiers and never an LED count, so the
-/// summary says so instead of leaving the operator to assume a number was
-/// measured.
-pub fn accessory_summary(state: &ChannelState) -> String {
-    if state.accessories.is_empty() {
-        return "nothing detected on this channel".to_string();
-    }
-    format!(
-        "{} (LED count not reported by the controller)",
-        state.accessories.join(", ")
-    )
-}
-
 fn setting_row(label: &'static str, value: String) -> Div {
     setting_row_owned(label.to_string(), value)
 }
@@ -3454,25 +3496,23 @@ mod tests {
         }
     }
 
+    /// The row is named by what the controller answered, never by a type this
+    /// product guessed. The controller returns an accessory identifier and a
+    /// name for it, and nothing in that answer says whether the thing is a fan,
+    /// a strip or anything else, so the headline never claims one.
     #[test]
-    fn a_channel_names_what_the_controller_detected_and_never_an_led_count() {
+    fn a_channel_is_named_by_what_the_controller_answered() {
         let one = channel_state(1, &["HUE 2 LED Strip 300 mm"]);
         assert_eq!(channel_headline(&one), "HUE 2 LED Strip 300 mm");
-        let summary = accessory_summary(&one);
-        assert!(summary.contains("HUE 2 LED Strip 300 mm"), "{summary}");
-        assert!(summary.contains("not reported"), "{summary}");
 
         let many = channel_state(2, &["AER RGB 2 120 mm", "AER RGB 2 140 mm"]);
         assert_eq!(channel_headline(&many), "2 accessories");
 
         // Nothing plugged in leaves the channel number as the heading, so a row
-        // is never nameless.
+        // is never nameless. It is also why the row adds no "Channel 2"
+        // qualifier in this case: it would repeat the headline word for word.
         let empty = channel_state(3, &[]);
         assert_eq!(channel_headline(&empty), "Channel 3");
-        assert_eq!(
-            accessory_summary(&empty),
-            "nothing detected on this channel"
-        );
     }
 
     /// Every stop one channel row emits, in the order it draws them.
