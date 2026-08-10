@@ -132,6 +132,7 @@ impl DisplayExecutor {
             panel: self.panel.clone(),
             committed: self.committed().cloned(),
             streaming: self.is_streaming(),
+            faulted: self.faulted.clone(),
             dropped_frames: self.dropped,
         }
     }
@@ -496,6 +497,46 @@ mod tests {
             None,
             "a panel that may or may not have taken the frame is not claimed"
         );
+    }
+
+    #[test]
+    fn a_stopped_stream_names_itself_so_the_screen_can_offer_a_way_back() {
+        let (mut executor, bulk) = executor();
+        let preset = DisplayPreset::default_infographic();
+        executor
+            .apply(&preset, &samples(Some(50.0), Some(40.0)))
+            .unwrap();
+        assert!(executor.state().streaming);
+        assert_eq!(executor.state().faulted, None);
+
+        bulk.fail_with(UsbfsError::PermissionDenied {
+            path: "/dev/bus/usb/001/004".to_string(),
+        });
+        executor.refresh(&samples(Some(60.0), Some(40.0)));
+
+        // The reason travels, not just the stopped flag. `streaming: false` is
+        // equally what a panel nobody has written to reports, so a screen with
+        // only the flag could not tell a fault from an idle panel, and could
+        // not know it has a recovery to offer.
+        let state = executor.state();
+        assert!(!state.streaming);
+        let reason = state.faulted.expect("a stopped stream says why it stopped");
+        assert!(reason.contains("udev"), "{reason}");
+
+        // Only an explicit apply clears it. Nothing about the preset changed
+        // when the transfer failed, so no automatic write has anything to
+        // notice, which is why the screen keeps one deliberate control.
+        bulk.recover();
+        executor.refresh(&samples(Some(61.0), Some(40.0)));
+        assert!(
+            executor.state().faulted.is_some(),
+            "a faulted stream must not restart itself on the next tick"
+        );
+        executor
+            .apply(&preset, &samples(Some(62.0), Some(40.0)))
+            .unwrap();
+        assert_eq!(executor.state().faulted, None);
+        assert!(executor.state().streaming);
     }
 
     #[test]

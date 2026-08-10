@@ -573,6 +573,17 @@ impl BulkRecorder {
             *failure = Some(error);
         }
     }
+
+    /// Let transfers succeed again, as a device coming back would.
+    ///
+    /// The counterpart of [`BulkRecorder::fail_with`]: a stream that stops on a
+    /// failure is supposed to be recoverable, and a recorder that can only ever
+    /// fail cannot exercise the recovery.
+    pub fn recover(&self) {
+        if let Ok(mut failure) = self.failure.lock() {
+            *failure = None;
+        }
+    }
 }
 
 /// Every report a fake device received, shared with the test.

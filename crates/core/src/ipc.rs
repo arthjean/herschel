@@ -39,7 +39,14 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 /// without error and report "nothing was sent" about a panel that was just
 /// dimmed, so the two are separated at the handshake rather than left to
 /// disagree quietly.
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// Version 6 added `DisplayState::faulted`. A version 5 daemon does not send
+/// it and a version 6 client requires it, so the two cannot exchange a status
+/// at all; more importantly, a client that could not see a stopped stream would
+/// leave the operator no way to restart it now that the panel row writes on its
+/// own. Refusing at the handshake says that, where a defaulted field would have
+/// reported a healthy stream that had in fact stopped.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Largest frame either side will read.
 ///
@@ -248,6 +255,14 @@ pub struct DisplayState {
     pub committed: Option<DisplayPreset>,
     /// True while a preset that reads telemetry is being streamed.
     pub streaming: bool,
+    /// Why the stream stopped, once a transfer failed.
+    ///
+    /// [`DisplayState::streaming`] cannot say this on its own: it is equally
+    /// false for a preset that reads no telemetry and for a panel that was
+    /// never written. US-018 stops a faulted stream until an explicit
+    /// recoverable state arrives, and a screen that cannot see the fault cannot
+    /// offer one.
+    pub faulted: Option<String>,
     /// Frames dropped because a transfer was still in flight when the next
     /// sample arrived. US-018 keeps at most one frame pending, so this counts
     /// what that ceiling discarded.

@@ -481,6 +481,7 @@ mod tests {
                     panel: None,
                     committed: None,
                     streaming: false,
+                    faulted: None,
                     dropped_frames: 0,
                 },
                 socket_path: "/run/user/1000/herschel/herschel.sock".into(),
