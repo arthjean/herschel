@@ -745,6 +745,28 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let selected = destination == current;
+        // The label color, which the icon takes too: an entry whose glyph and
+        // word disagreed would read as a word with a decoration beside it.
+        let ink = if selected {
+            color::TEXT_ON_ACCENT.hsla()
+        } else {
+            color::TEXT.hsla()
+        };
+        // A menu row's fills, with one exception. Where a menu marks its current
+        // value with a whisper, because choosing there has not happened yet, the
+        // rail marks the destination the operator is standing in and takes the
+        // accent for it. Everything else is the menu's: no fill at rest, and a
+        // 5% wash under the pointer rather than a grey block.
+        let resting = if selected {
+            color::ACCENT.hsla()
+        } else {
+            color::TEXT.alpha(0.0)
+        };
+        let hovered = if selected {
+            color::ACCENT_HOVER.hsla()
+        } else {
+            color::TEXT.alpha(0.05)
+        };
 
         div()
             .id(SharedString::from(destination.label()))
@@ -754,35 +776,28 @@ impl Shell {
             .items_center()
             .gap(space::SM)
             .w_full()
+            // The menu row's padding, but not its height: a menu row is 28 tall
+            // because it is one of a list the pointer is already inside, and a
+            // rail entry is a target the pointer travels to, so it keeps the
+            // floor every pointer target in this interface keeps.
             .min_h(TARGET_MIN)
-            .px(space::MD)
+            .p(space::SM)
             .rounded(RADIUS)
+            // The ring is reserved rather than added on focus, as it is on every
+            // other control here. The menus add theirs, which is the one part of
+            // their appearance not worth copying: added, it would grow the entry
+            // by two pixels the moment it took focus.
+            .border(FOCUS_RING)
+            .border_color(color::SURFACE.alpha(0.0))
             .cursor_pointer()
-            .text_color(if selected {
-                color::TEXT_ON_ACCENT.hsla()
-            } else {
-                color::TEXT_MUTED.hsla()
-            })
-            .when(selected, |this| this.bg(color::ACCENT.hsla()))
-            .hover(|this| {
-                this.bg(if selected {
-                    color::ACCENT_HOVER.hsla()
-                } else {
-                    color::CONTROL.alpha(0.6)
-                })
-            })
+            .text_xs()
+            .text_color(ink)
+            .bg(resting)
+            .hover(|this| this.bg(hovered))
             .when(focus_visible(), |this| {
-                this.focus(|this| this.border(FOCUS_RING).border_color(color::FOCUS.hsla()))
+                this.focus(|this| this.border_color(color::FOCUS.hsla()))
             })
-            .child(icon(
-                destination.icon(),
-                ICON_SIZE,
-                if selected {
-                    color::TEXT_ON_ACCENT.hsla()
-                } else {
-                    color::TEXT_MUTED.hsla()
-                },
-            ))
+            .child(icon(destination.icon(), ICON_SIZE, ink))
             .child(destination.label())
             .on_click(cx.listener(move |this, _, _, cx| this.go(destination, cx)))
     }
