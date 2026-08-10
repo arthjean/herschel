@@ -797,6 +797,17 @@ pub fn panel_surface() -> Div {
         .bg(color::PANEL.hsla())
 }
 
+/// The same surface, for a card whose content is a list of openable rows.
+///
+/// One padding step instead of [`panel_surface`]'s four. A row is not a
+/// paragraph: it carries its own inset, its own hover fill and its own corner,
+/// so a card that also holds it at arm's length stacks three insets between the
+/// edge of the card and the control the operator aimed at. A card of prose or
+/// of fields keeps the wider step, because nothing inside those pads itself.
+pub fn row_panel() -> Div {
+    panel_surface().p(space::SM)
+}
+
 /// How a device presents in a [`DeviceRow`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceHealth {

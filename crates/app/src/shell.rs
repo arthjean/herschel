@@ -36,7 +36,7 @@ use crate::assets::Icon;
 use crate::components::{
     Button, ButtonVariant, ColorField, ControlState, CurveEditor, DeviceRow, ICON_SIZE, Metric,
     Note, NoteLevel, Panel, Select, SelectOption, Slider, Sparkline, chevron, focus_visible, icon,
-    node_at, panel_surface, set_focus_visible,
+    node_at, panel_surface, row_panel, set_focus_visible,
 };
 use crate::cooling::{CoolingEditor, CoolingMode};
 use crate::display::{DisplayColorField, DisplayEditor, DisplayScreen};
@@ -1092,7 +1092,7 @@ impl Shell {
                 // No heading: the two rows name themselves, and the freshness
                 // the subtitle used to carry is on every reading already,
                 // through the Stale and N/A qualifiers `readback` adds.
-                panel_surface()
+                row_panel()
                     .child(self.channel_row(Channel::Pump, &pump_write, cx))
                     .child(self.channel_row(Channel::Fan, &fan_write, cx)),
             )
@@ -1802,7 +1802,7 @@ impl Shell {
     fn device_card(name: &str) -> Div {
         let name = name.to_string();
 
-        panel_surface().child(
+        row_panel().child(
             div()
                 .flex()
                 .flex_wrap()
