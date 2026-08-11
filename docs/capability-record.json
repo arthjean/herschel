@@ -3,10 +3,10 @@
   "context": {
     "kernel_release": {
       "state": "known",
-      "value": "7.1.6-201.fc44.x86_64",
+      "value": "7.1.7-200.fc44.x86_64",
       "source": "uname(2)"
     },
-    "probed_at_unix_ms": 1786101450276
+    "probed_at_unix_ms": 1786449646365
   },
   "devices": [
     {
@@ -232,22 +232,22 @@
       ],
       "hwmon": {
         "driver": "kraken2023",
-        "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5",
+        "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3",
         "attributes": [
           {
             "name": "fan1_input",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan1_input",
             "readable": true,
             "writable": false,
             "label": {
               "state": "known",
               "value": "Pump speed",
-              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_label"
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan1_label"
             }
           },
           {
             "name": "fan1_label",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan1_label",
             "readable": true,
             "writable": false,
             "label": {
@@ -258,18 +258,18 @@
           },
           {
             "name": "fan2_input",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan2_input",
             "readable": true,
             "writable": false,
             "label": {
               "state": "known",
               "value": "Fan speed",
-              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_label"
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan2_label"
             }
           },
           {
             "name": "fan2_label",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan2_label",
             "readable": true,
             "writable": false,
             "label": {
@@ -280,7 +280,7 @@
           },
           {
             "name": "name",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/name",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/name",
             "readable": true,
             "writable": false,
             "label": {
@@ -291,9 +291,9 @@
           },
           {
             "name": "pwm1",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm1",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/pwm1",
             "readable": true,
-            "writable": false,
+            "writable": true,
             "label": {
               "state": "unknown",
               "reason": "attribute has no label",
@@ -302,9 +302,9 @@
           },
           {
             "name": "pwm1_enable",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm1_enable",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/pwm1_enable",
             "readable": true,
-            "writable": false,
+            "writable": true,
             "label": {
               "state": "unknown",
               "reason": "attribute has no label",
@@ -313,9 +313,9 @@
           },
           {
             "name": "pwm2",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm2",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/pwm2",
             "readable": true,
-            "writable": false,
+            "writable": true,
             "label": {
               "state": "unknown",
               "reason": "attribute has no label",
@@ -324,9 +324,9 @@
           },
           {
             "name": "pwm2_enable",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm2_enable",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/pwm2_enable",
             "readable": true,
-            "writable": false,
+            "writable": true,
             "label": {
               "state": "unknown",
               "reason": "attribute has no label",
@@ -335,18 +335,18 @@
           },
           {
             "name": "temp1_input",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_input",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/temp1_input",
             "readable": true,
             "writable": false,
             "label": {
               "state": "known",
               "value": "Coolant temp",
-              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_label"
+              "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/temp1_label"
             }
           },
           {
             "name": "temp1_label",
-            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_label",
+            "path": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/temp1_label",
             "readable": true,
             "writable": false,
             "label": {
@@ -360,12 +360,12 @@
           {
             "temp_index": 1,
             "point_count": 40,
-            "writable": false
+            "writable": true
           },
           {
             "temp_index": 2,
             "point_count": 40,
-            "writable": false
+            "writable": true
           }
         ]
       },
@@ -414,7 +414,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_input"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/temp1_input"
           }
         },
         {
@@ -422,7 +422,7 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan1_input"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan1_input"
           }
         },
         {
@@ -430,39 +430,39 @@
           "state": {
             "state": "available",
             "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/fan2_input"
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/fan2_input"
           }
         },
         {
           "id": "pump_duty",
           "state": {
             "state": "available",
-            "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm1"
+            "writable": true,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/pwm1"
           }
         },
         {
           "id": "fan_duty",
           "state": {
             "state": "available",
-            "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/pwm2"
+            "writable": true,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/pwm2"
           }
         },
         {
           "id": "pump_curve",
           "state": {
             "state": "available",
-            "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp1_auto_point*_pwm"
+            "writable": true,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/temp1_auto_point*_pwm"
           }
         },
         {
           "id": "fan_curve",
           "state": {
             "state": "available",
-            "writable": false,
-            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon5/temp2_auto_point*_pwm"
+            "writable": true,
+            "source": "/sys/devices/pci0000:00/0000:00:02.1/0000:03:00.0/0000:04:0c.0/0000:0a:00.0/usb1/1-9/1-9:1.1/0003:1E71:300E.000B/hwmon/hwmon3/temp2_auto_point*_pwm"
           }
         },
         {
