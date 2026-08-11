@@ -26,7 +26,11 @@ pub mod usbfs;
 pub mod testing;
 
 pub use control::CoolingControl;
+// The transport is exported from the module that owns it. It used to reach the
+// root through `rgb`, which left the same types with two spellings and let a
+// reader believe the two devices spoke over different code.
+pub use hid::{HidError, HidTransport, Hidraw};
 pub use hwmon::KrakenHwmon;
 pub use probe::probe;
-pub use rgb::{HidTransport, Hidraw, RgbError};
+pub use rgb::RgbError;
 pub use sysfs::SysfsRoot;

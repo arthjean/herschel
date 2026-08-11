@@ -35,7 +35,7 @@ pub enum RgbBackend {
     /// Open the `hidraw` node the sysfs probe resolved.
     Hidraw,
     /// Talk to a supplied transport instead.
-    Transport(Box<dyn kori_hardware_linux::rgb::HidTransport>),
+    Transport(Box<dyn kori_hardware_linux::hid::HidTransport>),
     /// Do not talk to the controller at all.
     None,
 }
@@ -185,7 +185,8 @@ pub(crate) fn connect_lighting(
     capabilities: &mut CapabilityRecord,
     backend: RgbBackend,
 ) -> LightingExecutor {
-    use kori_hardware_linux::rgb::{self, HidTransport};
+    use kori_hardware_linux::hid::HidTransport;
+    use kori_hardware_linux::rgb;
 
     let (topology, transport): (_, Option<Box<dyn HidTransport>>) = match backend {
         RgbBackend::None => return LightingExecutor::absent(),

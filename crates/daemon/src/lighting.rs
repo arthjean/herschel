@@ -22,7 +22,8 @@ use kori_core::ipc::{ChannelState, HardwareState, LightingOutcome};
 use kori_core::lighting::{
     LightingCommand, LightingError, LightingProgram, MIN_COMMAND_INTERVAL_MS,
 };
-use kori_hardware_linux::rgb::{self, HidTransport};
+use kori_hardware_linux::hid::HidTransport;
+use kori_hardware_linux::rgb;
 
 /// Owns the controller handle and the record of what it was told.
 pub struct LightingExecutor {
@@ -239,7 +240,7 @@ mod tests {
 
     #[derive(Default)]
     struct Recorder {
-        commands: std::sync::Mutex<Vec<[u8; kori_hardware_linux::rgb::REPORT_BYTES]>>,
+        commands: std::sync::Mutex<Vec<[u8; kori_hardware_linux::hid::REPORT_BYTES]>>,
         fail: std::sync::atomic::AtomicBool,
     }
 
@@ -248,7 +249,7 @@ mod tests {
             self.commands.lock().map(|c| c.len()).unwrap_or(0)
         }
 
-        fn last(&self) -> Option<[u8; kori_hardware_linux::rgb::REPORT_BYTES]> {
+        fn last(&self) -> Option<[u8; kori_hardware_linux::hid::REPORT_BYTES]> {
             self.commands.lock().ok().and_then(|c| c.last().copied())
         }
     }
@@ -261,10 +262,10 @@ mod tests {
     impl HidTransport for RecordingController {
         fn write_report(
             &mut self,
-            report: &[u8; kori_hardware_linux::rgb::REPORT_BYTES],
-        ) -> Result<(), kori_hardware_linux::rgb::RgbError> {
+            report: &[u8; kori_hardware_linux::hid::REPORT_BYTES],
+        ) -> Result<(), kori_hardware_linux::hid::HidError> {
             if self.recorder.fail.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(kori_hardware_linux::rgb::RgbError::PermissionDenied {
+                return Err(kori_hardware_linux::hid::HidError::PermissionDenied {
                     path: "/dev/hidraw12".to_string(),
                 });
             }
@@ -281,8 +282,8 @@ mod tests {
             &mut self,
             timeout: Duration,
         ) -> Result<
-            Option<[u8; kori_hardware_linux::rgb::REPORT_BYTES]>,
-            kori_hardware_linux::rgb::RgbError,
+            Option<[u8; kori_hardware_linux::hid::REPORT_BYTES]>,
+            kori_hardware_linux::hid::HidError,
         > {
             self.inner.read_report(timeout)
         }

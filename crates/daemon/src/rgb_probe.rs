@@ -28,7 +28,8 @@ use kori_core::lighting::{
     Brightness, EffectDirection, EffectSpeed, LightingEffect, LightingProgram, PROBE_BRIGHTNESS,
     Rgb,
 };
-use kori_hardware_linux::rgb::{self, HidTransport};
+use kori_hardware_linux::hid::HidTransport;
+use kori_hardware_linux::rgb;
 use serde::{Deserialize, Serialize};
 
 use crate::probe::{CONFIRMATION_PHRASE, Operator, authorized};
@@ -363,20 +364,24 @@ fn send<T: HidTransport + ?Sized>(
     // The fallback used to be a zeroed buffer, which would have put report
     // identifier `0x00` on the wire: an identifier the controller never
     // declared, sent by the one command that exists to avoid exactly that.
-    let Some(report) =
-        rgb::packet::channel_bit(channel).and_then(|bit| rgb::packet::color_command(bit, program))
-    else {
-        return ProbeStep {
-            channel,
-            program: program.summary(),
-            report_hex: String::new(),
-            response_hex: None,
-            write_micros: 0,
-            error: Some(format!(
-                "the program could not be encoded for channel {channel}, so nothing was sent"
-            )),
-            observed: String::new(),
-        };
+    //
+    // Through the same encoder the daemon writes with, so the bytes in this
+    // record are the bytes the product sends rather than a second encoding that
+    // happens to agree, and a refusal is recorded with the reason the encoder
+    // gave rather than a summary written here.
+    let report = match rgb::encode(channel, program) {
+        Ok(report) => report,
+        Err(error) => {
+            return ProbeStep {
+                channel,
+                program: program.summary(),
+                report_hex: String::new(),
+                response_hex: None,
+                write_micros: 0,
+                error: Some(format!("{error}, so nothing was sent")),
+                observed: String::new(),
+            };
+        }
     };
 
     let started = Instant::now();
@@ -675,7 +680,7 @@ mod tests {
         for step in &report.steps {
             assert_eq!(
                 step.report_hex.len(),
-                rgb::REPORT_BYTES * 2,
+                kori_hardware_linux::hid::REPORT_BYTES * 2,
                 "{}",
                 step.program
             );
@@ -863,7 +868,7 @@ mod tests {
     #[test]
     fn a_controller_that_refuses_every_write_is_reported_rather_than_retried() {
         let mut controller = FakeController::new("1.2.3", 1);
-        controller.write_failure = Some(kori_hardware_linux::rgb::RgbError::PermissionDenied {
+        controller.write_failure = Some(kori_hardware_linux::hid::HidError::PermissionDenied {
             path: "/dev/hidraw12".to_string(),
         });
         let mut operator = Script::new(&[CONFIRMATION_PHRASE, "purple", "", "", "", "", "", ""]);

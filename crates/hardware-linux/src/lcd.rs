@@ -41,9 +41,7 @@ use kori_core::capability::{Evidenced, LcdDisplaySettings, LcdPanel, LcdPanelSha
 use kori_core::display::Orientation;
 use kori_core::lighting::Brightness;
 
-use crate::hid::{
-    ANSWER_TIMEOUT, HidError, HidTransport, Hidraw, MAX_QUERY_READS, REPORT_BYTES, silence,
-};
+use crate::hid::{self, ANSWER_TIMEOUT, HidError, HidTransport, Hidraw, REPORT_BYTES, silence};
 use crate::usbfs::{BulkTransport, Usbfs, UsbfsError};
 
 /// Geometry this product carries for `1e71:300e`.
@@ -133,21 +131,11 @@ pub enum LcdError {
     Bulk(#[from] UsbfsError),
     #[error("the frame is {actual} bytes, and this panel takes exactly {expected}")]
     FrameSize { actual: usize, expected: usize },
-    #[error(
-        "firmware {firmware} is not the {expected}.x generation this transfer sequence was \
-         written for"
-    )]
-    UnsupportedFirmware { firmware: String, expected: u8 },
-    #[error("the panel did not report its brightness and orientation")]
-    NoPanel,
 }
 
 /// The wire format, as pure functions over a 64-byte buffer.
 pub mod packet {
     use super::*;
-
-    /// The firmware pair is the one both devices share.
-    pub use crate::hid::{FIRMWARE_ANSWER, FIRMWARE_REQUEST, answers, firmware, query};
 
     /// Ask the panel for its current brightness and orientation.
     pub const DISPLAY_INFO_REQUEST: [u8; 2] = [0x30, 0x01];
@@ -168,8 +156,12 @@ pub mod packet {
     pub const TRANSFER_ANSWER: u8 = 0x37;
 
     /// Offsets inside a `0x31 0x01` answer.
-    const BRIGHTNESS_OFFSET: usize = 0x18;
-    const ORIENTATION_OFFSET: usize = 0x1a;
+    ///
+    /// Crate-visible so the fixture answers at the offsets the decoder reads.
+    /// The literals are pinned once, by
+    /// `the_display_offsets_are_the_ones_the_panel_answers_at`.
+    pub(crate) const BRIGHTNESS_OFFSET: usize = 0x18;
+    pub(crate) const ORIENTATION_OFFSET: usize = 0x1a;
 
     /// Fixed prefix of the bulk header, before the transfer description.
     ///
@@ -214,7 +206,7 @@ pub mod packet {
 
     /// The report that closes one.
     pub fn transfer_end() -> [u8; REPORT_BYTES] {
-        query(TRANSFER_END)
+        hid::query(TRANSFER_END)
     }
 
     /// The header written to the bulk endpoint ahead of the pixels.
@@ -243,6 +235,24 @@ pub mod packet {
             quarter_turns,
         })
     }
+
+    /// Build a `0x31 0x01` answer reporting `settings`.
+    ///
+    /// The encoder half of [`display_settings`], kept beside it for the same
+    /// reason [`crate::hid::firmware_answer`] is: a fixture answering at its own
+    /// literal offsets would keep every test green while the decoder read
+    /// somewhere else on a real panel.
+    ///
+    /// Takes the raw pair rather than [`LcdDisplaySettings`] so a fixture can
+    /// answer the out-of-range values the decoder has to refuse.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn display_info_answer(brightness_percent: u8, quarter_turns: u8) -> [u8; REPORT_BYTES] {
+        let mut report = [0u8; REPORT_BYTES];
+        report[0..2].copy_from_slice(&DISPLAY_INFO_ANSWER);
+        report[BRIGHTNESS_OFFSET] = brightness_percent;
+        report[ORIENTATION_OFFSET] = quarter_turns;
+        report
+    }
 }
 
 /// What the Kraken answered about itself.
@@ -256,41 +266,31 @@ pub struct LcdInventory {
     pub display: Option<LcdDisplaySettings>,
 }
 
-impl LcdInventory {
-    pub fn is_complete(&self) -> bool {
-        self.firmware.is_some() && self.display.is_some()
-    }
-}
-
 /// Ask the Kraken for its firmware and its current display settings.
 ///
 /// Both are queries. Neither carries a color, a frame, a brightness or an
 /// orientation, so running one changes nothing an operator can see, which is
 /// what makes it safe at every daemon start.
+///
+/// [`hid::ask`] holds the matching rule, which matters twice over here:
+/// `kraken2023` is polling this very interface for its own reports, so an
+/// answer picked by arrival order would sooner or later be the driver's.
 pub fn query<T: HidTransport + ?Sized>(transport: &mut T) -> Result<LcdInventory, LcdError> {
-    transport.write_report(&packet::query(packet::FIRMWARE_REQUEST))?;
-    transport.write_report(&packet::query(packet::DISPLAY_INFO_REQUEST))?;
+    let [firmware, display] = hid::ask(
+        transport,
+        [
+            (hid::FIRMWARE_REQUEST, hid::FIRMWARE_ANSWER),
+            (packet::DISPLAY_INFO_REQUEST, packet::DISPLAY_INFO_ANSWER),
+        ],
+    )?;
 
-    let mut inventory = LcdInventory::default();
-    // The device interleaves unrelated status reports, and `kraken2023` is
-    // polling the same interface for its own, so answers are matched by
-    // identifier over a bounded number of reads rather than assumed to arrive
-    // first and in order.
-    for _ in 0..MAX_QUERY_READS {
-        let Some(report) = transport.read_report(ANSWER_TIMEOUT)? else {
-            break;
-        };
-        if packet::answers(&report, packet::FIRMWARE_ANSWER) {
-            inventory.firmware = Some(packet::firmware(&report));
-        } else if packet::answers(&report, packet::DISPLAY_INFO_ANSWER) {
-            inventory.display = packet::display_settings(&report);
-        }
-        if inventory.is_complete() {
-            break;
-        }
-    }
-
-    Ok(inventory)
+    Ok(LcdInventory {
+        firmware: firmware.map(|report| hid::firmware(&report)),
+        // A display answer whose fields are out of range is dropped rather than
+        // reduced: it means the offset is wrong on this firmware, and a wrong
+        // offset must not become a brightness.
+        display: display.and_then(|report| packet::display_settings(&report)),
+    })
 }
 
 /// How many times one picture is put on the wire.
@@ -570,15 +570,32 @@ mod tests {
     use crate::testing::FakeKraken;
 
     #[test]
-    fn the_firmware_report_is_the_same_one_the_controller_answers() {
-        // Both devices are asked the same way. If one module's identifiers ever
-        // move, this fails rather than sending a Kraken an RGB controller's
-        // request.
-        assert_eq!(
-            packet::FIRMWARE_REQUEST,
-            crate::rgb::packet::FIRMWARE_REQUEST
-        );
-        assert_eq!(packet::FIRMWARE_ANSWER, crate::rgb::packet::FIRMWARE_ANSWER);
+    fn no_answer_this_device_sends_can_be_mistaken_for_another() {
+        // `hid::ask` routes answers by identifier, so two answers sharing one
+        // would land in the same slot and the second question would be recorded
+        // as unanswered. The firmware pair is shared with the RGB controller by
+        // construction now (both modules use `hid::FIRMWARE_ANSWER`, there is no
+        // second definition to drift), but this device's own answers still have
+        // to be distinct from it and from each other.
+        let identifiers = [
+            crate::hid::FIRMWARE_ANSWER,
+            packet::DISPLAY_INFO_ANSWER,
+            [packet::TRANSFER_ANSWER, packet::TRANSFER_START[1]],
+            [packet::TRANSFER_ANSWER, packet::TRANSFER_END[1]],
+        ];
+        for (index, first) in identifiers.iter().enumerate() {
+            for second in &identifiers[index + 1..] {
+                assert_ne!(first, second, "two answers share one identifier");
+            }
+        }
+    }
+
+    #[test]
+    fn the_display_offsets_are_the_ones_the_panel_answers_at() {
+        // The one place these literals are pinned. Decoder, encoder and fixture
+        // all go through the constants.
+        assert_eq!(packet::BRIGHTNESS_OFFSET, 0x18);
+        assert_eq!(packet::ORIENTATION_OFFSET, 0x1a);
     }
 
     #[test]
@@ -769,29 +786,36 @@ mod tests {
 
     #[test]
     fn an_out_of_range_orientation_is_refused_rather_than_reduced() {
-        let mut report = [0u8; REPORT_BYTES];
-        report[0..2].copy_from_slice(&packet::DISPLAY_INFO_ANSWER);
-        report[0x18] = 50;
-        report[0x1a] = 7;
         assert_eq!(
-            packet::display_settings(&report),
+            packet::display_settings(&packet::display_info_answer(50, 7)),
             None,
             "a rotation this product cannot name means the offset is wrong, and \
              a wrong offset must not become a rotation"
         );
-
-        report[0x1a] = 3;
-        report[0x18] = 200;
-        assert_eq!(packet::display_settings(&report), None);
-
-        report[0x18] = 100;
         assert_eq!(
-            packet::display_settings(&report),
+            packet::display_settings(&packet::display_info_answer(200, 3)),
+            None
+        );
+        assert_eq!(
+            packet::display_settings(&packet::display_info_answer(100, 3)),
             Some(LcdDisplaySettings {
                 brightness_percent: 100,
                 quarter_turns: 3,
             })
         );
+    }
+
+    #[test]
+    fn a_panel_answering_out_of_range_settings_is_recorded_as_silent() {
+        // The refusal has to survive all the way into the record: a device
+        // whose answer cannot be decoded has not proven it carries a panel, so
+        // the geometry stays unknown and the frame path stays shut.
+        let mut kraken = FakeKraken::new("2.0.4").with_display(200, 0);
+        let topology = inspect(&mut kraken, None);
+
+        assert!(!topology.answered());
+        assert!(!topology.panel.is_known());
+        assert_eq!(topology.firmware.value().map(String::as_str), Some("2.0.4"));
     }
 
     #[test]

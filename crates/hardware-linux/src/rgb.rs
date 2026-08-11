@@ -36,16 +36,25 @@ use kori_core::lighting::{
     Brightness, EffectDirection, LightingEffect, LightingProgram, MIN_COMMAND_INTERVAL_MS, Rgb,
 };
 
-use crate::hid::{ANSWER_TIMEOUT, MAX_QUERY_READS, silence};
+use crate::hid::{self, HidError, HidTransport, Hidraw, REPORT_BYTES, silence};
 
-/// The transport this module moves its reports over.
+/// Why a lighting command could not be sent.
 ///
-/// Re-exported rather than owned: the Kraken speaks the same 64-byte reports
-/// over its own node, so the implementation lives in [`crate::hid`] and both
-/// devices share it. `RgbError` is that transport's error under the name every
-/// lighting caller already uses.
-pub use crate::hid::{HidTransport, Hidraw, REPORT_BYTES};
-pub type RgbError = crate::hid::HidError;
+/// The transport has its own error and it is carried rather than reinterpreted.
+/// That separation is not cosmetic: a program this module refuses to encode is
+/// not a missing device node, and the reason string reaches the operator
+/// verbatim through [`kori_core::ipc::HardwareState::Uncertain`]. An encoding
+/// refusal wearing a transport error's message would send someone to check a
+/// udev rule for a channel number that was simply out of range.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RgbError {
+    #[error("{0}")]
+    Transport(#[from] HidError),
+    #[error("channel {channel} is not addressable on this controller")]
+    UnknownChannel { channel: u8 },
+    #[error("the program carries {colors} colors, and one report holds at most {limit}")]
+    TooManyColors { colors: usize, limit: usize },
+}
 
 /// Channels the controller can address, and therefore the widest bitmask.
 pub const MAX_CHANNELS: usize = 3;
@@ -79,18 +88,22 @@ pub mod packet {
 
     /// Report identifiers the controller publishes, all 63 payload bytes wide.
     ///
-    /// The firmware pair is the one both devices share, so it comes from the
-    /// transport module rather than being restated here.
-    pub use crate::hid::{FIRMWARE_ANSWER, FIRMWARE_REQUEST, answers, firmware, query};
-
+    /// The firmware pair both devices share lives in [`crate::hid`] and is used
+    /// from there. It is deliberately not re-exported: an alias would let a
+    /// reader believe this module could carry a different value, and the test
+    /// written to catch that drift would be comparing a constant with itself.
     pub const LIGHTING_REQUEST: [u8; 2] = [0x20, 0x03];
     pub const LIGHTING_ANSWER: [u8; 2] = [0x21, 0x03];
     pub const COLOR_COMMAND: [u8; 2] = [0x2a, 0x04];
 
     /// Offset of the channel count in a `0x21 0x03` answer.
-    const CHANNEL_COUNT_OFFSET: usize = 14;
+    ///
+    /// Crate-visible so the fixture builds its answer at the offset the decoder
+    /// reads. The literal is pinned once, by
+    /// `the_topology_offsets_are_the_ones_the_controller_uses`.
+    pub(crate) const CHANNEL_COUNT_OFFSET: usize = 14;
     /// Offset of the first accessory identifier in a `0x21 0x03` answer.
-    const ACCESSORY_OFFSET: usize = 15;
+    pub(crate) const ACCESSORY_OFFSET: usize = 15;
 
     /// The color command's trailer always occupies the last nine bytes.
     const FOOTER_BYTES: usize = 9;
@@ -247,14 +260,20 @@ pub mod packet {
 
     /// Build the 64-byte color command for one channel bitmask.
     ///
-    /// Returns `None` only when the program carries more colors than the report
-    /// can hold, which validation rejects long before this point. Refusing is
-    /// still the right answer: silently dropping a color would show the
-    /// operator something they did not ask for.
-    pub fn color_command(channel_bit: u8, program: &LightingProgram) -> Option<[u8; REPORT_BYTES]> {
+    /// Fails only when the program carries more colors than the report can
+    /// hold, which validation rejects long before this point. Refusing is still
+    /// the right answer: silently dropping a color would show the operator
+    /// something they did not ask for.
+    pub fn color_command(
+        channel_bit: u8,
+        program: &LightingProgram,
+    ) -> Result<[u8; REPORT_BYTES], RgbError> {
         let encoding = encode(program);
         if encoding.colors.len() > MAX_COLORS {
-            return None;
+            return Err(RgbError::TooManyColors {
+                colors: encoding.colors.len(),
+                limit: MAX_COLORS,
+            });
         }
 
         let mut report = [0u8; REPORT_BYTES];
@@ -286,12 +305,38 @@ pub mod packet {
         report[FOOTER_OFFSET + 2] = encoding.variant;
         report[FOOTER_OFFSET + 3] = 0x08;
         report[FOOTER_OFFSET + 4] = 0x03;
-        Some(report)
+        Ok(report)
     }
 
     /// Bitmask addressing the one-based `channel`.
     pub fn channel_bit(channel: u8) -> Option<u8> {
         (channel >= 1 && (channel as usize) <= MAX_CHANNELS).then(|| 1u8 << (channel - 1))
+    }
+
+    /// Build a `0x21 0x03` answer describing one accessory list per channel.
+    ///
+    /// The encoder half of [`channels`], kept beside it for the same reason
+    /// [`crate::hid::firmware_answer`] is kept beside its decoder: a fixture
+    /// that laid accessories out at its own literal offsets would agree with
+    /// itself forever while the decoder read somewhere else.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn topology_answer(channels: &[Vec<u8>]) -> [u8; REPORT_BYTES] {
+        let mut report = [0u8; REPORT_BYTES];
+        report[0..2].copy_from_slice(&LIGHTING_ANSWER);
+        report[CHANNEL_COUNT_OFFSET] = channels.len() as u8;
+        for (channel, accessories) in channels.iter().enumerate() {
+            for (slot, id) in accessories
+                .iter()
+                .take(MAX_ACCESSORIES_PER_CHANNEL)
+                .enumerate()
+            {
+                let offset = ACCESSORY_OFFSET + channel * MAX_ACCESSORIES_PER_CHANNEL + slot;
+                if let Some(byte) = report.get_mut(offset) {
+                    *byte = *id;
+                }
+            }
+        }
+        report
     }
 }
 
@@ -308,13 +353,6 @@ pub struct RgbInventory {
     pub channels: Option<Vec<RgbChannel>>,
 }
 
-impl RgbInventory {
-    /// True when the controller answered everything a write has to be gated on.
-    pub fn is_complete(&self) -> bool {
-        self.firmware.is_some() && self.channels.is_some()
-    }
-}
-
 /// Ask the controller for its firmware and channel topology.
 ///
 /// Both requests are queries: they carry no color, no mode and no parameter, so
@@ -322,32 +360,35 @@ impl RgbInventory {
 /// safe to run at every daemon start, which in turn is what lets the Lighting
 /// screen refuse a write against evidence read from the device rather than
 /// against a constant.
+///
 /// The error is reserved for a transport that failed. A controller that simply
 /// stayed silent returns an inventory with the fields it did answer, so the
-/// caller records evidence and absence side by side.
+/// caller records evidence and absence side by side. [`hid::ask`] holds the
+/// rest of the rule, which the Kraken follows identically.
 pub fn query<T: HidTransport + ?Sized>(transport: &mut T) -> Result<RgbInventory, RgbError> {
-    transport.write_report(&packet::query(packet::FIRMWARE_REQUEST))?;
-    transport.write_report(&packet::query(packet::LIGHTING_REQUEST))?;
+    let [firmware, topology] = hid::ask(
+        transport,
+        [
+            (hid::FIRMWARE_REQUEST, hid::FIRMWARE_ANSWER),
+            (packet::LIGHTING_REQUEST, packet::LIGHTING_ANSWER),
+        ],
+    )?;
 
-    let mut inventory = RgbInventory::default();
-    // The controller interleaves unrelated status reports, so answers are
-    // matched by identifier over a bounded number of reads rather than assumed
-    // to arrive first and in order.
-    for _ in 0..MAX_QUERY_READS {
-        let Some(report) = transport.read_report(ANSWER_TIMEOUT)? else {
-            break;
-        };
-        if packet::answers(&report, packet::FIRMWARE_ANSWER) {
-            inventory.firmware = Some(packet::firmware(&report));
-        } else if packet::answers(&report, packet::LIGHTING_ANSWER) {
-            inventory.channels = Some(packet::channels(&report));
-        }
-        if inventory.is_complete() {
-            break;
-        }
-    }
+    Ok(RgbInventory {
+        firmware: firmware.map(|report| hid::firmware(&report)),
+        channels: topology.map(|report| packet::channels(&report)),
+    })
+}
 
-    Ok(inventory)
+/// Turn one program for one channel into the exact bytes that would be sent.
+///
+/// The single place a lighting program becomes a report. The write path and the
+/// write probe both go through it, so the bytes an operator reads in a probe
+/// record are the bytes the daemon sends, rather than a second encoding that
+/// happens to agree.
+pub fn encode(channel: u8, program: &LightingProgram) -> Result<[u8; REPORT_BYTES], RgbError> {
+    let bit = packet::channel_bit(channel).ok_or(RgbError::UnknownChannel { channel })?;
+    packet::color_command(bit, program)
 }
 
 /// Send one program to one channel.
@@ -365,18 +406,7 @@ pub fn apply<T: HidTransport + ?Sized>(
     channel: u8,
     program: &LightingProgram,
 ) -> Result<[u8; REPORT_BYTES], RgbError> {
-    let Some(bit) = packet::channel_bit(channel) else {
-        return Err(RgbError::NodeAbsent {
-            reason: format!("channel {channel} is not addressable on this controller"),
-        });
-    };
-    let Some(report) = packet::color_command(bit, program) else {
-        return Err(RgbError::NodeAbsent {
-            reason: format!(
-                "the program carries more colors than one {REPORT_BYTES}-byte report holds"
-            ),
-        });
-    };
+    let report = encode(channel, program)?;
     transport.write_report(&report)?;
     Ok(report)
 }
@@ -474,40 +504,32 @@ mod tests {
     }
 
     #[test]
-    fn a_query_carries_its_identifier_and_nothing_else() {
-        let report = packet::query(packet::FIRMWARE_REQUEST);
-        assert_eq!(report[0], 0x10);
-        assert_eq!(report[1], 0x01);
-        assert!(
-            report[2..].iter().all(|byte| *byte == 0),
-            "a query must not carry a parameter the firmware could act on"
-        );
-        assert_eq!(report.len(), REPORT_BYTES);
+    fn the_topology_offsets_are_the_ones_the_controller_uses() {
+        // The one place these literals are pinned. The decoder, the encoder and
+        // every fixture go through the constants, so this is what fails if an
+        // offset ever moves.
+        assert_eq!(packet::CHANNEL_COUNT_OFFSET, 14);
+        assert_eq!(packet::ACCESSORY_OFFSET, 15);
     }
 
     #[test]
-    fn the_firmware_answer_is_read_from_its_documented_offsets() {
-        let mut report = [0u8; REPORT_BYTES];
-        report[0] = 0x11;
-        report[1] = 0x01;
-        report[0x11] = 1;
-        report[0x12] = 2;
-        report[0x13] = 3;
-        assert!(packet::answers(&report, packet::FIRMWARE_ANSWER));
-        assert!(!packet::answers(&report, packet::LIGHTING_ANSWER));
-        assert_eq!(packet::firmware(&report), "1.2.3");
+    fn a_firmware_answer_is_never_mistaken_for_a_topology_answer() {
+        // The two answers arrive on the same node, interleaved with unrelated
+        // status reports, so telling them apart is what `hid::ask` relies on.
+        let report = hid::firmware_answer("1.2.3");
+        assert!(hid::answers(&report, hid::FIRMWARE_ANSWER));
+        assert!(!hid::answers(&report, packet::LIGHTING_ANSWER));
+        assert_eq!(hid::firmware(&report), "1.2.3");
+
+        let topology = packet::topology_answer(&[vec![0x04]]);
+        assert!(hid::answers(&topology, packet::LIGHTING_ANSWER));
+        assert!(!hid::answers(&topology, hid::FIRMWARE_ANSWER));
     }
 
     #[test]
     fn the_topology_answer_lists_accessories_per_channel() {
-        let mut report = [0u8; REPORT_BYTES];
-        report[0] = 0x21;
-        report[1] = 0x03;
-        report[14] = 3;
         // Channel 1 carries two strips, channel 2 one fan, channel 3 nothing.
-        report[15] = 0x04;
-        report[16] = 0x05;
-        report[21] = 0x0b;
+        let report = packet::topology_answer(&[vec![0x04, 0x05], vec![0x0b], vec![]]);
 
         let channels = packet::channels(&report);
         assert_eq!(channels.len(), 3);
@@ -530,10 +552,8 @@ mod tests {
 
     #[test]
     fn a_channel_count_beyond_the_controller_cannot_read_past_the_report() {
-        let mut report = [0u8; REPORT_BYTES];
-        report[0] = 0x21;
-        report[1] = 0x03;
-        report[14] = 0xff;
+        let mut report = packet::topology_answer(&[vec![0x04]]);
+        report[packet::CHANNEL_COUNT_OFFSET] = 0xff;
         let channels = packet::channels(&report);
         assert_eq!(channels.len(), MAX_CHANNELS);
     }
@@ -674,7 +694,13 @@ mod tests {
             speed: EffectSpeed::Normal,
             direction: EffectDirection::Forward,
         };
-        assert!(packet::color_command(0b001, &program).is_none());
+        assert_eq!(
+            packet::color_command(0b001, &program),
+            Err(RgbError::TooManyColors {
+                colors: packet::MAX_COLORS + 1,
+                limit: packet::MAX_COLORS,
+            })
+        );
 
         let at_ceiling = LightingProgram::Effect {
             effect: LightingEffect::Breathing,
@@ -700,7 +726,7 @@ mod tests {
             0x10, 0x12, 0x20, 0x22, 0x24, 0x26, 0x2a, 0xf2, 0xfe, 0xe2, 0xf4, 0x2c, 0x1c,
         ];
         for identifier in [
-            packet::FIRMWARE_REQUEST,
+            hid::FIRMWARE_REQUEST,
             packet::LIGHTING_REQUEST,
             packet::COLOR_COMMAND,
         ] {
@@ -767,17 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_window_clears_the_measured_topology_latency() {
-        // Measured on the owned controller: 518-699 ms for the topology answer.
-        // The window must sit above that with room, or the probe reports a
-        // silent controller for one that was still answering.
-        assert!(
-            ANSWER_TIMEOUT >= Duration::from_millis(1_500),
-            "{ANSWER_TIMEOUT:?} is too close to the observed 699 ms"
-        );
-    }
-
-    #[test]
     fn no_firmware_is_writable_until_a_probe_records_one() {
         // The gate fails closed. Once a write probe fills `VALIDATED_FIRMWARE`,
         // this still holds for anything outside the recorded list.
@@ -794,6 +809,62 @@ mod tests {
         assert_eq!(
             minimum_command_interval().as_millis() as u64,
             MIN_COMMAND_INTERVAL_MS
+        );
+    }
+
+    #[test]
+    fn an_encoding_refusal_never_wears_a_transport_errors_message() {
+        // This is the whole reason this module carries an error of its own. The
+        // string below reaches the operator verbatim through
+        // `HardwareState::Uncertain`, so a refusal that called itself a missing
+        // node would send someone to check a udev rule for a channel number
+        // that was simply out of range.
+        let program = fixed(Rgb::new(1, 2, 3), 100);
+        let error = encode(4, &program).unwrap_err();
+        assert_eq!(error, RgbError::UnknownChannel { channel: 4 });
+        let message = error.to_string();
+        assert!(message.contains("channel 4"), "{message}");
+        assert!(
+            !message.contains("hidraw") && !message.contains("udev"),
+            "an encoding refusal must not point at the transport: {message}"
+        );
+
+        let wide = LightingProgram::Effect {
+            effect: LightingEffect::Breathing,
+            colors: vec![Rgb::new(1, 2, 3); packet::MAX_COLORS + 1],
+            brightness: Brightness::FULL,
+            speed: EffectSpeed::Normal,
+            direction: EffectDirection::Forward,
+        };
+        let message = encode(1, &wide).unwrap_err().to_string();
+        assert!(message.contains("17"), "{message}");
+        assert!(!message.contains("hidraw"), "{message}");
+    }
+
+    #[test]
+    fn a_transport_failure_keeps_the_transports_own_wording() {
+        // The other direction: a real permission problem must still name the
+        // node and the udev rule, because that one *is* actionable.
+        let mut controller = crate::testing::FakeController::new("1.5.0", 3);
+        controller.write_failure = Some(crate::hid::HidError::PermissionDenied {
+            path: "/dev/hidraw12".to_string(),
+        });
+
+        let error = apply(&mut controller, 1, &fixed(Rgb::new(1, 2, 3), 100)).unwrap_err();
+        assert!(matches!(error, RgbError::Transport(_)));
+        let message = error.to_string();
+        assert!(message.contains("/dev/hidraw12"), "{message}");
+        assert!(message.contains("udev"), "{message}");
+    }
+
+    #[test]
+    fn nothing_reaches_the_controller_when_the_program_cannot_be_encoded() {
+        let mut controller = crate::testing::FakeController::new("1.5.0", 3);
+        assert!(apply(&mut controller, 0, &fixed(Rgb::new(1, 2, 3), 100)).is_err());
+        assert_eq!(
+            controller.command_count(),
+            0,
+            "a refused program must not put a byte on the wire"
         );
     }
 
