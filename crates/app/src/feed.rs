@@ -52,6 +52,21 @@ pub enum Command {
     DeleteProfile(String),
 }
 
+impl Command {
+    /// Whether running this can change the stored profile list.
+    ///
+    /// A property of what was asked rather than of how it ended. Reading the
+    /// list back after a refused save costs one request nothing is waiting on,
+    /// where threading the answer out of every execution path meant a positional
+    /// flag on fourteen returns, most of them a constant `false`.
+    fn touches_profiles(&self) -> bool {
+        matches!(
+            self,
+            Self::SaveProfile(_) | Self::ActivateProfile(_) | Self::DeleteProfile(_)
+        )
+    }
+}
+
 /// How a command ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSeverity {
@@ -61,6 +76,25 @@ pub enum OutcomeSeverity {
     Unconfirmed,
     /// It was refused, and nothing was written.
     Refused,
+}
+
+/// How urgent a reported hardware state is.
+///
+/// One mapping for the three executors rather than one per executor. The three
+/// used to repeat these five arms verbatim and only the sentence differed, which
+/// meant a sixth [`HardwareState`] could be given three different severities by
+/// being added to two of the three matches.
+impl From<&HardwareState> for OutcomeSeverity {
+    fn from(hardware: &HardwareState) -> Self {
+        match hardware {
+            // Onboard is a success: the device is running its own program
+            // because that is what was asked for, and nothing was written
+            // because nothing needed to be.
+            HardwareState::Confirmed | HardwareState::Onboard => Self::Confirmed,
+            HardwareState::Uncertain { .. } => Self::Unconfirmed,
+            HardwareState::NotApplied { .. } => Self::Refused,
+        }
+    }
 }
 
 /// The result of the last command, shown next to the control that issued it.
@@ -74,12 +108,36 @@ pub struct CommandOutcome {
 }
 
 impl CommandOutcome {
-    fn refused(message: impl Into<String>) -> Self {
+    /// An outcome the hardware had no part in: a stored profile, or a request
+    /// that never reached a device.
+    fn reported(severity: OutcomeSeverity, message: impl Into<String>) -> Self {
         Self {
             at_unix_ms: now_unix_ms(),
             message: message.into(),
-            severity: OutcomeSeverity::Refused,
+            severity,
             hardware: None,
+        }
+    }
+
+    fn refused(message: impl Into<String>) -> Self {
+        Self::reported(OutcomeSeverity::Refused, message)
+    }
+
+    fn confirmed(message: impl Into<String>) -> Self {
+        Self::reported(OutcomeSeverity::Confirmed, message)
+    }
+
+    /// One sentence about a state the hardware reported, at that state's own
+    /// severity.
+    ///
+    /// The severity is never passed in: it is a property of the state, and
+    /// [`OutcomeSeverity::from`] is the one place it is decided.
+    fn from_hardware(hardware: &HardwareState, message: impl Into<String>) -> Self {
+        Self {
+            at_unix_ms: now_unix_ms(),
+            message: message.into(),
+            severity: OutcomeSeverity::from(hardware),
+            hardware: Some(hardware.clone()),
         }
     }
 
@@ -94,111 +152,70 @@ impl CommandOutcome {
     /// one "nothing was sent" that would be false exactly when the operator had
     /// just changed the brightness.
     fn from_display(outcome: &kori_core::ipc::DisplayOutcome) -> Self {
-        let (severity, message) = match &outcome.hardware {
-            HardwareState::Confirmed if outcome.deduplicated && outcome.brightness_sent => (
-                OutcomeSeverity::Confirmed,
-                format!(
-                    "Panel brightness set to {}%. The picture was already correct, so no frame \
-                     was sent.",
-                    outcome.preset.brightness.percent()
-                ),
+        let message = match &outcome.hardware {
+            HardwareState::Confirmed if outcome.deduplicated && outcome.brightness_sent => format!(
+                "Panel brightness set to {}%. The picture was already correct, so no frame was \
+                 sent.",
+                outcome.preset.brightness.percent()
             ),
-            HardwareState::Confirmed if outcome.deduplicated => (
-                OutcomeSeverity::Confirmed,
-                "The panel already shows this. Nothing was sent.".to_string(),
+            HardwareState::Confirmed if outcome.deduplicated => {
+                "The panel already shows this. Nothing was sent.".to_string()
+            }
+            HardwareState::Confirmed => format!(
+                "Panel set to {}. The transfer completed; the panel reports no picture to read \
+                 back.",
+                outcome.preset.mode.label()
             ),
-            HardwareState::Confirmed => (
-                OutcomeSeverity::Confirmed,
-                format!(
-                    "Panel set to {}. The transfer completed; the panel reports no picture to \
-                     read back.",
-                    outcome.preset.mode.label()
-                ),
-            ),
-            HardwareState::Onboard => (
-                OutcomeSeverity::Confirmed,
-                "The panel keeps its own picture. Nothing was sent.".to_string(),
-            ),
-            HardwareState::NotApplied { reason } => (OutcomeSeverity::Refused, reason.clone()),
-            HardwareState::Uncertain { reason } => (
-                OutcomeSeverity::Unconfirmed,
-                format!("The panel is uncertain: {reason}"),
-            ),
+            HardwareState::Onboard => {
+                "The panel keeps its own picture. Nothing was sent.".to_string()
+            }
+            HardwareState::NotApplied { reason } => reason.clone(),
+            HardwareState::Uncertain { reason } => format!("The panel is uncertain: {reason}"),
         };
-        Self {
-            at_unix_ms: now_unix_ms(),
-            message,
-            severity,
-            hardware: Some(outcome.hardware.clone()),
-        }
+        Self::from_hardware(&outcome.hardware, message)
     }
 
     fn from_lighting(outcome: &LightingOutcome) -> Self {
-        let (severity, message) = match &outcome.hardware {
-            HardwareState::Confirmed if outcome.deduplicated => (
-                OutcomeSeverity::Confirmed,
-                format!(
-                    "Channel {} already shows this. Nothing was sent.",
-                    outcome.channel
-                ),
+        let message = match &outcome.hardware {
+            HardwareState::Confirmed if outcome.deduplicated => format!(
+                "Channel {} already shows this. Nothing was sent.",
+                outcome.channel
             ),
-            HardwareState::Confirmed => (
-                OutcomeSeverity::Confirmed,
-                format!(
-                    "Channel {} set to {}. The controller accepted the command; it reports no \
-                     state to read back.",
-                    outcome.channel,
-                    outcome.program.summary()
-                ),
+            HardwareState::Confirmed => format!(
+                "Channel {} set to {}. The controller accepted the command; it reports no state \
+                 to read back.",
+                outcome.channel,
+                outcome.program.summary()
             ),
-            HardwareState::Onboard => (
-                OutcomeSeverity::Confirmed,
-                "The controller keeps its own program. Nothing was sent.".to_string(),
-            ),
-            HardwareState::NotApplied { reason } => (OutcomeSeverity::Refused, reason.clone()),
-            HardwareState::Uncertain { reason } => (
-                OutcomeSeverity::Unconfirmed,
-                format!("Channel {} is uncertain: {reason}", outcome.channel),
-            ),
+            HardwareState::Onboard => {
+                "The controller keeps its own program. Nothing was sent.".to_string()
+            }
+            HardwareState::NotApplied { reason } => reason.clone(),
+            HardwareState::Uncertain { reason } => {
+                format!("Channel {} is uncertain: {reason}", outcome.channel)
+            }
         };
-
-        Self {
-            at_unix_ms: now_unix_ms(),
-            message,
-            severity,
-            hardware: Some(outcome.hardware.clone()),
-        }
+        Self::from_hardware(&outcome.hardware, message)
     }
 
     fn from_apply(outcome: &ApplyOutcome) -> Self {
-        let (severity, message) = match &outcome.hardware {
-            HardwareState::Confirmed => (
-                OutcomeSeverity::Confirmed,
-                if outcome.deduplicated {
-                    "Already applied. The hardware already held this program, so nothing was \
-                     written."
-                        .to_string()
-                } else {
-                    format!(
-                        "Applied and confirmed by readback. {} kernel attributes written.",
-                        outcome.writes
-                    )
-                },
+        let message = match &outcome.hardware {
+            HardwareState::Confirmed if outcome.deduplicated => {
+                "Already applied. The hardware already held this program, so nothing was written."
+                    .to_string()
+            }
+            HardwareState::Confirmed => format!(
+                "Applied and confirmed by readback. {} kernel attributes written.",
+                outcome.writes
             ),
-            HardwareState::Onboard => (
-                OutcomeSeverity::Confirmed,
-                "The device keeps running its own program. Nothing was written.".to_string(),
-            ),
-            HardwareState::NotApplied { reason } => (OutcomeSeverity::Refused, reason.clone()),
-            HardwareState::Uncertain { reason } => (OutcomeSeverity::Unconfirmed, reason.clone()),
+            HardwareState::Onboard => {
+                "The device keeps running its own program. Nothing was written.".to_string()
+            }
+            HardwareState::NotApplied { reason } | HardwareState::Uncertain { reason } => {
+                reason.clone()
+            }
         };
-
-        Self {
-            at_unix_ms: now_unix_ms(),
-            message,
-            severity,
-            hardware: Some(outcome.hardware.clone()),
-        }
+        Self::from_hardware(&outcome.hardware, message)
     }
 }
 
@@ -311,8 +328,8 @@ fn run(
             // `try_recv` treats an empty queue and a dropped sender alike here:
             // both mean there is nothing more to run this cycle.
             while let Some(command) = pending.take().or_else(|| inbox.try_recv().ok()) {
-                let (outcome, touched_profiles) = execute(active, command);
-                refresh_profiles |= touched_profiles;
+                refresh_profiles |= command.touches_profiles();
+                let outcome = execute(active, command);
                 if let Ok(mut shared) = shared.lock() {
                     shared.outcome = Some(outcome);
                 }
@@ -410,100 +427,92 @@ fn publish_unavailable(shared: &Arc<Mutex<Shared>>, error: &ClientError) {
     }
 }
 
-/// Run one command, returning its outcome and whether profiles changed.
-fn execute(session: &mut Session, command: Command) -> (CommandOutcome, bool) {
+/// Run one command and report how it ended.
+fn execute(session: &mut Session, command: Command) -> CommandOutcome {
     match command {
         Command::Apply(program) => match session.client.apply(program) {
-            Ok(outcome) => (CommandOutcome::from_apply(&outcome), false),
-            Err(error) => (CommandOutcome::refused(error.to_string()), false),
+            Ok(outcome) => CommandOutcome::from_apply(&outcome),
+            Err(error) => CommandOutcome::refused(error.to_string()),
         },
         Command::ApplyLighting(command) => {
             let channel = command.channel;
             match session.client.apply_lighting(command) {
-                Ok(outcome) => (CommandOutcome::from_lighting(&outcome), false),
-                Err(error) => (
-                    CommandOutcome::refused(format!("Channel {channel}: {error}")),
-                    false,
-                ),
+                Ok(outcome) => CommandOutcome::from_lighting(&outcome),
+                Err(error) => CommandOutcome::refused(format!("Channel {channel}: {error}")),
             }
         }
         Command::ApplyDisplay(preset) => match session.client.apply_display(preset) {
-            Ok(outcome) => (CommandOutcome::from_display(&outcome), false),
+            Ok(outcome) => CommandOutcome::from_display(&outcome),
             // Named, like a channel refusal is. The Lighting screen shows one
             // note for four rows that all write on their own, so a sentence
             // that does not say which device it is about would be read against
             // whichever row the operator is looking at.
-            Err(error) => (CommandOutcome::refused(format!("Panel: {error}")), false),
+            Err(error) => CommandOutcome::refused(format!("Panel: {error}")),
         },
         Command::SaveProfile(profile) => {
             let name = profile.name.clone();
-            match session.client.request(Request::SaveProfile { profile }) {
-                Ok(Response::Saved { .. }) => (
-                    CommandOutcome {
-                        at_unix_ms: now_unix_ms(),
-                        message: format!("Profile {name} saved."),
-                        severity: OutcomeSeverity::Confirmed,
-                        hardware: None,
-                    },
-                    true,
-                ),
-                Ok(Response::Error(error)) => (CommandOutcome::refused(error.to_string()), false),
-                Ok(_) => (CommandOutcome::refused(unexpected()), false),
-                Err(error) => (CommandOutcome::refused(error.to_string()), false),
-            }
+            request(session, Request::SaveProfile { profile }, |response| {
+                let Response::Saved { .. } = response else {
+                    return None;
+                };
+                Some(CommandOutcome::confirmed(format!("Profile {name} saved.")))
+            })
         }
         Command::ActivateProfile(name) => {
-            match session.client.request(Request::ActivateProfile { name }) {
-                Ok(Response::Activated(activation)) => {
-                    let mut outcome = match &activation.applied {
-                        Some(applied) => CommandOutcome::from_apply(applied),
-                        None => CommandOutcome {
-                            at_unix_ms: now_unix_ms(),
-                            message: "Profile activated.".to_string(),
-                            severity: OutcomeSeverity::Confirmed,
-                            hardware: Some(activation.hardware.clone()),
-                        },
-                    };
-                    outcome.message = format!("{}: {}", activation.name, outcome.message);
-                    (outcome, true)
-                }
-                Ok(Response::Error(error)) => (CommandOutcome::refused(error.to_string()), false),
-                Ok(_) => (CommandOutcome::refused(unexpected()), false),
-                Err(error) => (CommandOutcome::refused(error.to_string()), false),
-            }
+            request(session, Request::ActivateProfile { name }, |response| {
+                let Response::Activated(activation) = response else {
+                    return None;
+                };
+                let mut outcome = match &activation.applied {
+                    Some(applied) => CommandOutcome::from_apply(applied),
+                    None => CommandOutcome::from_hardware(
+                        &activation.hardware,
+                        "Profile activated.".to_string(),
+                    ),
+                };
+                outcome.message = format!("{}: {}", activation.name, outcome.message);
+                Some(outcome)
+            })
         }
         Command::DeleteProfile(name) => {
-            match session.client.request(Request::DeleteProfile { name }) {
-                Ok(Response::Deleted {
+            request(session, Request::DeleteProfile { name }, |response| {
+                let Response::Deleted {
                     name,
                     activated_instead,
-                }) => {
-                    let message = match activated_instead {
-                        Some(safe) => {
-                            format!("{safe} activated before {name} was deleted.")
-                        }
-                        None => format!("Profile {name} deleted."),
-                    };
-                    (
-                        CommandOutcome {
-                            at_unix_ms: now_unix_ms(),
-                            message,
-                            severity: OutcomeSeverity::Confirmed,
-                            hardware: None,
-                        },
-                        true,
-                    )
-                }
-                Ok(Response::Error(error)) => (CommandOutcome::refused(error.to_string()), false),
-                Ok(_) => (CommandOutcome::refused(unexpected()), false),
-                Err(error) => (CommandOutcome::refused(error.to_string()), false),
-            }
+                } = response
+                else {
+                    return None;
+                };
+                Some(CommandOutcome::confirmed(match activated_instead {
+                    Some(safe) => format!("{safe} activated before {name} was deleted."),
+                    None => format!("Profile {name} deleted."),
+                }))
+            })
         }
     }
 }
 
-fn unexpected() -> String {
-    "The background service answered something this build does not understand.".to_string()
+/// Send one request and read the answer it was sent for.
+///
+/// `describe` returns `None` for any response that is not the one this request
+/// asks for, which is the only thing the three profile commands did differently.
+/// They each repeated the refusal, the unexpected answer and the transport
+/// failure verbatim, so a new failure mode had three places to be handled two
+/// ways.
+fn request(
+    session: &mut Session,
+    request: Request,
+    describe: impl FnOnce(Response) -> Option<CommandOutcome>,
+) -> CommandOutcome {
+    match session.client.request(request) {
+        Ok(Response::Error(error)) => CommandOutcome::refused(error.to_string()),
+        Ok(response) => describe(response).unwrap_or_else(|| {
+            CommandOutcome::refused(
+                "The background service answered something this build does not understand.",
+            )
+        }),
+        Err(error) => CommandOutcome::refused(error.to_string()),
+    }
 }
 
 /// Milliseconds since the Unix epoch.
