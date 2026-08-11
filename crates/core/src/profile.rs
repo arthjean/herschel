@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 use crate::capability::{CapabilityId, DeviceRecord};
+use crate::display::DisplayPreset;
+use crate::lighting::LightingCommand;
 
 mod curve;
 
@@ -225,14 +227,14 @@ pub struct Profile {
     ///
     /// Defaulted so a profile written before lighting existed still loads.
     #[serde(default)]
-    pub lighting: Vec<crate::lighting::LightingCommand>,
+    pub lighting: Vec<LightingCommand>,
     /// What the panel should show, when the profile sets anything.
     ///
     /// A description only: no resolution, no pixel and no protocol byte, for
     /// the same reason the lighting field stores named colors rather than
     /// packets. Defaulted so a profile written before the panel existed loads.
     #[serde(default)]
-    pub display: Option<crate::display::DisplayPreset>,
+    pub display: Option<DisplayPreset>,
 }
 
 impl Profile {
@@ -287,6 +289,8 @@ pub enum ValidationError {
     },
     #[error("Lighting on channel {channel} is invalid: {detail}")]
     Lighting { channel: u8, detail: String },
+    #[error("The panel preset is invalid: {detail}")]
+    Display { detail: String },
     #[error(
         "{channel} curve duty must never decrease as temperature rises: {previous} at {previous_temperature_c} C then {value} at {temperature_c} C."
     )]
@@ -309,7 +313,8 @@ impl ValidationError {
             Self::NameLength { .. }
             | Self::NameBlank
             | Self::CurvePointCount { .. }
-            | Self::Lighting { .. } => None,
+            | Self::Lighting { .. }
+            | Self::Display { .. } => None,
         }
     }
 }
@@ -404,9 +409,14 @@ pub fn validate_program(program: &CoolingProgram) -> Result<(), ValidationError>
 
 /// Validate a whole profile: name, then every value it carries.
 ///
-/// Lighting is validated for shape only. Whether a channel exists is a fact
-/// about the connected controller, so it is checked at activation against what
-/// the controller reported, not against a number stored in a file.
+/// Lighting and the panel preset are validated for shape only. Whether a
+/// channel exists, and whether a panel is there to draw on, are facts about the
+/// connected hardware, so they are checked at activation against what the
+/// devices reported rather than against anything stored in a file.
+///
+/// The preset is checked here and not only on the write path so a broken one is
+/// refused at the Save that introduces it, naming the field, instead of being
+/// stored and failing later at every activation with nothing to point at.
 pub fn validate_profile(profile: &Profile) -> Result<(), ValidationError> {
     validate_name(&profile.name)?;
     validate_program(&profile.program)?;
@@ -417,6 +427,13 @@ pub fn validate_profile(profile: &Profile) -> Result<(), ValidationError> {
                 detail: source.to_string(),
             }
         })?;
+    }
+    if let Some(preset) = &profile.display {
+        preset
+            .validate()
+            .map_err(|source| ValidationError::Display {
+                detail: source.to_string(),
+            })?;
     }
     Ok(())
 }
@@ -696,5 +713,46 @@ mod tests {
     fn safe_profile_is_compatible_with_a_device_exposing_nothing() {
         let device = device_with(vec![]);
         assert!(incompatibilities(&Profile::safe(), &device).is_empty());
+    }
+
+    /// A preset that can never render is refused at the Save that introduces
+    /// it, where the editor can point at the field, rather than at every later
+    /// activation with nothing to point at. Lighting was already checked here;
+    /// the panel is its sibling and had been left out.
+    #[test]
+    fn a_profile_carrying_an_unrenderable_preset_is_refused_at_save() {
+        let mut preset = DisplayPreset::default_infographic();
+        preset.mode = crate::display::DisplayMode::Image;
+        preset.image = None;
+
+        let profile = Profile {
+            name: "Panel".into(),
+            program: CoolingProgram::Onboard,
+            device: None,
+            lighting: Vec::new(),
+            display: Some(preset.clone()),
+        };
+        let error = validate_profile(&profile).unwrap_err();
+        assert!(
+            matches!(error, ValidationError::Display { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("needs a file"), "{error}");
+        assert_eq!(error.channel(), None);
+
+        preset.image = Some(std::path::PathBuf::from("/home/a/wallpaper.png"));
+        let renderable = Profile {
+            display: Some(preset),
+            ..profile
+        };
+        assert!(validate_profile(&renderable).is_ok());
+    }
+
+    /// The safe profile carries no preset at all, so the new check cannot make
+    /// the one profile that must always load start failing.
+    #[test]
+    fn the_safe_profile_still_validates_with_the_preset_check_in_place() {
+        assert!(Profile::safe().display.is_none());
+        assert!(validate_profile(&Profile::safe()).is_ok());
     }
 }

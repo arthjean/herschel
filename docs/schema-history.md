@@ -42,6 +42,13 @@ operator no way to restart it now that the panel row writes on its own. Refusing
 at the handshake says that, where a defaulted field would have reported a
 healthy stream that had in fact stopped.
 
+**7.** Added `ValidationError::Display`, which `validate_profile` now raises for
+a profile whose panel preset could never render. A version 6 client decodes
+`ValidationError` by its `kind` tag and has no arm for this one, so a saved
+profile carrying a broken preset would come back as an unparsable frame instead
+of a message naming the field. The same request previously succeeded and failed
+later at activation, which is the behavior change the bump also marks.
+
 ## Capability schema version
 
 `kori_core::capability::CAPABILITY_SCHEMA_VERSION`. Bumped whenever the shape of
