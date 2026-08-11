@@ -15,16 +15,8 @@ use crate::capability::{CapabilityId, DeviceRecord};
 
 /// Bumped whenever the on-disk configuration shape changes.
 ///
-/// Version 2 added the per-channel lighting a profile carries.
-///
-/// Version 3 added the panel preset. Both fields are optional, so a file at an
-/// earlier version parses exactly as it stands and the next save rewrites it.
-///
-/// Version 4 added the session table, which is what the daemon last committed
-/// rather than what the operator saved under a name. The bump matters in the
-/// other direction: an earlier build refuses an unknown key outright and would
-/// preserve the file as unreadable, while the version makes it say which build
-/// wrote it.
+/// What each version changed, and which direction the incompatibility runs in,
+/// is recorded in `docs/schema-history.md`.
 pub const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 /// Name of the built-in profile that is always available and always safe.

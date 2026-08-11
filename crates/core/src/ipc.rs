@@ -21,31 +21,10 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 
 /// Incremented on any breaking change to [`Request`] or [`Response`].
 ///
-/// Version 2 added the lighting command and the per-channel lighting state.
-///
-/// Version 3 added the panel preset and the state the daemon reports for it.
-///
-/// Version 4 changed the shape of that preset in both directions: a reading
-/// slot gained the color its band fades to, and the wordmark color it no longer
-/// draws stopped being written. A preset refuses unknown fields, so a client of
-/// this version and a daemon of the last cannot exchange one either way. The
-/// bump is what turns that into a refusal at the handshake, naming both
-/// versions, instead of a parse failure the first time a frame is applied.
-///
-/// Version 5 narrowed what `DisplayOutcome::deduplicated` claims. It used to
-/// mean the whole command was a no-op; it now means only that no *frame* was
-/// sent, because the brightness travels over its own report and is sent even
-/// when the picture is unchanged. A version 4 client would read the new answer
-/// without error and report "nothing was sent" about a panel that was just
-/// dimmed, so the two are separated at the handshake rather than left to
-/// disagree quietly.
-///
-/// Version 6 added `DisplayState::faulted`. A version 5 daemon does not send
-/// it and a version 6 client requires it, so the two cannot exchange a status
-/// at all; more importantly, a client that could not see a stopped stream would
-/// leave the operator no way to restart it now that the panel row writes on its
-/// own. Refusing at the handshake says that, where a defaulted field would have
-/// reported a healthy stream that had in fact stopped.
+/// Negotiated by [`Request::Hello`] before anything else is sent, so a mismatch
+/// is a refusal naming both versions rather than a frame one side misreads.
+/// What each version changed, and which quiet disagreement the bump exists to
+/// prevent, is recorded in `docs/schema-history.md`.
 pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Largest frame either side will read.

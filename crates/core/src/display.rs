@@ -391,7 +391,9 @@ pub struct DisplayPreset {
     /// The panel carried the product's name until it was taken off the glass.
     /// The field stays so a profile written before that still loads, since a
     /// preset refuses unknown fields; `skip_serializing` keeps it out of every
-    /// file written from now on, and it can go once no such file can remain.
+    /// file written from now on. The condition that retires it is recorded
+    /// under "Deprecated fields awaiting removal" in `docs/schema-history.md`,
+    /// because a compatibility shim with no stated end is permanent.
     #[serde(default, skip_serializing)]
     pub logo: Option<Rgb>,
     pub orientation: Orientation,

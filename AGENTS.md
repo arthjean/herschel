@@ -164,6 +164,8 @@ the glass rather than asserted to. Neither extracts pixels from the other.
 
 ## Reference
 
+- Why each schema and protocol version was bumped, and which deprecated field
+  is still waiting on which condition: `docs/schema-history.md`
 - Observed device capabilities: `docs/capability-record.json`
 - What each write probe sent and what the operator saw: `docs/lcd-write-probe-2.0.0.json`,
   `docs/rgb-write-probe-1.5.0-fixed-and-off.json`,

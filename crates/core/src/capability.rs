@@ -14,12 +14,9 @@ use crate::DeviceId;
 
 /// Bumped whenever the shape of [`CapabilityRecord`] changes.
 ///
-/// A record carrying an unknown version is rejected instead of guessed.
-///
-/// Version 2 added the USB endpoint list on every interface and the RGB
-/// controller's [`RgbTopology`], both required to gate a lighting write.
-///
-/// Version 3 added the Kraken's [`LcdTopology`], which gates a panel write.
+/// A record carrying an unknown version is rejected instead of guessed. What
+/// each version changed, and what would go wrong if two builds disagreed
+/// quietly, is recorded in `docs/schema-history.md`.
 pub const CAPABILITY_SCHEMA_VERSION: u32 = 3;
 
 /// A value that is either observed with its evidence, or explicitly unknown.
