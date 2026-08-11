@@ -30,8 +30,8 @@ use kori_core::profile::{
 use kori_core::telemetry::{Collector, PwmMode, SafetyAlert, TelemetrySnapshot};
 use kori_core::{KRAKEN_BASE, RGB_CONTROLLER};
 use kori_daemon::server::ShutdownHandle;
-use kori_daemon::state::{Daemon, LcdBackend, RgbBackend};
-use kori_daemon::{Paths, Server};
+use kori_daemon::state::Daemon;
+use kori_daemon::{LcdBackend, Paths, RgbBackend, Server};
 use kori_hardware_linux::SysfsRoot;
 use kori_hardware_linux::testing::{FakeController, FakeKraken, FakeSysfs};
 

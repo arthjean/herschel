@@ -250,11 +250,6 @@ impl Configuration {
         })
     }
 
-    /// What the daemon last committed to the hardware.
-    pub fn session(&self) -> &SessionState {
-        &self.document.session
-    }
-
     /// The lighting a start should replay: the active profile, with every
     /// channel the session has since committed put over it.
     ///
@@ -280,14 +275,15 @@ impl Configuration {
         commands
     }
 
-    /// The thermal program a start should put back, when the session holds one
-    /// the active profile does not.
+    /// The thermal program the session holds, with no fallback to the profile.
     ///
-    /// `None` means nothing has been committed since the profile was chosen, so
-    /// the profile still owns the program and the start reports it by name. A
-    /// program is one fact, like a preset and unlike a set of lighting
-    /// channels, so the session wins outright rather than per part.
-    pub fn program_to_restore(&self) -> Option<&CoolingProgram> {
+    /// Named for what it is rather than for what a start does with it, because
+    /// unlike [`Self::display_to_restore`] it does *not* fall back: `None` means
+    /// nothing has been committed since the profile was chosen, and the caller
+    /// reports the profile by name in that case. A program is one fact, like a
+    /// preset and unlike a set of lighting channels, so the session wins
+    /// outright when it holds one rather than being merged part by part.
+    pub fn session_program(&self) -> Option<&CoolingProgram> {
         self.document.session.program.as_ref()
     }
 
@@ -554,12 +550,12 @@ mod tests {
         };
 
         let mut config = Configuration::load(temp.file());
-        assert_eq!(config.program_to_restore(), None);
+        assert_eq!(config.session_program(), None);
         config.record_program(&program).unwrap();
 
         let reloaded = Configuration::load(temp.file());
         assert_eq!(reloaded.state(), &ConfigState::Loaded);
-        assert_eq!(reloaded.program_to_restore(), Some(&program));
+        assert_eq!(reloaded.session_program(), Some(&program));
         assert!(
             reloaded.active_profile().is_safe_builtin(),
             "the shape was never saved under a name, and did not need to be"
@@ -641,7 +637,7 @@ mod tests {
 
         let config = Configuration::load(temp.file());
         assert_eq!(config.state(), &ConfigState::Loaded);
-        assert_eq!(config.session(), &SessionState::default());
+        assert_eq!(config.session_program(), None);
         assert_eq!(config.display_to_restore(), None);
         assert!(config.lighting_to_restore().is_empty());
     }

@@ -126,7 +126,9 @@ impl Server {
             let mut next = Instant::now() + interval;
             // Nothing is playing until a preset says so, so the loop starts on
             // the idle cadence and only shortens once an animation asks it to.
-            let mut nap = interval.min(TICK_POLL).max(TICK_FLOOR);
+            // Clamped by the same expression the loop uses below, so the first
+            // sleep cannot follow a different rule from every later one.
+            let mut nap = interval.clamp(TICK_FLOOR, TICK_POLL);
             while !shutdown.load(Ordering::SeqCst) {
                 std::thread::sleep(nap);
                 let now = Instant::now();

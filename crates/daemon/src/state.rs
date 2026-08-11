@@ -9,13 +9,13 @@
 
 use std::time::{Duration, Instant};
 
-use kori_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord, LcdTopology};
+use kori_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
 use kori_core::diagnostics::{DiagnosticsLog, EventKind};
 use kori_core::display::DisplayPreset;
 use kori_core::ipc::{
-    AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, ConfigState, DaemonStatus,
-    DeviceStatus, DisplayOutcome, HardwareState, IpcError, LightingOutcome, OwnershipConflict,
-    PROTOCOL_VERSION, Request, Response,
+    AccessMode, ActivationOutcome, ApplyOutcome, BlockedCapability, DaemonStatus, DeviceStatus,
+    DisplayOutcome, HardwareState, IpcError, LightingOutcome, OwnershipConflict, PROTOCOL_VERSION,
+    Request, Response,
 };
 use kori_core::lighting::{LightingCommand, validate_command};
 use kori_core::profile::{
@@ -23,7 +23,7 @@ use kori_core::profile::{
     validate_program,
 };
 use kori_core::telemetry::{CollectorFailure, TelemetrySnapshot};
-use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, capability::Evidenced};
+use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 use kori_hardware_linux::SysfsRoot;
 use kori_hardware_linux::probe::probe;
 
@@ -31,42 +31,16 @@ use crate::config::{ConfigError, Configuration};
 use crate::cooling::CoolingExecutor;
 use crate::display::DisplayExecutor;
 use crate::lighting::LightingExecutor;
-use crate::ownership::{self, DeviceLock};
+use crate::ownership::DeviceLock;
 use crate::paths::Paths;
+use crate::startup::{
+    LcdBackend, RgbBackend, connect_display, connect_lighting, load_configuration,
+    record_discovery, take_ownership,
+};
 use crate::telemetry::{Sampler, default_interval};
 
 /// Version reported to clients and diagnostics.
 pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Where the daemon's lighting commands go.
-///
-/// The controller is the one device this workspace reaches through a character
-/// device rather than through sysfs, so it is the one that has to be injectable:
-/// an integration test drives the real command, ownership and cadence code
-/// against a controller that answers the same reports, and never opens `/dev`.
-pub enum RgbBackend {
-    /// Open the `hidraw` node the sysfs probe resolved.
-    Hidraw,
-    /// Talk to a supplied transport instead.
-    Transport(Box<dyn kori_hardware_linux::rgb::HidTransport>),
-    /// Do not talk to the controller at all.
-    None,
-}
-
-/// Where the daemon's frames go.
-///
-/// Mirrors [`RgbBackend`] and exists for the same reason: the panel is reached
-/// through a character device and a `usbfs` node, so an integration test drives
-/// the real render, deduplication and transfer code against a Kraken that
-/// answers the same reports without opening `/dev`.
-pub enum LcdBackend {
-    /// Open the `hidraw` node and claim the bulk interface sysfs resolved.
-    Nodes,
-    /// Talk to a supplied link instead.
-    Link(Box<kori_hardware_linux::lcd::LcdLink>),
-    /// Do not talk to the panel at all.
-    None,
-}
 
 /// Everything one daemon instance owns.
 pub struct Daemon {
@@ -139,110 +113,9 @@ impl Daemon {
         // reports that carry no picture, no brightness and no orientation.
         let display = connect_display(&mut capabilities, lcd);
 
-        let mut locks = Vec::new();
-        let mut conflicts = Vec::new();
-
-        for rejected in &capabilities.rejected {
-            diagnostics.record(
-                crate::now_unix_ms(),
-                EventKind::DeviceRejected {
-                    device: rejected.id,
-                    reason: rejected.reason.clone(),
-                },
-            );
-        }
-
-        for device in capabilities.supported() {
-            // Serials are secrets: register them so they never reach an export.
-            if let Evidenced::Known { value, .. } = &device.usb.serial {
-                diagnostics.add_secret(value.clone());
-            }
-
-            diagnostics.record(
-                crate::now_unix_ms(),
-                EventKind::DeviceDiscovered {
-                    device: device.id(),
-                    sysfs_path: device.usb.sysfs_path.clone(),
-                },
-            );
-            for capability in &device.capabilities {
-                diagnostics.record(
-                    crate::now_unix_ms(),
-                    EventKind::CapabilityResolved {
-                        device: device.id(),
-                        capability: capability.id,
-                        state: capability
-                            .state
-                            .blocked_reason()
-                            .unwrap_or_else(|| "writable".to_string()),
-                    },
-                );
-            }
-
-            match ownership::acquire(&paths, device.id()) {
-                Ok(lock) => {
-                    diagnostics.record(
-                        crate::now_unix_ms(),
-                        EventKind::OwnershipAcquired {
-                            device: device.id(),
-                            lock_path: lock.path().display().to_string(),
-                        },
-                    );
-                    locks.push(lock);
-                }
-                Err(conflict) => {
-                    diagnostics.record(
-                        crate::now_unix_ms(),
-                        EventKind::OwnershipConflict {
-                            device: conflict.device,
-                            resource: conflict.resource.clone(),
-                            detail: conflict.detail.clone(),
-                        },
-                    );
-                    conflicts.push(conflict);
-                }
-            }
-
-            // A program already holding the device's HID node is a competing
-            // writer. It is reported, never forced away.
-            let nodes = ownership::hid_nodes(std::path::Path::new(&device.usb.sysfs_path));
-            for conflict in ownership::observed_holders(&nodes) {
-                let conflict = OwnershipConflict {
-                    device: Some(device.id()),
-                    ..conflict
-                };
-                diagnostics.record(
-                    crate::now_unix_ms(),
-                    EventKind::OwnershipConflict {
-                        device: conflict.device,
-                        resource: conflict.resource.clone(),
-                        detail: conflict.detail.clone(),
-                    },
-                );
-                conflicts.push(conflict);
-            }
-        }
-
-        let config = Configuration::load(paths.config_file());
-        match config.state() {
-            ConfigState::Recovered {
-                detail,
-                preserved_path,
-                ..
-            } => diagnostics.record(
-                crate::now_unix_ms(),
-                EventKind::ConfigRecovered {
-                    detail: detail.clone(),
-                    preserved_path: preserved_path.clone(),
-                },
-            ),
-            _ => diagnostics.record(
-                crate::now_unix_ms(),
-                EventKind::ConfigLoaded {
-                    path: config.path().display().to_string(),
-                },
-            ),
-        }
+        record_discovery(&mut diagnostics, &capabilities);
+        let (locks, conflicts) = take_ownership(&paths, &capabilities, &mut diagnostics);
+        let config = load_configuration(&paths, &mut diagnostics);
 
         let mut daemon = Self {
             paths,
@@ -258,14 +131,7 @@ impl Daemon {
             reported_failures: Vec::new(),
         };
 
-        let read_only = daemon.access_mode().is_read_only();
-        let reason = daemon
-            .read_only_reason()
-            .unwrap_or_else(|| "every supported capability is writable".to_string());
-        daemon.diagnostics.record(
-            crate::now_unix_ms(),
-            EventKind::AccessModeChanged { read_only, reason },
-        );
+        daemon.record_access_mode();
 
         // The active profile is put back on the hardware immediately, so a
         // restart resumes the program the operator chose instead of leaving
@@ -275,12 +141,23 @@ impl Daemon {
         Ok(daemon)
     }
 
+    /// Log the mode this daemon came up in, and why.
+    fn record_access_mode(&mut self) {
+        let read_only = self.access_mode().is_read_only();
+        let reason = self
+            .read_only_reason()
+            .unwrap_or_else(|| "every supported capability is writable".to_string());
+        self.diagnostics.record(
+            crate::now_unix_ms(),
+            EventKind::AccessModeChanged { read_only, reason },
+        );
+    }
+
     /// Re-apply the configured profile after a start.
     ///
     /// A refusal is recorded and the daemon carries on: an incompatible or
     /// unwritable profile must never keep the service from coming up.
     fn restore_active_profile(&mut self) {
-        let profile = self.config.active_profile();
         // What the operator last put on the hardware outranks what the profile
         // was saved with, since every Lighting edit writes without being saved
         // under a name. The profile still owns anything the session never
@@ -294,7 +171,7 @@ impl Daemon {
         // thermal program: what the operator left running outranks what the
         // last Save happened to capture. `execute` records the outcome of a
         // committed program on its own, so only the profile path names one.
-        if let Some(program) = self.config.program_to_restore().cloned() {
+        if let Some(program) = self.config.session_program().cloned() {
             if let Err(error) = self.execute(&program) {
                 self.diagnostics.record(
                     crate::now_unix_ms(),
@@ -309,6 +186,7 @@ impl Daemon {
             return;
         }
 
+        let profile = self.config.active_profile();
         if profile.program == CoolingProgram::Onboard {
             return;
         }
@@ -327,12 +205,7 @@ impl Daemon {
         );
     }
 
-    /// Put every lighting channel a profile names where the profile wants it.
-    ///
-    /// A refusal is recorded and the next channel is still attempted: a
-    /// controller that is read-only must not keep a cooling profile from being
-    /// restored, and a channel that is gone must not hide the ones that remain.
-    /// Put the panel where the profile wants it, when the profile sets it.
+    /// Put the panel where a profile wants it, when the profile sets one.
     ///
     /// A refusal is recorded and the daemon carries on, for the same reason a
     /// refused lighting channel does not stop a cooling profile.
@@ -354,6 +227,11 @@ impl Daemon {
         }
     }
 
+    /// Put every lighting channel a restore names where it wants it.
+    ///
+    /// A refusal is recorded and the next channel is still attempted: a
+    /// controller that is read-only must not keep a cooling profile from being
+    /// restored, and a channel that is gone must not hide the ones that remain.
     fn apply_lighting(&mut self, commands: &[LightingCommand]) {
         for command in commands {
             if let Err(error) = self.illuminate(command) {
@@ -372,48 +250,61 @@ impl Daemon {
         }
     }
 
-    pub fn capabilities(&self) -> &CapabilityRecord {
-        &self.capabilities
-    }
-
     /// Devices this daemon holds the exclusive lock for.
     pub fn locked_devices(&self) -> Vec<DeviceId> {
         self.locks.iter().map(DeviceLock::device).collect()
     }
 
-    pub fn diagnostics_mut(&mut self) -> &mut DiagnosticsLog {
-        &mut self.diagnostics
-    }
-
     /// Read-only unless ownership is complete and something is writable.
     pub fn access_mode(&self) -> AccessMode {
-        if self.conflicts.is_empty() && self.has_writable_capability() {
-            AccessMode::ReadWrite
-        } else {
-            let mut conflicts = self.conflicts.clone();
-            if conflicts.is_empty() {
-                conflicts.push(OwnershipConflict {
-                    device: None,
-                    resource: "hwmon".to_string(),
-                    detail: "No writable control attribute is available to this user. \
-                             Check the installed udev rule."
-                        .to_string(),
-                });
-            }
-            AccessMode::ReadOnly { conflicts }
+        match self.write_conflicts() {
+            None => AccessMode::ReadWrite,
+            Some(conflicts) => AccessMode::ReadOnly { conflicts },
         }
     }
 
+    /// Everything standing between this daemon and a write, or `None` when
+    /// nothing does.
+    ///
+    /// The one place that decides the question. `access_mode` dresses it for the
+    /// status response and `require_write_access` turns it into a refusal, so
+    /// the two can never answer differently.
+    fn write_conflicts(&self) -> Option<Vec<OwnershipConflict>> {
+        if self.conflicts.is_empty() && self.has_writable_capability() {
+            return None;
+        }
+        let mut conflicts = self.conflicts.clone();
+        if conflicts.is_empty() {
+            conflicts.push(OwnershipConflict {
+                device: None,
+                resource: "hwmon".to_string(),
+                detail: "No writable control attribute is available to this user. \
+                         Check the installed udev rule."
+                    .to_string(),
+            });
+        }
+        Some(conflicts)
+    }
+
     fn read_only_reason(&self) -> Option<String> {
-        match self.access_mode() {
-            AccessMode::ReadWrite => None,
-            AccessMode::ReadOnly { conflicts } => Some(
-                conflicts
-                    .iter()
-                    .map(|conflict| conflict.detail.clone())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ),
+        self.write_conflicts().map(|conflicts| {
+            conflicts
+                .iter()
+                .map(|conflict| conflict.detail.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+    }
+
+    /// The refusal every write path returns when this daemon is read-only.
+    ///
+    /// One gate rather than one per command: an ownership conflict is a fact
+    /// about the daemon, not about the thing being written, and four copies of
+    /// the same check are four chances for one of them to drift.
+    fn require_write_access(&self) -> Result<(), IpcError> {
+        match self.read_only_reason() {
+            None => Ok(()),
+            Some(reason) => Err(IpcError::ReadOnly { reason }),
         }
     }
 
@@ -421,6 +312,18 @@ impl Daemon {
         self.capabilities
             .supported()
             .any(|device| device.capabilities.iter().any(|c| c.state.is_writable()))
+    }
+
+    /// The record for an allowlisted device that is actually present.
+    ///
+    /// Every write path starts here, so "the device is not on this machine" is
+    /// one refusal written once rather than three lookups that could disagree
+    /// about what counts as present.
+    fn supported_device(&self, id: DeviceId) -> Result<&DeviceRecord, IpcError> {
+        self.capabilities
+            .device(id)
+            .filter(|device| device.is_supported())
+            .ok_or(IpcError::NoDevice)
     }
 
     fn device_status(&self, device: &DeviceRecord) -> DeviceStatus {
@@ -612,27 +515,12 @@ impl Daemon {
             return Ok(self.cooling.apply(Instant::now(), program));
         }
 
-        {
-            let device = self
-                .capabilities
-                .device(KRAKEN_BASE)
-                .filter(|device| device.is_supported())
-                .ok_or(IpcError::NoDevice)?;
-            let details = program_incompatibilities(program, device);
-            if !details.is_empty() {
-                return Err(IpcError::Incompatible { details });
-            }
+        let details = program_incompatibilities(program, self.supported_device(KRAKEN_BASE)?);
+        if !details.is_empty() {
+            return Err(IpcError::Incompatible { details });
         }
 
-        if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
-            return Err(IpcError::ReadOnly {
-                reason: conflicts
-                    .iter()
-                    .map(|conflict| conflict.detail.clone())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            });
-        }
+        self.require_write_access()?;
 
         let outcome = self.cooling.apply(Instant::now(), program);
         self.diagnostics.record(
@@ -660,40 +548,12 @@ impl Daemon {
     fn illuminate(&mut self, command: &LightingCommand) -> Result<LightingOutcome, IpcError> {
         validate_command(command, self.lighting.channel_count())?;
 
-        {
-            let device = self
-                .capabilities
-                .device(RGB_CONTROLLER)
-                .filter(|device| device.is_supported())
-                .ok_or(IpcError::NoDevice)?;
-            let capability = command.program.required_capability();
-            if !device.can_write(capability) {
-                return Err(IpcError::Incompatible {
-                    details: vec![Incompatibility {
-                        capability,
-                        reason: device
-                            .capability(capability)
-                            .and_then(|entry| entry.state.blocked_reason())
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "{} is absent from the capability record.",
-                                    capability.label()
-                                )
-                            }),
-                    }],
-                });
-            }
-        }
+        require_writable(
+            self.supported_device(RGB_CONTROLLER)?,
+            command.program.required_capability(),
+        )?;
 
-        if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
-            return Err(IpcError::ReadOnly {
-                reason: conflicts
-                    .iter()
-                    .map(|conflict| conflict.detail.clone())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            });
-        }
+        self.require_write_access()?;
 
         let outcome = self.lighting.apply(Instant::now(), command)?;
         self.diagnostics.record(
@@ -724,40 +584,13 @@ impl Daemon {
         preset.validate()?;
 
         {
-            let device = self
-                .capabilities
-                .device(KRAKEN_BASE)
-                .filter(|device| device.is_supported())
-                .ok_or(IpcError::NoDevice)?;
+            let device = self.supported_device(KRAKEN_BASE)?;
             for capability in [CapabilityId::LcdFrame, CapabilityId::LcdDisplayControl] {
-                if !device.can_write(capability) {
-                    return Err(IpcError::Incompatible {
-                        details: vec![Incompatibility {
-                            capability,
-                            reason: device
-                                .capability(capability)
-                                .and_then(|entry| entry.state.blocked_reason())
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "{} is absent from the capability record.",
-                                        capability.label()
-                                    )
-                                }),
-                        }],
-                    });
-                }
+                require_writable(device, capability)?;
             }
         }
 
-        if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
-            return Err(IpcError::ReadOnly {
-                reason: conflicts
-                    .iter()
-                    .map(|conflict| conflict.detail.clone())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            });
-        }
+        self.require_write_access()?;
 
         let samples = preset.samples(&self.sampler.snapshot());
         let outcome = self.display.apply(preset, &samples)?;
@@ -896,14 +729,8 @@ impl Daemon {
             if !details.is_empty() {
                 return Response::Error(IpcError::Incompatible { details });
             }
-            if let AccessMode::ReadOnly { conflicts } = self.access_mode() {
-                return Response::Error(IpcError::ReadOnly {
-                    reason: conflicts
-                        .iter()
-                        .map(|c| c.detail.clone())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                });
+            if let Err(error) = self.require_write_access() {
+                return Response::Error(error);
             }
         }
 
@@ -979,88 +806,30 @@ impl Daemon {
     }
 }
 
-/// Ask the controller what it is, fold the answer into the record, and keep the
-/// handle only when it answered.
+/// Refuse a capability the record does not carry as writable.
 ///
-/// A controller that could not be opened, or that stayed silent, produces an
-/// evidenced unknown in the record and an executor with nothing behind it. That
-/// is what keeps "the topology is unknown" and "the write is refused" the same
-/// fact rather than two that could drift apart.
-fn connect_lighting(capabilities: &mut CapabilityRecord, backend: RgbBackend) -> LightingExecutor {
-    use kori_hardware_linux::rgb::{self, HidTransport};
-
-    let (topology, transport): (_, Option<Box<dyn HidTransport>>) = match backend {
-        RgbBackend::None => return LightingExecutor::absent(),
-        RgbBackend::Hidraw => {
-            let node = capabilities
-                .device(kori_core::RGB_CONTROLLER)
-                .filter(|device| device.is_supported())
-                .and_then(|device| {
-                    kori_hardware_linux::usb::hidraw_node(std::path::Path::new(
-                        &device.usb.sysfs_path,
-                    ))
-                });
-            let (topology, link) = rgb::connect(node);
-            (
-                topology,
-                link.map(|link| Box::new(link) as Box<dyn HidTransport>),
-            )
-        }
-        RgbBackend::Transport(mut transport) => {
-            let topology = rgb::inspect(transport.as_mut());
-            let answered = topology.channels.is_known();
-            (topology, answered.then_some(transport))
-        }
-    };
-
-    let channels = topology.channels.value().cloned().unwrap_or_default();
-    kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
-
-    // A controller reporting zero channels is not a controller this daemon can
-    // address, so it holds no handle to it.
-    match transport {
-        Some(transport) if !channels.is_empty() => {
-            LightingExecutor::connected(transport, &channels)
-        }
-        _ => LightingExecutor::absent(),
+/// The reason comes from the record when it has one, because that is where the
+/// "this firmware was never validated" refusal is written. A capability the
+/// record does not mention at all is refused in its own words rather than
+/// quietly treated as available.
+fn require_writable(device: &DeviceRecord, capability: CapabilityId) -> Result<(), IpcError> {
+    if device.can_write(capability) {
+        return Ok(());
     }
-}
-
-/// Ask the Kraken what its panel is, fold the answer into the record, and keep
-/// the handle only when a panel answered *and* the bulk interface was claimed.
-///
-/// Half a transport is worse than none: a link that could send a display
-/// command but not a frame would let the daemon dim a panel it cannot draw on.
-fn connect_display(capabilities: &mut CapabilityRecord, backend: LcdBackend) -> DisplayExecutor {
-    use kori_hardware_linux::lcd;
-
-    let (topology, link): (LcdTopology, _) = match backend {
-        LcdBackend::None => return DisplayExecutor::absent(),
-        LcdBackend::Nodes => {
-            let device = capabilities
-                .device(KRAKEN_BASE)
-                .filter(|device| device.is_supported())
-                .map(|device| std::path::PathBuf::from(&device.usb.sysfs_path));
-            let node = device
-                .as_deref()
-                .and_then(kori_hardware_linux::usb::hidraw_node);
-            lcd::connect(device.as_deref(), node)
-        }
-        LcdBackend::Link(mut link) => {
-            let inventory = link.inventory().ok().unwrap_or_default();
-            let topology = lcd::topology_from(&inventory, &link.source(), Some(&link.source()));
-            let answered = topology.answered();
-            (topology, answered.then_some(*link))
-        }
-    };
-
-    let panel = topology.panel.value().cloned();
-    kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
-
-    match (link, panel) {
-        (Some(link), Some(panel)) => DisplayExecutor::connected(link, panel),
-        _ => DisplayExecutor::absent(),
-    }
+    Err(IpcError::Incompatible {
+        details: vec![Incompatibility {
+            capability,
+            reason: device
+                .capability(capability)
+                .and_then(|entry| entry.state.blocked_reason())
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} is absent from the capability record.",
+                        capability.label()
+                    )
+                }),
+        }],
+    })
 }
 
 fn config_error(error: ConfigError) -> IpcError {
