@@ -162,11 +162,23 @@ impl LightingExecutor {
             }
             Err(error) => {
                 // The report may have reached the controller before the failure
-                // and there is no way to read the channel back, so the record
-                // of what it is showing is dropped rather than left claiming a
-                // program that may not be running.
+                // and there is no way to read any channel back, so the record of
+                // what the controller is showing is dropped rather than left
+                // claiming programs that may not be running.
+                //
+                // Every channel, not just the one addressed. A write fails
+                // because the node went away, the permission was revoked or the
+                // device stopped answering, and none of those are facts about
+                // one channel. Dropping only the addressed one left the others
+                // deduplicating against a controller that had since come back on
+                // its firmware defaults, which is the reconnect defect the other
+                // two executors have an explicit `forget` for. This path is the
+                // controller's equivalent, and it needs no separate trigger
+                // because it is the only way this process learns the link is
+                // bad: the controller acknowledges nothing, so a failed write is
+                // the whole of the evidence available.
                 self.last_sent.insert(command.channel, now);
-                self.committed.remove(&command.channel);
+                self.committed.clear();
                 Ok(LightingOutcome {
                     channel: command.channel,
                     program: command.program.clone(),
@@ -178,41 +190,6 @@ impl LightingExecutor {
                 })
             }
         }
-    }
-
-    /// Re-send every committed program, after a reconnect or a resume.
-    ///
-    /// Returns one outcome per channel that had a committed program. Cadence is
-    /// not consulted: restoration happens once, after the controller came back,
-    /// and each channel is written at most once.
-    pub fn restore(&mut self, now: Instant) -> Vec<LightingOutcome> {
-        let pending: Vec<LightingCommand> = self
-            .committed
-            .iter()
-            .map(|(channel, program)| LightingCommand {
-                channel: *channel,
-                program: program.clone(),
-            })
-            .collect();
-
-        pending
-            .into_iter()
-            .filter_map(|command| {
-                self.committed.remove(&command.channel);
-                self.last_sent.remove(&command.channel);
-                self.apply(now, &command).ok()
-            })
-            .collect()
-    }
-
-    /// Drop the record of what the controller is showing.
-    ///
-    /// Called when the device goes away: without this, an Apply after a
-    /// reconnect could deduplicate against a program the controller no longer
-    /// holds and silently write nothing.
-    pub fn forget(&mut self) {
-        self.committed.clear();
-        self.last_sent.clear();
     }
 }
 
@@ -456,6 +433,78 @@ mod tests {
         );
     }
 
+    /// A refused write drops the record of the *whole* controller.
+    ///
+    /// This is the reconnect defect, on the one device that cannot be asked
+    /// whether it is still there. A write fails because the node went away or
+    /// the permission was revoked, and neither is a fact about the channel that
+    /// happened to be addressed. Keeping the untouched channels committed left
+    /// them deduplicating against a controller that had come back on its
+    /// firmware defaults, and the operator could not get them lit again.
+    #[test]
+    fn a_refused_write_drops_every_channel_rather_than_only_the_one_addressed() {
+        let (mut executor, recorder) = executor(3);
+        let start = Instant::now();
+
+        for channel in 1..=3 {
+            executor
+                .apply(
+                    start,
+                    &LightingCommand {
+                        channel,
+                        program: fixed("FF0000"),
+                    },
+                )
+                .unwrap();
+        }
+        assert!((1..=3).all(|channel| executor.committed(channel).is_some()));
+
+        // The controller goes away. The next write is the only way this process
+        // can find out, because nothing here acknowledges anything.
+        recorder
+            .fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let elapsed = start + Duration::from_millis(MIN_COMMAND_INTERVAL_MS);
+        executor
+            .apply(
+                elapsed,
+                &LightingCommand {
+                    channel: 1,
+                    program: fixed("00FF00"),
+                },
+            )
+            .unwrap();
+
+        for channel in 1..=3 {
+            assert_eq!(
+                executor.committed(channel),
+                None,
+                "channel {channel} must not stay claimed after the link refused"
+            );
+        }
+
+        // And once it answers again, every channel writes rather than
+        // deduplicating against what it was showing before it left.
+        recorder
+            .fail
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let sent = recorder.count();
+        let back = elapsed + Duration::from_millis(MIN_COMMAND_INTERVAL_MS);
+        for channel in 1..=3 {
+            let outcome = executor
+                .apply(
+                    back,
+                    &LightingCommand {
+                        channel,
+                        program: fixed("FF0000"),
+                    },
+                )
+                .unwrap();
+            assert!(!outcome.deduplicated, "channel {channel} was deduplicated");
+        }
+        assert_eq!(recorder.count(), sent + 3);
+    }
+
     #[test]
     fn an_absent_controller_refuses_without_pretending_to_write() {
         let mut executor = LightingExecutor::absent();
@@ -474,61 +523,6 @@ mod tests {
         assert_eq!(outcome.writes, 0);
         assert!(matches!(outcome.hardware, HardwareState::NotApplied { .. }));
         assert_eq!(executor.committed(1), None);
-    }
-
-    #[test]
-    fn a_reconnect_replays_every_committed_channel_exactly_once() {
-        let (mut executor, recorder) = executor(3);
-        let start = Instant::now();
-
-        executor
-            .apply(
-                start,
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("FF0000"),
-                },
-            )
-            .unwrap();
-        executor
-            .apply(
-                start,
-                &LightingCommand {
-                    channel: 3,
-                    program: LightingProgram::Off,
-                },
-            )
-            .unwrap();
-        assert_eq!(recorder.count(), 2);
-
-        let restored = executor.restore(start + Duration::from_secs(1));
-        assert_eq!(restored.len(), 2);
-        assert!(restored.iter().all(|outcome| outcome.writes == 1));
-        assert_eq!(recorder.count(), 4, "each channel was rewritten once");
-        assert_eq!(executor.committed(1), Some(&fixed("FF0000")));
-        assert_eq!(executor.committed(3), Some(&LightingProgram::Off));
-        assert_eq!(executor.committed(2), None, "channel 2 was never set");
-    }
-
-    #[test]
-    fn forgetting_the_device_makes_the_next_command_write_again() {
-        let (mut executor, recorder) = executor(3);
-        let start = Instant::now();
-        let command = LightingCommand {
-            channel: 1,
-            program: fixed("0000FF"),
-        };
-
-        executor.apply(start, &command).unwrap();
-        executor.forget();
-        assert!(executor.state().iter().all(|c| c.committed.is_none()));
-
-        let outcome = executor.apply(start, &command).unwrap();
-        assert!(
-            !outcome.deduplicated,
-            "a reconnected controller holds nothing this daemon can deduplicate against"
-        );
-        assert_eq!(recorder.count(), 2);
     }
 
     #[test]
