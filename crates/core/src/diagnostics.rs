@@ -10,6 +10,7 @@
 
 use std::collections::VecDeque;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
@@ -241,6 +242,19 @@ impl Redactor {
         output
     }
 
+    /// A copy of `value` with every registered secret replaced.
+    ///
+    /// `None` when the value could not be taken apart and put back together.
+    /// A caller must treat that as a refusal rather than fall back to the
+    /// original: handing back the unswept value would export exactly the text
+    /// this type exists to remove, and that is the one direction a redactor
+    /// must never fail in.
+    fn redacted<T: Serialize + DeserializeOwned>(&self, value: &T) -> Option<T> {
+        let mut json = serde_json::to_value(value).ok()?;
+        self.redact_json(&mut json);
+        serde_json::from_value(json).ok()
+    }
+
     fn redact_json(&self, value: &mut serde_json::Value) {
         match value {
             serde_json::Value::String(text) => {
@@ -316,8 +330,15 @@ impl DiagnosticsLog {
         self.events.iter()
     }
 
-    /// Build an export with serials redacted from both the capability record
-    /// and every free-text field.
+    /// Build an export with every secret removed from all of it.
+    ///
+    /// Two removals run, and they are not the same removal. `redact_serials`
+    /// blanks the field that holds a serial whether or not anything registered
+    /// it as a secret. The sweep then replaces registered secrets wherever they
+    /// ended up, which is what reaches a serial that landed in a device path,
+    /// an evidence source or a free-text detail. Running only the first would
+    /// miss those; running only the second would keep a serial nobody had
+    /// registered.
     pub fn export(
         &self,
         generated_at_unix_ms: u64,
@@ -329,26 +350,29 @@ impl DiagnosticsLog {
             record
         });
 
-        let mut events = Vec::with_capacity(self.events.len());
-        for event in &self.events {
-            match serde_json::to_value(event) {
-                Ok(mut value) => {
-                    self.redactor.redact_json(&mut value);
-                    match serde_json::from_value(value) {
-                        Ok(redacted) => events.push(redacted),
-                        Err(_) => events.push(event.clone()),
-                    }
-                }
-                Err(_) => events.push(event.clone()),
-            }
-        }
-
-        DiagnosticsExport {
+        let export = DiagnosticsExport {
             schema_version: DIAGNOSTICS_SCHEMA_VERSION,
             generated_at_unix_ms,
             daemon_version: daemon_version.into(),
             capabilities,
-            events,
+            events: self.events.iter().cloned().collect(),
+        };
+
+        // One sweep over the whole document. Sweeping the events alone, as this
+        // did, left the capability record to a single blanked field and shipped
+        // anything that had reached the rest of it.
+        let swept = self.redactor.redacted(&export);
+        match swept {
+            Some(swept) => swept,
+            // Nothing that could not be swept leaves. An export with no events
+            // is a poor bug report and says so by being empty; an export
+            // carrying a serial is a disclosure, and only one of the two can be
+            // taken back.
+            None => DiagnosticsExport {
+                capabilities: None,
+                events: Vec::new(),
+                ..export
+            },
         }
     }
 }
@@ -472,6 +496,72 @@ mod tests {
                 "schema_version"
             ]
         );
+    }
+
+    /// The export used to run two different removals over two disjoint halves
+    /// of itself: the registered-secret sweep reached the events, and the
+    /// capability record got only its `serial` field blanked. A serial that had
+    /// reached any other string of the record therefore shipped.
+    #[test]
+    fn the_sweep_reaches_the_capability_record_and_not_only_the_events() {
+        let mut log = DiagnosticsLog::default();
+        log.add_secret(SERIAL);
+
+        let mut record = record_with_serial();
+        let device = &mut record.devices[0];
+        device.usb.sysfs_path = format!("/sys/bus/usb/devices/usb-NZXT_{SERIAL}");
+        device.usb.product = Evidenced::known(
+            format!("NZXT Kraken Base {SERIAL}"),
+            format!("/dev/serial/by-id/{SERIAL}"),
+        );
+
+        let export = log.export(1, "0.1.0", Some(record));
+        let json = serde_json::to_string(&export).unwrap();
+        assert!(!json.contains(SERIAL), "{json}");
+        assert!(json.contains(REDACTION_PLACEHOLDER), "{json}");
+    }
+
+    /// A value that refuses to be rebuilt from a redacted string is the only
+    /// way the sweep can fail. Nothing in a `DiagnosticsExport` behaves this
+    /// way today; the point is that the mechanism fails closed before something
+    /// one day does, because the export used to hand back the original.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(try_from = "String", into = "String")]
+    struct Digits(String);
+
+    impl TryFrom<String> for Digits {
+        type Error = String;
+
+        fn try_from(value: String) -> Result<Self, Self::Error> {
+            if value.chars().all(|character| character.is_ascii_digit()) {
+                Ok(Self(value))
+            } else {
+                Err(format!("{value} is not made of digits"))
+            }
+        }
+    }
+
+    impl From<Digits> for String {
+        fn from(value: Digits) -> Self {
+            value.0
+        }
+    }
+
+    #[test]
+    fn a_value_that_cannot_be_swept_is_refused_rather_than_returned_intact() {
+        let mut redactor = Redactor::new();
+        redactor.add_secret("12345678");
+
+        assert_eq!(
+            redactor.redacted(&Digits("12345678".into())),
+            None,
+            "a value that cannot be put back together must not come back \
+             carrying the secret"
+        );
+
+        // A value with nothing to remove still comes back unchanged.
+        let clean = Digits("0000".into());
+        assert_eq!(redactor.redacted(&clean), Some(clean));
     }
 
     #[test]
