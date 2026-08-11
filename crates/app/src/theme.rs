@@ -88,6 +88,18 @@ impl Color {
     }
 }
 
+/// A color the operator sent to a channel or to the panel, as a theme token.
+///
+/// The conversion lives here rather than at each call site because this is the
+/// type that owns the packed form: a hand-rolled shift-and-or beside every
+/// contrast check is the same expression written four times, and one of the
+/// four getting the channel order wrong is a defect nothing would catch.
+impl From<kori_core::lighting::Rgb> for Color {
+    fn from(color: kori_core::lighting::Rgb) -> Self {
+        Self::rgb((u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b))
+    }
+}
+
 /// The palette.
 pub mod color {
     use super::Color;
@@ -534,5 +546,25 @@ mod tests {
     #[test]
     fn pointer_targets_are_at_least_forty_logical_pixels() {
         assert!(TARGET_MIN >= px(40.0));
+    }
+
+    #[test]
+    fn a_core_color_packs_into_the_themes_own_form() {
+        use kori_core::lighting::Rgb;
+        assert_eq!(
+            Color::from(Rgb::new(0x6f, 0x4e, 0xf2)),
+            Color::rgb(0x6f4ef2)
+        );
+        assert_eq!(Color::from(Rgb::BLACK), Color::rgb(0x000000));
+        assert_eq!(
+            Color::from(Rgb::new(0xff, 0xff, 0xff)),
+            Color::rgb(0xffffff)
+        );
+        // The channel order is the whole risk: a red-only color must not come
+        // back as a blue one.
+        assert_eq!(
+            Color::from(Rgb::new(0xff, 0x00, 0x00)),
+            Color::rgb(0xff0000)
+        );
     }
 }
