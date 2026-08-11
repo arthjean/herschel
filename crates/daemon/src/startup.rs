@@ -102,7 +102,9 @@ pub(crate) fn record_discovery(diagnostics: &mut DiagnosticsLog, capabilities: &
 /// already holds one of their nodes.
 ///
 /// A conflict is never a startup failure: it is returned so the daemon can come
-/// up read-only and say who is in the way.
+/// up read-only and say who is in the way. Every device node is collected first
+/// and looked up in one pass, because the lookup walks every process this user
+/// can read and that walk does not get cheaper by being repeated per device.
 pub(crate) fn take_ownership(
     paths: &Paths,
     capabilities: &CapabilityRecord,
@@ -110,6 +112,7 @@ pub(crate) fn take_ownership(
 ) -> (Vec<DeviceLock>, Vec<OwnershipConflict>) {
     let mut locks = Vec::new();
     let mut conflicts = Vec::new();
+    let mut nodes = Vec::new();
 
     for device in capabilities.supported() {
         match ownership::acquire(paths, device.id()) {
@@ -123,37 +126,29 @@ pub(crate) fn take_ownership(
                 );
                 locks.push(lock);
             }
-            Err(conflict) => {
-                diagnostics.record(
-                    crate::now_unix_ms(),
-                    EventKind::OwnershipConflict {
-                        device: conflict.device,
-                        resource: conflict.resource.clone(),
-                        detail: conflict.detail.clone(),
-                    },
-                );
-                conflicts.push(conflict);
-            }
+            Err(conflict) => conflicts.push(conflict),
         }
 
-        // A program already holding the device's HID node is a competing
-        // writer. It is reported, never forced away.
-        let nodes = ownership::hid_nodes(std::path::Path::new(&device.usb.sysfs_path));
-        for conflict in ownership::observed_holders(&nodes) {
-            let conflict = OwnershipConflict {
-                device: Some(device.id()),
-                ..conflict
-            };
-            diagnostics.record(
-                crate::now_unix_ms(),
-                EventKind::OwnershipConflict {
-                    device: conflict.device,
-                    resource: conflict.resource.clone(),
-                    detail: conflict.detail.clone(),
-                },
-            );
-            conflicts.push(conflict);
-        }
+        nodes.extend(
+            ownership::hid_nodes(std::path::Path::new(&device.usb.sysfs_path))
+                .into_iter()
+                .map(|node| (node, device.id())),
+        );
+    }
+
+    // A program already holding a device's HID node is a competing writer. It
+    // is reported, never forced away.
+    conflicts.extend(ownership::observed_holders(&nodes));
+
+    for conflict in &conflicts {
+        diagnostics.record(
+            crate::now_unix_ms(),
+            EventKind::OwnershipConflict {
+                device: conflict.device,
+                resource: conflict.resource.clone(),
+                detail: conflict.detail.clone(),
+            },
+        );
     }
 
     (locks, conflicts)

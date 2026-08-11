@@ -179,10 +179,16 @@ pub fn hid_nodes(sysfs_path: &Path) -> Vec<PathBuf> {
 
 /// Processes other than this one holding any of `nodes`.
 ///
-/// Only processes whose `/proc/<pid>/fd` this user can read are visible. A
-/// holder running as another user is invisible here, so a clean result is
-/// reported as "none observed", never as proof of exclusivity.
-pub fn observed_holders(nodes: &[PathBuf]) -> Vec<OwnershipConflict> {
+/// Each node is paired with the device it belongs to, so the returned conflict
+/// already names its device and one scan covers every device. The walk is over
+/// every process whose `/proc/<pid>/fd` this user can read, and repeating it per
+/// device would repeat that cost for an answer that does not change between
+/// them.
+///
+/// Only processes this user can read are visible. A holder running as another
+/// user is invisible here, so a clean result is reported as "none observed",
+/// never as proof of exclusivity.
+pub fn observed_holders(nodes: &[(PathBuf, DeviceId)]) -> Vec<OwnershipConflict> {
     if nodes.is_empty() {
         return Vec::new();
     }
@@ -211,17 +217,18 @@ pub fn observed_holders(nodes: &[PathBuf]) -> Vec<OwnershipConflict> {
             let Ok(target) = std::fs::read_link(descriptor.path()) else {
                 continue;
             };
-            if nodes.contains(&target) {
-                conflicts.push(OwnershipConflict {
-                    device: None,
-                    resource: target.display().to_string(),
-                    detail: format!(
-                        "Process {pid} ({}) already holds this device node.",
-                        process_name(pid).unwrap_or_else(|| "unknown".to_string())
-                    ),
-                });
-                break;
-            }
+            let Some((_, device)) = nodes.iter().find(|(node, _)| node == &target) else {
+                continue;
+            };
+            conflicts.push(OwnershipConflict {
+                device: Some(*device),
+                resource: target.display().to_string(),
+                detail: format!(
+                    "Process {pid} ({}) already holds this device node.",
+                    process_name(pid).unwrap_or_else(|| "unknown".to_string())
+                ),
+            });
+            break;
         }
     }
 
@@ -321,7 +328,7 @@ mod tests {
         let file = File::create(&path).unwrap();
         let canonical = std::fs::canonicalize(&path).unwrap();
 
-        assert!(observed_holders(&[canonical]).is_empty());
+        assert!(observed_holders(&[(canonical, KRAKEN_BASE)]).is_empty());
 
         drop(file);
         std::fs::remove_file(&path).unwrap();
