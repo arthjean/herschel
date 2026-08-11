@@ -705,12 +705,16 @@ mod tests {
 
     #[test]
     fn every_mode_and_metric_key_round_trips() {
-        for mode in DisplayMode::ALL {
-            assert_eq!(DisplayMode::from_key(mode.key()), Some(mode));
-        }
-        for metric in LcdMetric::ALL {
-            assert_eq!(LcdMetric::from_key(metric.key()), Some(metric));
-        }
+        crate::keys::assert_keys_are_the_serde_names(
+            &DisplayMode::ALL,
+            DisplayMode::key,
+            DisplayMode::from_key,
+        );
+        crate::keys::assert_keys_are_the_serde_names(
+            &LcdMetric::ALL,
+            LcdMetric::key,
+            LcdMetric::from_key,
+        );
         assert_eq!(DisplayMode::from_key("gif"), None);
         assert_eq!(LcdMetric::from_key("fan_rpm"), None);
     }

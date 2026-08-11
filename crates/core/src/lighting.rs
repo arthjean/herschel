@@ -526,10 +526,37 @@ mod tests {
         assert_eq!(LightingEffect::ALL.len(), 2);
         let keys: Vec<_> = LightingEffect::ALL.iter().map(|e| e.key()).collect();
         assert_eq!(keys, vec!["breathing", "spectrum_wave"]);
-        for effect in LightingEffect::ALL {
-            assert_eq!(LightingEffect::from_key(effect.key()), Some(effect));
-        }
         assert_eq!(LightingEffect::from_key("rainbow_flow"), None);
+    }
+
+    /// The key a select control sends and the string serde puts on the wire are
+    /// two separate hand-written mirrors of the same variant list. A drift
+    /// between them is a control the daemon refuses every time it is used.
+    #[test]
+    fn every_lighting_key_is_the_name_serde_writes() {
+        crate::keys::assert_keys_are_the_serde_names(
+            &LightingEffect::ALL,
+            LightingEffect::key,
+            LightingEffect::from_key,
+        );
+        crate::keys::assert_keys_are_the_serde_names(
+            &EffectSpeed::ALL,
+            EffectSpeed::key,
+            EffectSpeed::from_key,
+        );
+        crate::keys::assert_keys_are_the_serde_names(
+            &EffectDirection::ALL,
+            EffectDirection::key,
+            EffectDirection::from_key,
+        );
+    }
+
+    /// The index is what the firmware's speed table is addressed by, so the
+    /// five speeds have to cover 0 through 4 exactly once and in order.
+    #[test]
+    fn the_speeds_index_the_firmware_table_in_order() {
+        let indices: Vec<usize> = EffectSpeed::ALL.iter().map(|speed| speed.index()).collect();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]

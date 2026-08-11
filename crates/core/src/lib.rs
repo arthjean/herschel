@@ -63,6 +63,56 @@ pub fn is_allowlisted(id: DeviceId) -> bool {
     ALLOWLIST.contains(&id)
 }
 
+/// Assertions shared by every enum that publishes a stable key per variant.
+#[cfg(test)]
+pub(crate) mod keys {
+    /// Prove that a variant's stable key is the string serde writes for it,
+    /// that the key round-trips, and that no two variants share one.
+    ///
+    /// `key` and `#[serde(rename_all = "snake_case")]` are two hand-maintained
+    /// mirrors of the same variant list, and nothing in the language makes them
+    /// agree. A select control offering a key the wire format does not use
+    /// would be a control the daemon rejects every time it is touched, so the
+    /// agreement is asserted here rather than assumed at each site.
+    ///
+    /// `all` is the same list, a third time. It cannot be checked for
+    /// completeness from here: a variant left out of it is invisible to this
+    /// assertion exactly as it is to `from_key`. What this does catch is the
+    /// larger failure, which is a key list that disagrees with the wire.
+    pub(crate) fn assert_keys_are_the_serde_names<T>(
+        all: &[T],
+        key: impl Fn(T) -> &'static str,
+        from_key: impl Fn(&str) -> Option<T>,
+    ) where
+        T: Copy + PartialEq + std::fmt::Debug + serde::Serialize,
+    {
+        assert!(!all.is_empty(), "an enum with no listed variant");
+
+        let mut seen: Vec<&'static str> = Vec::with_capacity(all.len());
+        for &variant in all {
+            let key = key(variant);
+            assert_eq!(
+                serde_json::to_value(variant).unwrap(),
+                serde_json::Value::String(key.to_string()),
+                "{variant:?} keys as {key} but serializes differently"
+            );
+            assert_eq!(
+                from_key(key),
+                Some(variant),
+                "{variant:?} does not round-trip through its own key"
+            );
+            assert!(!seen.contains(&key), "{key} is claimed by two variants");
+            seen.push(key);
+        }
+
+        assert_eq!(
+            from_key("a key no variant will ever claim"),
+            None,
+            "an unknown key must resolve to nothing rather than to a default"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
