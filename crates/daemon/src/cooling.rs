@@ -121,11 +121,6 @@ impl CoolingExecutor {
         }
     }
 
-    /// True when a bound `kraken2023` instance was resolved.
-    pub fn is_available(&mut self) -> bool {
-        self.resolve().is_some()
-    }
-
     /// Forget what was committed, after the device went away.
     ///
     /// A record kept across a disconnect would let a later Apply deduplicate
@@ -917,7 +912,6 @@ mod tests {
         fake.add_kraken();
         let mut executor = CoolingExecutor::open(&SysfsRoot::new(fake.root_path()));
 
-        assert!(!executor.is_available());
         let outcome = executor.apply(clock.tick(), &CoolingProgram::Fixed { pump: 180, fan: 90 });
         assert_eq!(outcome.writes, 0);
         let HardwareState::NotApplied { reason } = &outcome.hardware else {

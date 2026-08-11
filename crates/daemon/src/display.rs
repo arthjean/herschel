@@ -124,13 +124,8 @@ impl DisplayExecutor {
         }
     }
 
-    /// The geometry a preset must be rendered at, when one is known.
-    pub fn panel(&self) -> Option<&LcdPanel> {
-        self.panel.as_ref()
-    }
-
     /// True when a frame could actually be sent right now.
-    pub fn is_connected(&self) -> bool {
+    fn is_connected(&self) -> bool {
         self.link.is_some() && self.panel.is_some()
     }
 
@@ -357,7 +352,7 @@ impl DisplayExecutor {
         let mut brightness_sent = false;
         if self.brightness != Some(preset.brightness) {
             if let Err(error) = link.set_display(preset.brightness) {
-                return uncertain(preset, &error, &mut self.committed, false);
+                return self.uncertain(preset, &error, false);
             }
             self.brightness = Some(preset.brightness);
             brightness_sent = true;
@@ -395,7 +390,34 @@ impl DisplayExecutor {
                     brightness_sent,
                 }
             }
-            Err(error) => uncertain(preset, &error, &mut self.committed, brightness_sent),
+            Err(error) => self.uncertain(preset, &error, brightness_sent),
+        }
+    }
+
+    /// A transfer that may or may not have landed.
+    ///
+    /// The record of what the panel is showing is dropped rather than left
+    /// claiming a picture that may never have arrived, which is the same
+    /// reasoning the lighting path follows for a controller that acknowledges
+    /// nothing. Dropping it is the point of this being a method: the outcome
+    /// and the forgetting are one act, and a caller that built the outcome
+    /// without forgetting would leave the executor claiming a frame it has just
+    /// reported as uncertain.
+    fn uncertain(
+        &mut self,
+        preset: &DisplayPreset,
+        error: &LcdError,
+        brightness_sent: bool,
+    ) -> DisplayOutcome {
+        self.committed = None;
+        DisplayOutcome {
+            preset: preset.clone(),
+            hardware: HardwareState::Uncertain {
+                reason: error.to_string(),
+            },
+            frames: 0,
+            deduplicated: false,
+            brightness_sent,
         }
     }
 }
@@ -410,29 +432,6 @@ fn absent(preset: &DisplayPreset) -> DisplayOutcome {
         frames: 0,
         deduplicated: false,
         brightness_sent: false,
-    }
-}
-
-/// A transfer that may or may not have landed.
-///
-/// The record of what the panel is showing is dropped rather than left claiming
-/// a picture that may never have arrived, which is the same reasoning the
-/// lighting path follows for a controller that acknowledges nothing.
-fn uncertain(
-    preset: &DisplayPreset,
-    error: &LcdError,
-    committed: &mut Option<Committed>,
-    brightness_sent: bool,
-) -> DisplayOutcome {
-    *committed = None;
-    DisplayOutcome {
-        preset: preset.clone(),
-        hardware: HardwareState::Uncertain {
-            reason: error.to_string(),
-        },
-        frames: 0,
-        deduplicated: false,
-        brightness_sent,
     }
 }
 
@@ -718,8 +717,11 @@ mod tests {
     #[test]
     fn an_absent_panel_refuses_without_pretending_to_write() {
         let mut executor = DisplayExecutor::absent();
-        assert!(!executor.is_connected());
-        assert!(executor.panel().is_none());
+        assert_eq!(
+            executor.state().panel,
+            None,
+            "a panel nothing answered for must not be given a geometry"
+        );
 
         let outcome = executor
             .apply(&DisplayPreset::default_infographic(), &samples(None, None))
