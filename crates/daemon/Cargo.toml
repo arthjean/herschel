@@ -24,6 +24,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 rustix.workspace = true
+# MIT OR Apache-2.0, both compatible with GPL-3.0-or-later. Taken for the one
+# thing std cannot do: notice SIGTERM. Without it `korid` is killed mid-write
+# under `systemctl stop`, and the orderly shutdown the server already implements
+# has nothing to trigger it. Only the `iterator` feature is used, which delivers
+# signals to an ordinary thread rather than running anything in a handler.
+signal-hook = { workspace = true }
 
 [dev-dependencies]
 kori-hardware-linux = { workspace = true, features = ["testing"] }

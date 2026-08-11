@@ -30,6 +30,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 toml = "1.1"
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "net", "process", "system"] }
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"] }
 
 [workspace.lints.clippy]
 # Panic-like escapes: this process owns cooling hardware, so an unwind in a
