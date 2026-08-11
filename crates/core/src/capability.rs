@@ -276,6 +276,23 @@ impl RgbTopology {
         }
     }
 
+    /// A topology whose node resolved but which answered nothing.
+    ///
+    /// The node is evidence on its own: it means the walk from an allowlisted
+    /// VID/PID to a device node succeeded, and an operator whose controller is
+    /// silent still needs to know which node was tried. Named here rather than
+    /// assembled at each call site, because building an all-unknown topology and
+    /// then overwriting one field back to known is a dance that reads as a
+    /// mistake every time it appears.
+    pub fn silent(node: impl Into<String>, reason: impl Into<String>) -> Self {
+        let (node, reason) = (node.into(), reason.into());
+        Self {
+            firmware: Evidenced::unknown(reason.clone(), node.clone()),
+            channels: Evidenced::unknown(reason, node.clone()),
+            node: Evidenced::known(node, "sysfs"),
+        }
+    }
+
     /// Number of channels the controller reported, or `None` when unknown.
     ///
     /// The list is built from the controller's own answer, so its length is
@@ -350,6 +367,26 @@ impl LcdTopology {
             firmware: Evidenced::unknown(reason.clone(), source.clone()),
             panel: Evidenced::unknown(reason.clone(), source.clone()),
             display: Evidenced::unknown(reason, source),
+        }
+    }
+
+    /// A device whose `hidraw` node resolved but which answered nothing.
+    ///
+    /// The counterpart of [`RgbTopology::silent`], and it exists for the same
+    /// reason: the node was reached, and that fact belongs in the record next
+    /// to the silence rather than being overwritten by it.
+    pub fn silent(
+        hid_node: impl Into<String>,
+        bulk_node: Evidenced<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        let (hid_node, reason) = (hid_node.into(), reason.into());
+        Self {
+            bulk_node,
+            firmware: Evidenced::unknown(reason.clone(), hid_node.clone()),
+            panel: Evidenced::unknown(reason.clone(), hid_node.clone()),
+            display: Evidenced::unknown(reason, hid_node.clone()),
+            hid_node: Evidenced::known(hid_node, "sysfs"),
         }
     }
 
