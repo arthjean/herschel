@@ -1,8 +1,8 @@
 {
   "firmware": "2.0.0",
-  "panel": "240x240 RGB565 big-endian circular",
+  "panel": "240x240 RGB565 big-endian square",
   "transport": "/dev/hidraw10 and /dev/bus/usb/001/004 interface 0",
-  "prior_state": "j'obtiens un graphique avec un arc de cercle en haut et un en bas en haut CPU et en bas GPU et pas de valeur juste 2 traits de chaque côté.",
+  "prior_state": "L'écran affiche une couleur rouge pleine.",
   "steps": [
     {
       "description": "solid red at 50%",
@@ -162,8 +162,9 @@
         0
       ],
       "sequences": 2,
-      "elapsed_us": 27426,
-      "observed": "J'obtiens un écran rouge avec écrit KRAKEN CONTROL.",
+      "acknowledged": 4,
+      "elapsed_us": 92945,
+      "observed": "Tout l'écran est en rouge.",
       "error": null
     },
     {
@@ -323,9 +324,10 @@
         0,
         0
       ],
-      "sequences": 1,
-      "elapsed_us": 13933,
-      "observed": "J'obtiens un écran vert avec écrit KRAKEN CONTROL",
+      "sequences": 2,
+      "acknowledged": 4,
+      "elapsed_us": 89611,
+      "observed": "Toue l'écran est en ve",
       "error": null
     },
     {
@@ -485,9 +487,10 @@
         0,
         0
       ],
-      "sequences": 1,
-      "elapsed_us": 13743,
-      "observed": "J'obtiens un écran bleu avec écrit KRAKEN CONTROL",
+      "sequences": 2,
+      "acknowledged": 4,
+      "elapsed_us": 91064,
+      "observed": "Tout l'écran est en bleu",
       "error": null
     },
     {
@@ -647,14 +650,15 @@
         0,
         0
       ],
-      "sequences": 1,
-      "elapsed_us": 14074,
-      "observed": "J'obtiens un écran blanc avec écrit KRAKEN CONTROL",
+      "sequences": 2,
+      "acknowledged": 4,
+      "elapsed_us": 91920,
+      "observed": "Tout l'écran est en blanc",
       "error": null
     }
   ],
   "restoration": {
     "state": "confirmed",
-    "observed": "j'obtiens un graphique avec un arc de cercle en haut et un en bas en haut CPU et en bas GPU et pas de valeur juste 2 traits de chaque côté."
+    "observed": "Je vois le mode dual infographic mais sans valeur"
   }
 }

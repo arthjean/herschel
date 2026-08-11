@@ -30,7 +30,7 @@ cooling, so the hardware rules below outrank convenience.
   means every controller is read-only, which is the correct failure direction.
 - The same gate guards the panel through `lcd::VALIDATED_FIRMWARE`, filled only
   from a `--lcd-write-probe` run an operator watched. It currently holds
-  **`2.0.0`** alone, measured on 2026-08-07 against the owned `1e71:300e`, so
+  **`2.0.0`** alone, measured on 2026-08-11 against the owned `1e71:300e`, so
   every other revision stays read-only. Adding an entry means running that probe
   on that firmware, not editing the list. A Kraken that never answers
   `0x31 0x01` may carry no display at all, and is reported that way rather than

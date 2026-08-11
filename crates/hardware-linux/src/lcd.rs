@@ -86,12 +86,24 @@ pub const SUPPORTED_FIRMWARE_MAJOR: u8 = 2;
 /// a datasheet and never from another Kraken. An empty list means every panel
 /// stays read-only, so the gate fails closed by construction.
 ///
-/// `2.0.0` was validated on 2026-08-07 against the owned `1e71:300e`. Four
-/// solid frames plus a restoration, zero transfer errors, every step described
-/// by the operator, and the color the probe sent is the color that appeared in
-/// all four cases: `docs/lcd-write-probe-2.0.0.json`. The `hwmon` readings
-/// were taken immediately before and after and did not move, so the transfer
-/// leaves the thermal interface alone.
+/// `2.0.0` was validated on 2026-08-11 against the owned `1e71:300e`, over the
+/// transfer this module sends today: `docs/lcd-write-probe-2.0.0.json`. Four
+/// solid frames plus a restoration, zero transfer errors, and every frame
+/// acknowledged four times out of four, which is both `0x36` commands of both
+/// sequences. The operator described each one as filling the whole panel, so
+/// nothing of the previous picture survived the frame that replaced it.
+///
+/// The run before it, on 2026-08-07, is what proved that last sentence has to
+/// be checked: it reported the same success while the operator saw a band of
+/// the new color over the old picture, because the frames went out without
+/// waiting for the panel to answer. `LcdLink::send_frame` waits now, and this
+/// record is the one taken after it did.
+///
+/// One caveat the record carries rather than hides: the panel was already
+/// showing red when the run started, so the red frame proves less than the
+/// three that followed. Green, blue and white each replaced a different color,
+/// which is what establishes that a frame arrives and that the channels land
+/// where this product puts them.
 pub const VALIDATED_FIRMWARE: &[&str] = &["2.0.0"];
 
 /// Whether this exact firmware has been proven on real hardware.
