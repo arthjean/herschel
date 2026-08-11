@@ -98,6 +98,14 @@ impl Default for ConfigDocument {
 pub enum ConfigError {
     #[error("configuration file is not valid TOML: {0}")]
     Parse(String),
+    /// The document in memory could not be turned back into TOML.
+    ///
+    /// Separate from [`Self::Parse`] because it says the opposite thing: the
+    /// file on disk is fine and it is this process that has nothing valid to
+    /// write. Reported as "your file is not valid TOML", an operator would go
+    /// looking at a file that was never the problem.
+    #[error("configuration could not be encoded as TOML: {0}")]
+    Encode(String),
     #[error("configuration declares schema {found}, this build understands {supported}")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("profile {name} is invalid: {source}")]
@@ -430,7 +438,7 @@ fn write_atomically(path: &Path, document: &ConfigDocument) -> Result<(), Config
     use std::os::unix::fs::PermissionsExt;
 
     let encoded =
-        toml::to_string_pretty(document).map_err(|error| ConfigError::Parse(error.to_string()))?;
+        toml::to_string_pretty(document).map_err(|error| ConfigError::Encode(error.to_string()))?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
