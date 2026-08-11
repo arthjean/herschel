@@ -193,7 +193,21 @@ impl EventKind {
                     Severity::Info
                 }
             }
-            _ => Severity::Info,
+            // Listed one by one rather than defaulted. A wildcard here would
+            // hand every event added later the mildest severity there is,
+            // which is how a new failure arrives in the log as a notice.
+            Self::DaemonStarted { .. }
+            | Self::DaemonStopping { .. }
+            | Self::DeviceDiscovered { .. }
+            | Self::CapabilityResolved { .. }
+            | Self::OwnershipAcquired { .. }
+            | Self::ClientAccepted { .. }
+            | Self::ClientDisconnected { .. }
+            | Self::ProfileActivated { .. }
+            | Self::ProfileSaved { .. }
+            | Self::ProfileDeleted { .. }
+            | Self::ConfigLoaded { .. }
+            | Self::CollectorRecovered { .. } => Severity::Info,
         }
     }
 }
@@ -562,6 +576,47 @@ mod tests {
         // A value with nothing to remove still comes back unchanged.
         let clean = Digits("0000".into());
         assert_eq!(redactor.redacted(&clean), Some(clean));
+    }
+
+    /// Severity decides what an operator is shown first, so the events that
+    /// report a control failure must not read as notices.
+    #[test]
+    fn a_control_failure_is_never_recorded_as_a_notice() {
+        for kind in [
+            EventKind::CurveDiverged {
+                channel: Channel::Pump,
+                liquid_temperature_mc: 31_200,
+                expected: 180,
+                reported: 90,
+            },
+            EventKind::SessionNotRecorded {
+                detail: "the configuration directory is read-only".into(),
+            },
+            EventKind::CollectorFailed {
+                collector: Collector::Gpu,
+                detail: "the collector panicked".into(),
+            },
+        ] {
+            assert_eq!(kind.severity(), Severity::Warning, "{kind:?}");
+        }
+
+        assert_eq!(
+            EventKind::ProgramApplied {
+                hardware: HardwareState::Uncertain {
+                    reason: "readback failed".into()
+                },
+                writes: 1,
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            EventKind::ProfileSaved {
+                name: "Silent".into()
+            }
+            .severity(),
+            Severity::Info
+        );
     }
 
     #[test]
