@@ -63,9 +63,16 @@ pub struct ProbeStep {
     pub payload_bytes: usize,
     /// The HID report that closed the transfer.
     pub transfer_end: Vec<u8>,
-    /// How many times the sequence went out: two on the first frame of a run,
-    /// for the panel's buffer swap, one after that.
+    /// How many times the sequence went out: twice per frame, for the panel's
+    /// buffer swap.
     pub sequences: u8,
+    /// How many of the `0x36` commands the panel answered, two per sequence.
+    ///
+    /// Recorded because a transfer that reports success proves only that the
+    /// `ioctl` returned. A frame the panel never acknowledged is the shape of
+    /// the picture photographed half painted on 2026-08-08, so the count is
+    /// evidence the record would otherwise be missing.
+    pub acknowledged: u8,
     /// How long the whole transfer took.
     pub elapsed_us: u128,
     /// What the operator saw, verbatim. Empty when nobody was asked.
@@ -276,6 +283,7 @@ fn send_step<O: Operator>(
                 payload_bytes: 0,
                 transfer_end: Vec::new(),
                 sequences: 0,
+                acknowledged: 0,
                 elapsed_us: 0,
                 observed: String::new(),
                 error: Some(error.to_string()),
@@ -297,6 +305,7 @@ fn send_step<O: Operator>(
             payload_bytes: report.payload_bytes,
             transfer_end: report.end.to_vec(),
             sequences: report.sequences,
+            acknowledged: report.acknowledged,
             elapsed_us,
             observed: operator.ask(question),
             error: None,
@@ -308,6 +317,7 @@ fn send_step<O: Operator>(
             payload_bytes: frame.len(),
             transfer_end: Vec::new(),
             sequences: 0,
+            acknowledged: 0,
             elapsed_us,
             observed: String::new(),
             error: Some(error.to_string()),
@@ -520,6 +530,11 @@ mod tests {
         // panel's buffer swap, and each sequence a header and a payload.
         assert!(report.steps.iter().all(|step| step.sequences == 2));
         assert_eq!(bulk.transfers().len(), (PROBE_COLORS.len() + 1) * 2 * 2);
+
+        // A panel that answers every transfer command acknowledges four of
+        // them per frame, and the record carries that count: a step showing
+        // fewer is a panel the pixels may have outrun.
+        assert!(report.steps.iter().all(|step| step.acknowledged == 4));
     }
 
     #[test]
