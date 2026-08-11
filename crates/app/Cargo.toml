@@ -23,6 +23,10 @@ futures = "0.3"
 # The picture fixtures: the compiled preview cannot be exercised without a real
 # file carrying more than one frame.
 kori-lcd-renderer = { workspace = true, features = ["testing"] }
+# The headless window every screen is built into. Nothing else exercises an
+# element tree: the rules a screen applies are unit-tested, but GPUI only
+# asserts on a doubled hover style when the screen holding it is drawn.
+gpui = { version = "0.2.2", features = ["test-support"] }
 
 [lints]
 workspace = true

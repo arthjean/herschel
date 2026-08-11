@@ -3,9 +3,9 @@
 
 //! The panel preview: the exact frame, not an impression of it.
 //!
-//! FR-14 asks that one [`DisplayPreset`] produce both the preview and the
-//! bytes the panel receives. So the preview is not drawn with the toolkit's
-//! shapes. It calls the same renderer the daemon calls, at the panel's own
+//! One [`DisplayPreset`] produces both the preview and the bytes the panel
+//! receives. So the preview is not drawn with the toolkit's shapes. It calls
+//! the same renderer the daemon calls, at the panel's own
 //! resolution and in the panel's own color depth, and displays the result. What
 //! is on screen is what is on the glass, pixel for pixel, or the two differ
 //! only because the preset does.
@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use gpui::{Div, Image, ImageFormat, Pixels, div, img, prelude::*, px};
-use kori_core::capability::{LcdPanel, LcdPanelShape};
+use kori_core::capability::LcdPanel;
 use kori_core::display::{DisplayPreset, MetricSample};
 
 use crate::theme::{Color, color};
@@ -27,47 +27,27 @@ use crate::theme::{Color, color};
 /// laid out against this number.
 pub const PREVIEW_SIDE: Pixels = px(252.0);
 
-/// Lowest contrast the small text on the panel accepts without warning.
-///
-/// The captions and the wordmark are set at a dozen pixels and under, so they
-/// are small text and take the full ratio.
-pub const MIN_SMALL_TEXT_CONTRAST: f32 = 4.5;
-
-/// Lowest contrast a band and the caption it labels accept.
-///
-/// The bands are not text at all, and the captions they color are set in
-/// semibold at around twenty-two pixels, which WCAG counts as large text from
-/// 14pt bold upward. Both take the large-element threshold rather than the
-/// small-text one; holding them to 4.5:1 would rule out most saturated accents
-/// for no legibility gain. The values, which are larger still, take the same
-/// bar through the text colors below.
-pub const MIN_LARGE_ELEMENT_CONTRAST: f32 = 3.0;
-
-/// The geometry the preview falls back to before a panel has answered.
-///
-/// A preview has to have a size. The row above it says "no panel has answered"
-/// until one does, so this geometry never passes for evidence that a panel was
-/// found.
-pub fn assumed_panel() -> LcdPanel {
-    LcdPanel {
-        width: 240,
-        height: 240,
-        shape: LcdPanelShape::Square,
-        pixel_format: "RGB565 big-endian".to_string(),
-        frame_bytes: 240 * 240 * 2,
-        bulk_endpoint: 0x02,
-        bulk_interface: 0,
-    }
-}
-
 /// Build the preview element for `preset`.
 ///
 /// `samples` are the readings the frame will carry, so the preview ages with
 /// telemetry exactly as the panel does.
-pub fn panel_preview(preset: &DisplayPreset, samples: &[MetricSample; 2], panel: &LcdPanel) -> Div {
-    let rendered = kori_lcd_renderer::render(preset, samples, panel)
-        .and_then(|frame| frame.to_png())
-        .ok();
+///
+/// `panel` is `None` until one answers, and then the disc is empty. A geometry
+/// invented to fill that gap would be a full hardware description, frame size
+/// and endpoint included, sitting in the same field a probed one lands in, and
+/// this product does not fabricate a default to fill a gap. Nothing is lost by
+/// refusing: every control on the row is disabled in that state and the line
+/// above the disc already says no panel has answered.
+pub fn panel_preview(
+    preset: &DisplayPreset,
+    samples: &[MetricSample; 2],
+    panel: Option<&LcdPanel>,
+) -> Div {
+    let rendered = panel.and_then(|panel| {
+        kori_lcd_renderer::render(preset, samples, panel)
+            .and_then(|frame| frame.to_png())
+            .ok()
+    });
     panel_frame(rendered, preset.background)
 }
 
@@ -90,7 +70,7 @@ pub fn panel_frame(rendered: Option<Vec<u8>>, background: kori_core::lighting::R
             .h(PREVIEW_SIDE)
             .rounded(PREVIEW_SIDE / 2.0)
             .overflow_hidden()
-            .bg(Color::rgb(pack(background)).hsla())
+            .bg(Color::from(background).hsla())
             .border_1()
             .border_color(color::SEPARATOR.hsla())
             .children(rendered.map(|png| {
@@ -102,64 +82,96 @@ pub fn panel_frame(rendered: Option<Vec<u8>>, background: kori_core::lighting::R
     )
 }
 
-/// The element furthest below its own minimum, if any is.
-///
-/// Both ends of every band are checked, not just the color it starts on: a fade
-/// into something the background swallows is a gauge that disappears halfway.
-/// A band's first color is also the color of its caption in the paired layout,
-/// which is why it is named as a band rather than as a caption: the threshold
-/// that applies to both is the same one.
-///
-/// Each element is measured against the threshold that applies to it rather
-/// than against one blanket ratio, which is the same split the project's
-/// accessibility budget already makes between text and everything else.
-pub fn worst_contrast(preset: &DisplayPreset) -> Option<(&'static str, f32, f32)> {
-    let background = Color::rgb(pack(preset.background));
-    [
-        ("Text 1", preset.readings[0].text, MIN_SMALL_TEXT_CONTRAST),
-        ("Text 2", preset.readings[1].text, MIN_SMALL_TEXT_CONTRAST),
-        (
-            "Band 1",
-            preset.readings[0].reading,
-            MIN_LARGE_ELEMENT_CONTRAST,
-        ),
-        (
-            "Fade 1",
-            preset.readings[0].band_end(),
-            MIN_LARGE_ELEMENT_CONTRAST,
-        ),
-        (
-            "Band 2",
-            preset.readings[1].reading,
-            MIN_LARGE_ELEMENT_CONTRAST,
-        ),
-        (
-            "Fade 2",
-            preset.readings[1].band_end(),
-            MIN_LARGE_ELEMENT_CONTRAST,
-        ),
-    ]
-    .into_iter()
-    .map(|(label, color, minimum)| (label, contrast(color, background), minimum))
-    .filter(|(_, ratio, minimum)| ratio < minimum)
-    // The furthest below its own bar is the one worth naming first.
-    .min_by(|a, b| (a.1 - a.2).total_cmp(&(b.1 - b.2)))
-}
-
-fn contrast(color: kori_core::lighting::Rgb, background: Color) -> f32 {
-    Color::rgb(pack(color)).contrast(background)
-}
-
-/// A core color as the theme's packed form.
-fn pack(color: kori_core::lighting::Rgb) -> u32 {
-    (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kori_core::capability::LcdPanelShape;
     use kori_core::display::LcdMetric;
     use kori_core::lighting::Rgb;
+
+    /// Lowest contrast the small text on the panel accepts.
+    ///
+    /// The captions are set at a dozen pixels and under, so they are small text
+    /// and take the full ratio.
+    const MIN_SMALL_TEXT_CONTRAST: f32 = 4.5;
+
+    /// Lowest contrast a band and the caption it labels accept.
+    ///
+    /// The bands are not text at all, and the captions they color are set in
+    /// semibold at around twenty-two pixels, which WCAG counts as large text
+    /// from 14pt bold upward. Both take the large-element threshold rather than
+    /// the small-text one; holding them to 4.5:1 would rule out most saturated
+    /// accents for no legibility gain. The values, which are larger still, take
+    /// the same bar through the text colors below.
+    const MIN_LARGE_ELEMENT_CONTRAST: f32 = 3.0;
+
+    /// The element furthest below its own minimum, if any is.
+    ///
+    /// A measurement rather than a control: the screen prints no readability
+    /// warning, so this lives with the assertions it exists for instead of as
+    /// production code nothing calls.
+    ///
+    /// Both ends of every band are checked, not just the color it starts on: a
+    /// fade into something the background swallows is a gauge that disappears
+    /// halfway. A band's first color is also the color of its caption in the
+    /// paired layout, which is why it is named as a band rather than as a
+    /// caption: the threshold that applies to both is the same one.
+    ///
+    /// Each element is measured against the threshold that applies to it rather
+    /// than against one blanket ratio, which is the same split the project's
+    /// accessibility budget already makes between text and everything else.
+    fn worst_contrast(preset: &DisplayPreset) -> Option<(&'static str, f32, f32)> {
+        let background = Color::from(preset.background);
+        [
+            ("Text 1", preset.readings[0].text, MIN_SMALL_TEXT_CONTRAST),
+            ("Text 2", preset.readings[1].text, MIN_SMALL_TEXT_CONTRAST),
+            (
+                "Band 1",
+                preset.readings[0].reading,
+                MIN_LARGE_ELEMENT_CONTRAST,
+            ),
+            (
+                "Fade 1",
+                preset.readings[0].band_end(),
+                MIN_LARGE_ELEMENT_CONTRAST,
+            ),
+            (
+                "Band 2",
+                preset.readings[1].reading,
+                MIN_LARGE_ELEMENT_CONTRAST,
+            ),
+            (
+                "Fade 2",
+                preset.readings[1].band_end(),
+                MIN_LARGE_ELEMENT_CONTRAST,
+            ),
+        ]
+        .into_iter()
+        .map(|(label, color, minimum)| (label, contrast(color, background), minimum))
+        .filter(|(_, ratio, minimum)| ratio < minimum)
+        // The furthest below its own bar is the one worth naming first.
+        .min_by(|a, b| (a.1 - a.2).total_cmp(&(b.1 - b.2)))
+    }
+
+    fn contrast(color: Rgb, background: Color) -> f32 {
+        Color::from(color).contrast(background)
+    }
+
+    /// The panel this crate is developed against, as a test fixture.
+    ///
+    /// A fixture rather than a fallback: it exists to give the renderer a size
+    /// to work at in a test, and nothing in the running program can reach it.
+    fn panel() -> LcdPanel {
+        LcdPanel {
+            width: 240,
+            height: 240,
+            shape: LcdPanelShape::Square,
+            pixel_format: "RGB565 big-endian".to_string(),
+            frame_bytes: 240 * 240 * 2,
+            bulk_endpoint: 0x02,
+            bulk_interface: 0,
+        }
+    }
 
     fn samples() -> [MetricSample; 2] {
         [
@@ -195,7 +207,7 @@ mod tests {
         );
         // Everything else clears its own threshold, including the same violet
         // as the second slot's fade and the white the values are set in.
-        let background = Color::rgb(pack(preset.background));
+        let background = Color::from(preset.background);
         for (name, color, floor) in [
             (
                 "Band 2",
@@ -238,7 +250,7 @@ mod tests {
         preset.readings[0].reading = accent;
         preset.readings[0].text = accent;
 
-        let ratio = contrast(accent, Color::rgb(pack(preset.background)));
+        let ratio = contrast(accent, Color::from(preset.background));
         assert!(
             (MIN_LARGE_ELEMENT_CONTRAST..MIN_SMALL_TEXT_CONTRAST).contains(&ratio),
             "the fixture color must sit between the two thresholds, it is {ratio:.2}:1"
@@ -251,10 +263,10 @@ mod tests {
 
     #[test]
     fn the_preview_renders_the_same_frame_the_daemon_would_send() {
-        // The one assertion that matters for FR-14: the preview's pixels are
+        // The one assertion that matters here: the preview's pixels are
         // the panel's pixels, because both come from one call.
         let preset = DisplayPreset::default_infographic();
-        let panel = assumed_panel();
+        let panel = panel();
         let frame = kori_lcd_renderer::render(&preset, &samples(), &panel).unwrap();
 
         assert_eq!(frame.width(), u32::from(panel.width));
@@ -274,14 +286,7 @@ mod tests {
         // frame as if it were current.
         let mut preset = DisplayPreset::default_infographic();
         preset.mode = kori_core::display::DisplayMode::Image;
-        let panel = assumed_panel();
+        let panel = panel();
         assert!(kori_lcd_renderer::render(&preset, &samples(), &panel).is_err());
-    }
-
-    #[test]
-    fn packing_a_core_color_matches_the_themes_own_form() {
-        assert_eq!(pack(Rgb::new(0x6f, 0x4e, 0xf2)), 0x6f4ef2);
-        assert_eq!(pack(Rgb::BLACK), 0x000000);
-        assert_eq!(pack(Rgb::new(0xff, 0xff, 0xff)), 0xffffff);
     }
 }

@@ -11,7 +11,8 @@
 //! Colors are held as the six digits the operator typed rather than as parsed
 //! values. That is what lets an incomplete entry stay on screen with its own
 //! error while the preview keeps showing the last picture that was valid, which
-//! is what US-017 asks for instead of a field that silently reverts.
+//! is what an editor owes the operator instead of a field that silently
+//! reverts.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -28,8 +29,8 @@ pub const BRIGHTNESS_STEP: u8 = 5;
 /// One of the colors the editor exposes.
 ///
 /// Band and Text are per slot because the two halves of the dial are configured
-/// separately: US-017 names Reading 1/2 and Text 1/2, and a shared color would
-/// make one of each pair unreachable. Each band also carries the color it fades
+/// separately: Reading 1/2 and Text 1/2 each get their own, and a shared color
+/// would make one of each pair unreachable. Each band also carries the color it fades
 /// to, which only the layouts that draw a band long enough to shade ever ask
 /// for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -259,8 +260,8 @@ impl DisplayEditor {
 /// The whole editable state of the LCD screen: what is being typed, and what
 /// can be shown.
 ///
-/// The two are separate values on purpose. US-017 requires the prior valid
-/// preview to stay visible while a field is mid-edit, which is only expressible
+/// The two are separate values on purpose. The prior valid preview stays
+/// visible while a field is mid-edit, which is only expressible
 /// with both. The cost of that split is that a mutation which forgets to
 /// re-derive the preview leaves the window drawing a preset the editor no
 /// longer holds, and this screen has five controls that mutate.
@@ -435,12 +436,15 @@ impl DisplayScreen {
     /// Called after the edits that can change which file is shown, not on every
     /// repaint: the identity carries everything the frames depend on, so a
     /// second call with nothing changed costs one comparison and no decode.
-    pub fn sync_film(&mut self, panel: &LcdPanel) {
+    /// `panel` is `None` until one answers. There is no picture to compile
+    /// against a panel that has not said how big it is, and inventing a size
+    /// would put frames of a fabricated geometry in front of the operator.
+    pub fn sync_film(&mut self, panel: Option<&LcdPanel>) {
         let preset = &self.last_valid;
-        let Some(image) = preset
-            .image
-            .clone()
-            .filter(|_| preset.mode.uses_image() && panel.width > 0 && panel.height > 0)
+        let Some((panel, image)) = panel
+            .filter(|panel| panel.width > 0 && panel.height > 0)
+            .filter(|_| preset.mode.uses_image())
+            .zip(preset.image.clone())
         else {
             self.film = None;
             self.film_error = None;
@@ -832,8 +836,17 @@ mod tests {
         }
     }
 
+    /// The panel the film tests compile against.
     fn panel() -> LcdPanel {
-        crate::preview::assumed_panel()
+        LcdPanel {
+            width: 240,
+            height: 240,
+            shape: kori_core::capability::LcdPanelShape::Square,
+            pixel_format: "RGB565 big-endian".to_string(),
+            frame_bytes: 240 * 240 * 2,
+            bulk_endpoint: 0x02,
+            bulk_interface: 0,
+        }
     }
 
     /// A screen in image mode pointing at a GIF of `frames` solid colors.
@@ -856,7 +869,7 @@ mod tests {
     #[test]
     fn an_animated_picture_compiles_to_a_film_the_preview_can_play() {
         let (mut screen, _path) = screen_showing("film-animated", 3);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
 
         let film = screen.film().expect("the picture compiled");
         assert_eq!(film.frame_count(), 3);
@@ -871,7 +884,7 @@ mod tests {
     #[test]
     fn a_still_picture_compiles_to_a_film_that_does_not_play() {
         let (mut screen, _path) = screen_showing("film-still", 1);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
 
         let film = screen.film().expect("the picture compiled");
         assert_eq!(film.frame_count(), 1);
@@ -885,7 +898,7 @@ mod tests {
     #[test]
     fn the_cursor_walks_the_frames_and_returns_to_the_first() {
         let (mut screen, _path) = screen_showing("film-cursor", 3);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
 
         let first = screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec);
         assert!(screen.advance_film());
@@ -907,12 +920,12 @@ mod tests {
         // GIF on every press. Asserted through the cursor, because a rebuilt
         // film is one that went back to its first frame.
         let (mut screen, _path) = screen_showing("film-identity", 3);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
         assert!(screen.advance_film());
         let showing = screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec);
 
         screen.edit(|editor| editor.brightness = 40);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
         assert_eq!(
             screen.film().and_then(ImageFilm::frame).map(<[u8]>::to_vec),
             showing,
@@ -921,7 +934,7 @@ mod tests {
 
         // An edit they do depend on rebuilds it.
         screen.edit(|editor| editor.orientation = Orientation::Deg90);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
         assert_eq!(
             screen.film().map(ImageFilm::frame_count),
             Some(3),
@@ -936,7 +949,7 @@ mod tests {
             editor.mode = DisplayMode::Image;
             editor.image_path = "/nonexistent/kori/absent.gif".to_string();
         });
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
 
         assert!(
             screen.film().is_none(),
@@ -949,13 +962,32 @@ mod tests {
     }
 
     #[test]
+    fn a_panel_that_has_not_answered_compiles_nothing_rather_than_guessing_a_size() {
+        // The frames are sized against the glass. Until one answers there is no
+        // size, and inventing one would put a picture of a fabricated geometry
+        // in front of the operator while the row above says no panel answered.
+        let (mut screen, _path) = screen_showing("film-no-panel", 3);
+        screen.sync_film(None);
+        assert!(screen.film().is_none());
+        assert_eq!(
+            screen.film_error(),
+            None,
+            "an absent panel is not a file that failed to decode"
+        );
+
+        // The same screen compiles as soon as one does.
+        screen.sync_film(Some(&panel()));
+        assert_eq!(screen.film().map(ImageFilm::frame_count), Some(3));
+    }
+
+    #[test]
     fn leaving_image_mode_drops_the_film_and_its_error() {
         let (mut screen, _path) = screen_showing("film-left", 2);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
         assert!(screen.film().is_some());
 
         screen.edit(|editor| editor.mode = DisplayMode::Solid);
-        screen.sync_film(&panel());
+        screen.sync_film(Some(&panel()));
         assert!(screen.film().is_none());
         assert_eq!(screen.film_error(), None);
     }
