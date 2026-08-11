@@ -20,11 +20,6 @@ use crate::hwmon::{self, HwmonInstance, curve_is_complete};
 use crate::sysfs::SysfsRoot;
 use crate::usb;
 
-/// Story that must validate the RGB protocol before any RGB write.
-pub const RGB_VALIDATION_STORY: &str = "US-013";
-/// Story that must validate the LCD transport before any frame is sent.
-pub const LCD_VALIDATION_STORY: &str = "US-016";
-
 /// Run a complete read-only probe of the machine.
 pub fn probe(root: &SysfsRoot) -> CapabilityRecord {
     let hwmon_instances = hwmon::discover(root);
@@ -236,10 +231,7 @@ fn lcd_capabilities(topology: Option<&LcdTopology>) -> Vec<Capability> {
 }
 
 fn lcd_state(topology: Option<&LcdTopology>) -> CapabilityState {
-    let unvalidated = |reason: String| CapabilityState::Unvalidated {
-        required_story: LCD_VALIDATION_STORY.to_string(),
-        reason,
-    };
+    let unvalidated = |reason: String| CapabilityState::Unvalidated { reason };
 
     let Some(topology) = topology else {
         return unvalidated("The panel transport is not recorded yet.".to_string());
@@ -320,7 +312,7 @@ pub fn attach_lcd_topology(record: &mut CapabilityRecord, topology: LcdTopology)
 /// The gate is deliberately conservative and ordered from the cheapest evidence
 /// to the strongest: no topology at all, then a controller that answered
 /// nothing, then a firmware this project has never driven. Only a controller
-/// that answered a channel list *and* reports a firmware the US-013 write probe
+/// that answered a channel list *and* reports a firmware the write probe
 /// exercised becomes writable.
 fn rgb_capabilities(topology: Option<&RgbTopology>) -> Vec<Capability> {
     let state = rgb_state(topology);
@@ -334,10 +326,7 @@ fn rgb_capabilities(topology: Option<&RgbTopology>) -> Vec<Capability> {
 }
 
 fn rgb_state(topology: Option<&RgbTopology>) -> CapabilityState {
-    let unvalidated = |reason: String| CapabilityState::Unvalidated {
-        required_story: RGB_VALIDATION_STORY.to_string(),
-        reason,
-    };
+    let unvalidated = |reason: String| CapabilityState::Unvalidated { reason };
 
     let Some(topology) = topology else {
         return unvalidated(
@@ -521,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn unvalidated_surfaces_name_the_story_that_unblocks_them() {
+    fn unvalidated_surfaces_state_why_they_are_blocked() {
         let fake = fixture("probe-unvalidated");
         let record = probe(&fake.root());
 
@@ -531,7 +520,8 @@ mod tests {
             .capability(CapabilityId::LcdFrame)
             .unwrap()
             .state;
-        assert!(lcd.blocked_reason().unwrap().contains(LCD_VALIDATION_STORY));
+        assert!(matches!(lcd, CapabilityState::Unvalidated { .. }));
+        assert!(!lcd.blocked_reason().unwrap().is_empty());
 
         let rgb = &record
             .device(RGB_CONTROLLER)
@@ -539,7 +529,8 @@ mod tests {
             .capability(CapabilityId::RgbFixedColor)
             .unwrap()
             .state;
-        assert!(rgb.blocked_reason().unwrap().contains(RGB_VALIDATION_STORY));
+        assert!(matches!(rgb, CapabilityState::Unvalidated { .. }));
+        assert!(!rgb.blocked_reason().unwrap().is_empty());
         assert!(
             !record
                 .device(RGB_CONTROLLER)
@@ -630,7 +621,6 @@ mod tests {
             .blocked_reason()
             .unwrap();
         assert!(reason.contains("9.9.9"), "{reason}");
-        assert!(reason.contains(RGB_VALIDATION_STORY), "{reason}");
     }
 
     #[test]
@@ -715,7 +705,6 @@ mod tests {
             .blocked_reason()
             .unwrap();
         assert!(reason.contains("may carry no display"), "{reason}");
-        assert!(reason.contains(LCD_VALIDATION_STORY), "{reason}");
     }
 
     #[test]

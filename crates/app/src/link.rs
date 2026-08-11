@@ -519,7 +519,6 @@ mod tests {
             vec![Capability {
                 id: CapabilityId::RgbFixedColor,
                 state: CapabilityState::Unvalidated {
-                    required_story: "US-013".into(),
                     reason: "The channel topology is not readable. permission denied on \
                              /dev/hidraw12."
                         .into(),
@@ -684,7 +683,6 @@ mod tests {
             vec![Capability {
                 id: CapabilityId::LcdFrame,
                 state: CapabilityState::Unvalidated {
-                    required_story: "US-016".into(),
                     reason: "The LCD transport is not proven on this firmware.".into(),
                 },
             }],

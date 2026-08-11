@@ -588,7 +588,7 @@ fn the_active_profile_survives_a_daemon_restart() {
     assert_eq!(restarted.status().config, ConfigState::Loaded);
 
     // The profile is put back on the hardware, not merely reselected: the
-    // restart is what US-011 requires to restore the program itself.
+    // restart has to restore the program itself, not just its selection.
     let hwmon = harness.hwmon_path();
     assert_eq!(read_attribute(&hwmon, "pwm1"), "120");
     assert_eq!(read_attribute(&hwmon, "pwm2"), "80");
@@ -819,23 +819,15 @@ fn every_blocked_capability_carries_an_operator_reason() {
         .find(|device| device.id == RGB_CONTROLLER)
         .unwrap();
     assert!(rgb.writable.is_empty());
-    assert!(
-        rgb.blocked
-            .iter()
-            .any(|blocked| blocked.reason.contains("US-013"))
-    );
+    assert!(!rgb.blocked.is_empty());
+    assert!(rgb.blocked.iter().all(|blocked| !blocked.reason.is_empty()));
 
     let kraken = status
         .devices
         .iter()
         .find(|device| device.id == KRAKEN_BASE)
         .unwrap();
-    assert!(
-        kraken
-            .blocked
-            .iter()
-            .any(|blocked| blocked.reason.contains("US-016"))
-    );
+    assert!(!kraken.blocked.is_empty());
     assert!(
         kraken
             .blocked
@@ -844,7 +836,7 @@ fn every_blocked_capability_carries_an_operator_reason() {
     );
 }
 
-// --- EP-002: Monitoring and Thermal Control ------------------------------
+// --- Monitoring and thermal control ---------------------------------------
 
 #[test]
 fn telemetry_reaches_the_client_with_every_section_sampled() {
@@ -1311,7 +1303,7 @@ fn a_diagnostics_export_records_what_reached_the_hardware() {
 }
 
 // ---------------------------------------------------------------------------
-// Lighting, EP-003
+// Lighting
 // ---------------------------------------------------------------------------
 
 fn lighting(channel: u8, hex: &str) -> LightingCommand {
@@ -1382,7 +1374,6 @@ fn an_unvalidated_firmware_refuses_every_write_and_names_the_missing_evidence() 
         .blocked_reason()
         .unwrap();
     assert!(reason.contains("9.9.9"), "{reason}");
-    assert!(reason.contains("US-013"), "{reason}");
     let _ = message;
 
     // And the daemon still knows nothing is showing, because nothing was sent.
@@ -1525,7 +1516,7 @@ fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
             let mut client = harness.client();
             assert!(
                 client.apply_lighting(lighting(1, "FFFFFF")).is_err(),
-                "the write path must stay closed until US-013 records a firmware"
+                "the write path must stay closed until a probe records a firmware"
             );
         }
     }
@@ -1856,7 +1847,6 @@ fn an_unvalidated_firmware_refuses_every_frame_and_names_the_missing_evidence() 
         .blocked_reason()
         .unwrap();
     assert!(reason.contains("2.9.9"), "{reason}");
-    assert!(reason.contains("US-016"), "{reason}");
 
     // Nothing was sent, so the daemon claims nothing about the panel.
     let status = client.status().unwrap();

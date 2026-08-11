@@ -17,9 +17,9 @@ use crate::DeviceId;
 /// A record carrying an unknown version is rejected instead of guessed.
 ///
 /// Version 2 added the USB endpoint list on every interface and the RGB
-/// controller's [`RgbTopology`], both required by US-013.
+/// controller's [`RgbTopology`], both required to gate a lighting write.
 ///
-/// Version 3 added the Kraken's [`LcdTopology`], required by US-016.
+/// Version 3 added the Kraken's [`LcdTopology`], which gates a panel write.
 pub const CAPABILITY_SCHEMA_VERSION: u32 = 3;
 
 /// A value that is either observed with its evidence, or explicitly unknown.
@@ -130,12 +130,9 @@ pub enum CapabilityState {
     },
     /// The device exposes it, but the protocol is not validated yet.
     ///
-    /// `required_story` names the PRD story that must land first. No write is
-    /// permitted while a capability is in this state.
-    Unvalidated {
-        required_story: String,
-        reason: String,
-    },
+    /// No write is permitted while a capability is in this state. `reason` is
+    /// shown verbatim on the control, so it carries its own punctuation.
+    Unvalidated { reason: String },
     /// The device does not expose it on this firmware or kernel binding.
     Unavailable { reason: String },
 }
@@ -158,11 +155,7 @@ impl CapabilityState {
                 writable: false,
                 source,
             } => Some(format!("Read-only: no write permission on {source}.")),
-            Self::Unvalidated {
-                required_story,
-                reason,
-            } => Some(format!("{reason} Requires {required_story}.")),
-            Self::Unavailable { reason } => Some(reason.clone()),
+            Self::Unvalidated { reason } | Self::Unavailable { reason } => Some(reason.clone()),
         }
     }
 }
@@ -525,7 +518,6 @@ mod tests {
                     Capability {
                         id: CapabilityId::LcdFrame,
                         state: CapabilityState::Unvalidated {
-                            required_story: "US-016".into(),
                             reason: "LCD transport is not proven on this firmware.".into(),
                         },
                     },
@@ -545,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_reason_names_the_missing_story() {
+    fn blocked_reason_explains_why_the_write_is_refused() {
         let record = record();
         let state = &record
             .device(KRAKEN_BASE)
@@ -554,7 +546,7 @@ mod tests {
             .unwrap()
             .state;
         let reason = state.blocked_reason().unwrap();
-        assert!(reason.contains("US-016"), "{reason}");
+        assert!(reason.contains("not proven on this firmware"), "{reason}");
     }
 
     #[test]
