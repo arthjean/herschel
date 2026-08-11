@@ -85,7 +85,10 @@ impl SystemSensors {
             Err(cause) => return Reading::unavailable(cause),
         };
 
-        let Some(previous) = self.previous.replace(current) else {
+        // Each exit says what it leaves the baseline at, rather than moving it
+        // and putting it back on the path that must not have moved it.
+        let Some(previous) = self.previous else {
+            self.previous = Some(current);
             return Reading::unavailable(Unavailable::unreadable(format!(
                 "{} has not been sampled twice yet.",
                 path.display()
@@ -95,15 +98,15 @@ impl SystemSensors {
         let total = current.total.saturating_sub(previous.total);
         let idle = current.idle.saturating_sub(previous.idle);
         if total == 0 {
-            // Two reads inside one clock tick. The previous baseline is kept so
-            // the next interval is measured against real elapsed time.
-            self.previous = Some(previous);
+            // Two reads inside one clock tick. The baseline stays where it is,
+            // so the next interval is measured against real elapsed time.
             return Reading::unavailable(Unavailable::unreadable(format!(
                 "{} advanced by zero ticks between samples.",
                 path.display()
             )));
         }
 
+        self.previous = Some(current);
         let busy = total.saturating_sub(idle) as f32 / total as f32 * 100.0;
         Reading::percent(busy, path.display())
     }
