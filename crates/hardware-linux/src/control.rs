@@ -194,25 +194,10 @@ impl CoolingControl {
             ));
         }
 
-        // Leave curve mode before touching a point, so the forty writes below
-        // are driver-memory updates rather than forty curve transfers the
-        // firmware is documented to discard. The channel holds the duty it is
-        // already running for the width of this transaction, so the transition
-        // changes no behavior.
-        let mut writes = 0;
-        if self.hwmon.mode(channel).copied() == Some(PwmMode::Curve) {
-            let holding = self.transition_duty(channel, curve);
-            self.write(&duty_attribute(channel), holding)?;
-            self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
-            writes += 2;
-        }
-
-        for (index, duty) in curve.points.iter().enumerate() {
-            self.write(&curve_point_attribute(channel, index), *duty)?;
-        }
+        let mut writes = self.stage_curve(channel, curve)?;
         // The one transfer that actually programs the device.
         self.write(&mode_attribute(channel), PwmMode::Curve.to_kernel())?;
-        writes += CURVE_POINT_COUNT as u32 + 1;
+        writes += 1;
 
         let mut readback = ChannelReadback::new(channel);
         readback.mode = self.hwmon.mode(channel).copied();
@@ -270,18 +255,12 @@ impl CoolingControl {
         if snapshot.mode == Some(PwmMode::Curve)
             && let Some(curve) = &snapshot.curve
         {
-            // Same reason as `apply_curve`: points written while the channel is
-            // still in curve mode are a burst the firmware may discard, and the
-            // mode write below is then skipped as unchanged, so the restored
-            // curve would never be transferred at all.
-            if self.hwmon.mode(channel).copied() == Some(PwmMode::Curve) {
-                let holding = self.transition_duty(channel, curve);
-                self.write(&duty_attribute(channel), holding)?;
-                self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
-            }
-            for (index, duty) in curve.points.iter().enumerate() {
-                self.write(&curve_point_attribute(channel, index), *duty)?;
-            }
+            // Through the same staging as `apply_curve`, and that is load
+            // bearing here too: points written while the channel is still in
+            // curve mode are a burst the firmware may discard, and the mode
+            // write below is then skipped as unchanged, so the restored curve
+            // would never be transferred at all.
+            self.stage_curve(channel, curve)?;
         }
         if let Some(duty) = snapshot.duty
             && self.hwmon.duty(channel).copied() != Some(duty)
@@ -315,7 +294,42 @@ impl CoolingControl {
         Ok(confirmed)
     }
 
-    /// Write one attribute, or say exactly which one refused.
+    /// Put forty curve points into the driver's in-memory array.
+    ///
+    /// Returns how many attributes were written, which is not a constant: a
+    /// channel already running a curve has to leave curve mode first, and that
+    /// costs two more.
+    ///
+    /// Leaving curve mode is the entire reason this exists.
+    /// `kraken3_fan_curve_pwm_store` sends the whole 40-point curve to the
+    /// device on *every* point written while the channel is already in mode
+    /// `2`, and the kernel documents what the firmware does with that: these
+    /// devices "can lock up or discard the changes if they are too numerous at
+    /// once". Below mode `2` a point write only updates the driver's array, so
+    /// this is one transfer instead of forty-one. The channel holds the duty it
+    /// is already running across the transition, so nothing an operator could
+    /// hear or measure changes while it happens.
+    ///
+    /// Nothing here programs the device. The caller switches the channel into
+    /// curve mode once all forty points are in place, which is what makes a
+    /// half-written curve unobservable. Both callers go through this rather than
+    /// each carrying its own copy: a sequence this delicate diverging between
+    /// the apply path and the restore path is how one of them silently stops
+    /// being safe.
+    fn stage_curve(&self, channel: Channel, curve: &TemperatureCurve) -> Result<u32, WriteFailure> {
+        let mut writes = 0;
+        if self.hwmon.mode(channel).copied() == Some(PwmMode::Curve) {
+            let holding = self.transition_duty(channel, curve);
+            self.write(&duty_attribute(channel), holding)?;
+            self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
+            writes += 2;
+        }
+        for (index, duty) in curve.points.iter().enumerate() {
+            self.write(&curve_point_attribute(channel, index), *duty)?;
+        }
+        Ok(writes + CURVE_POINT_COUNT as u32)
+    }
+
     /// Duty to hold a channel at while its curve points are being rewritten.
     ///
     /// The duty the device reports is what the channel is running right now, so
@@ -338,6 +352,7 @@ impl CoolingControl {
         from_curve.unwrap_or(MAX_DUTY).max(channel.min_duty())
     }
 
+    /// Write one attribute, or say exactly which one refused.
     fn write(&self, attribute: &str, value: u8) -> Result<(), WriteFailure> {
         let path = self.hwmon.attribute(attribute);
         write_attribute(&path, value)
