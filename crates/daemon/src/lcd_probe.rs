@@ -18,16 +18,13 @@
 //!   confirmed by a person or it is not confirmed.
 //! * It restores what it can and says plainly whether the restoration was seen.
 
-use std::io::{BufRead, Write};
-
 use kori_core::capability::LcdTopology;
 use kori_core::display::{DisplayPreset, MetricSample, Orientation};
 use kori_core::lighting::{Brightness, Rgb};
 use kori_hardware_linux::lcd::LcdLink;
 use serde::{Deserialize, Serialize};
 
-/// What the operator must type to authorize a frame.
-pub const CONFIRMATION_PHRASE: &str = "PROBE";
+use crate::probe::{CONFIRMATION_PHRASE, Operator, authorized};
 
 /// Colors the probe fills the panel with, in order.
 ///
@@ -120,37 +117,6 @@ impl WriteProbeReport {
     }
 }
 
-/// Where the probe asks its questions and reads the answers.
-pub trait Operator {
-    /// Ask a question and return the answer, trimmed.
-    fn ask(&mut self, question: &str) -> String;
-
-    /// Report progress. Never carries a value the record depends on.
-    fn note(&mut self, message: &str);
-}
-
-/// The interactive operator, on stderr and stdin.
-///
-/// Prompts go to stderr so the report can be redirected to a file without the
-/// questions landing in it.
-pub struct Terminal;
-
-impl Operator for Terminal {
-    fn ask(&mut self, question: &str) -> String {
-        eprint!("{question} ");
-        let _ = std::io::stderr().flush();
-        let mut answer = String::new();
-        match std::io::stdin().lock().read_line(&mut answer) {
-            Ok(0) | Err(_) => String::new(),
-            Ok(_) => answer.trim().to_string(),
-        }
-    }
-
-    fn note(&mut self, message: &str) {
-        eprintln!("{message}");
-    }
-}
-
 /// Why a run refused to start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProbeRefusal {
@@ -207,19 +173,15 @@ pub fn run<O: Operator>(
     // refused still leaves a record of what the panel was showing.
     let prior_state = operator.ask("What is the panel showing right now? (free text)");
 
-    if operator.ask(&format!(
-        "Type {CONFIRMATION_PHRASE} to authorize these frames, anything else to abort:"
-    )) != CONFIRMATION_PHRASE
-    {
+    if !authorized(operator) {
         return Err(ProbeRefusal::NotAuthorized);
     }
 
-    let brightness = Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF);
     let mut steps = Vec::new();
 
     for (name, color) in PROBE_COLORS {
         let mut preset = DisplayPreset::solid(color);
-        preset.brightness = brightness;
+        preset.brightness = Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF);
         // The panel is left on its own orientation, so nothing this run sends
         // can leave a rotation behind.
         preset.orientation = Orientation::Deg0;
@@ -376,39 +338,12 @@ fn restore<O: Operator>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::probe::testing::Script;
     use kori_core::capability::Evidenced;
     use kori_hardware_linux::lcd;
     use kori_hardware_linux::testing::{BulkRecorder, FakeKraken};
     use kori_hardware_linux::usbfs::UsbfsError;
     use std::sync::Arc;
-
-    /// An operator with scripted answers, so ordering is provable.
-    struct Scripted {
-        answers: Vec<String>,
-        pub asked: Vec<String>,
-        pub notes: Vec<String>,
-    }
-
-    impl Scripted {
-        fn new(answers: &[&str]) -> Self {
-            Self {
-                answers: answers.iter().rev().map(|a| a.to_string()).collect(),
-                asked: Vec::new(),
-                notes: Vec::new(),
-            }
-        }
-    }
-
-    impl Operator for Scripted {
-        fn ask(&mut self, question: &str) -> String {
-            self.asked.push(question.to_string());
-            self.answers.pop().unwrap_or_default()
-        }
-
-        fn note(&mut self, message: &str) {
-            self.notes.push(message.to_string());
-        }
-    }
 
     fn topology(firmware: &str) -> LcdTopology {
         LcdTopology {
@@ -430,13 +365,13 @@ mod tests {
         answers: &[&str],
     ) -> (
         Result<WriteProbeReport, ProbeRefusal>,
-        Scripted,
+        Script,
         Arc<BulkRecorder>,
     ) {
         let kraken = FakeKraken::new("2.0.4");
         let bulk = kraken.bulk_recorder();
         let mut link = kraken.link();
-        let mut operator = Scripted::new(answers);
+        let mut operator = Script::new(answers);
         let report = run(&mut link, &mut operator, &topology("2.0.4"));
         (report, operator, bulk)
     }
@@ -476,7 +411,7 @@ mod tests {
         let kraken = FakeKraken::without_panel("2.0.4");
         let bulk = kraken.bulk_recorder();
         let mut link = kraken.link();
-        let mut operator = Scripted::new(&full_run());
+        let mut operator = Script::new(&full_run());
 
         let mut silent = topology("2.0.4");
         silent.display = Evidenced::unknown("the device sent no display answer", "report 0x31");
@@ -497,7 +432,7 @@ mod tests {
     fn an_unknown_geometry_refuses_rather_than_guessing_one() {
         let kraken = FakeKraken::new("2.0.4");
         let mut link = kraken.link();
-        let mut operator = Scripted::new(&full_run());
+        let mut operator = Script::new(&full_run());
 
         let mut unknown = topology("2.0.4");
         unknown.panel = Evidenced::unknown("no resolution was recorded", "candidate");
@@ -580,7 +515,7 @@ mod tests {
         let (report, operator, _bulk) = probe(&full_run());
         report.unwrap();
 
-        let prompt = operator.notes.first().cloned().unwrap_or_default();
+        let prompt = operator.noted.first().cloned().unwrap_or_default();
         assert!(prompt.contains(&PROBE_COLORS.len().to_string()), "{prompt}");
         assert!(prompt.contains("240x240"), "{prompt}");
         assert!(prompt.contains("no image"), "{prompt}");
@@ -619,7 +554,7 @@ mod tests {
             path: "/dev/bus/usb/001/004".to_string(),
         });
         let mut link = kraken.link();
-        let mut operator = Scripted::new(&full_run());
+        let mut operator = Script::new(&full_run());
 
         let report = run(&mut link, &mut operator, &topology("2.0.4")).unwrap();
         assert_eq!(report.steps.len(), PROBE_COLORS.len());

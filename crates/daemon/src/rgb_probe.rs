@@ -21,7 +21,6 @@
 //! the answer verbatim. An observation nobody made is left empty rather than
 //! filled with a plausible one.
 
-use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
 
 use kori_core::capability::{Evidenced, RgbChannel, RgbTopology};
@@ -32,8 +31,7 @@ use kori_core::lighting::{
 use kori_hardware_linux::rgb::{self, HidTransport};
 use serde::{Deserialize, Serialize};
 
-/// What the operator must type to authorize a write to the controller.
-pub const CONFIRMATION_PHRASE: &str = "PROBE";
+use crate::probe::{CONFIRMATION_PHRASE, Operator, authorized};
 
 /// Color the probe applies while testing a channel.
 ///
@@ -117,41 +115,6 @@ impl WriteProbeReport {
     /// True when every report the probe sent left the process without error.
     pub fn every_step_landed(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|step| step.error.is_none())
-    }
-}
-
-/// Where the probe asks its questions and reads the answers.
-///
-/// A trait so the ordering, the refusal and the recording can be tested without
-/// a terminal, and so a run with no answers available records empty
-/// observations rather than inventing them.
-pub trait Operator {
-    /// Ask a question and return the answer, trimmed.
-    fn ask(&mut self, question: &str) -> String;
-
-    /// Report progress. Never carries a value the record depends on.
-    fn note(&mut self, message: &str);
-}
-
-/// The interactive operator, on stderr and stdin.
-///
-/// Prompts go to stderr so the report itself can be redirected to a file
-/// without the questions landing in it.
-pub struct Terminal;
-
-impl Operator for Terminal {
-    fn ask(&mut self, question: &str) -> String {
-        eprint!("{question} ");
-        let _ = std::io::stderr().flush();
-        let mut answer = String::new();
-        match std::io::stdin().lock().read_line(&mut answer) {
-            Ok(0) | Err(_) => String::new(),
-            Ok(_) => answer.trim().to_string(),
-        }
-    }
-
-    fn note(&mut self, message: &str) {
-        eprintln!("{message}");
     }
 }
 
@@ -249,7 +212,6 @@ impl ProbeScope {
     /// a value that becomes selectable without being swept here fails
     /// `the_sweep_covers_every_value_the_screen_can_select`.
     fn sweep() -> Vec<LightingProgram> {
-        let brightness = Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF);
         let mut programs = Vec::new();
 
         for effect in LightingEffect::ALL {
@@ -265,7 +227,7 @@ impl ProbeScope {
                     programs.push(LightingProgram::Effect {
                         effect,
                         colors: colors.clone(),
-                        brightness,
+                        brightness: Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF),
                         speed,
                         direction: *direction,
                     });
@@ -316,10 +278,7 @@ pub fn run<T: HidTransport + ?Sized, O: Operator>(
          validated on this firmware.",
     );
     operator.note(&scope.description());
-    if operator.ask(&format!(
-        "Type {CONFIRMATION_PHRASE} to authorize, anything else to abort:"
-    )) != CONFIRMATION_PHRASE
-    {
+    if !authorized(operator) {
         return Err(ProbeRefusal::NotAuthorized);
     }
 
@@ -540,41 +499,8 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::probe::testing::Script;
     use kori_hardware_linux::testing::FakeController;
-
-    /// An operator with a scripted set of answers.
-    struct Script {
-        answers: std::collections::VecDeque<String>,
-        asked: Vec<String>,
-        /// Everything the operator was told, in order.
-        noted: Vec<String>,
-    }
-
-    impl Script {
-        fn new(answers: &[&str]) -> Self {
-            Self {
-                answers: answers.iter().map(|a| a.to_string()).collect(),
-                asked: Vec::new(),
-                noted: Vec::new(),
-            }
-        }
-
-        /// What the operator had been told by the time they authorized the run.
-        fn briefing(&self) -> String {
-            self.noted.join(" ")
-        }
-    }
-
-    impl Operator for Script {
-        fn ask(&mut self, question: &str) -> String {
-            self.asked.push(question.to_string());
-            self.answers.pop_front().unwrap_or_default()
-        }
-
-        fn note(&mut self, message: &str) {
-            self.noted.push(message.to_string());
-        }
-    }
 
     fn topology(channels: u8) -> RgbTopology {
         RgbTopology {

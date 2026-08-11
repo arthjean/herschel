@@ -17,6 +17,7 @@ pub mod lcd_probe;
 pub mod lighting;
 pub mod ownership;
 pub mod paths;
+pub mod probe;
 pub mod rgb_probe;
 pub mod server;
 pub mod state;

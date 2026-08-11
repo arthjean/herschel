@@ -173,7 +173,7 @@ fn write_probe(arguments: &[String]) -> Result<(), String> {
 
     let report = kori_daemon::rgb_probe::run(
         &mut link,
-        &mut kori_daemon::rgb_probe::Terminal,
+        &mut kori_daemon::probe::Terminal,
         &topology,
         scope,
         restore,
@@ -292,7 +292,7 @@ fn lcd_write_probe() -> Result<(), String> {
     })?;
 
     let report =
-        kori_daemon::lcd_probe::run(&mut link, &mut kori_daemon::lcd_probe::Terminal, &topology)
+        kori_daemon::lcd_probe::run(&mut link, &mut kori_daemon::probe::Terminal, &topology)
             .map_err(|refusal| refusal.to_string())?;
 
     let json = serde_json::to_string_pretty(&report)
