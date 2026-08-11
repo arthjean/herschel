@@ -277,8 +277,16 @@ impl RgbTopology {
     }
 
     /// Number of channels the controller reported, or `None` when unknown.
+    ///
+    /// The list is built from the controller's own answer, so its length is
+    /// device-supplied. A count that does not fit the byte a channel index is
+    /// addressed by is reported as unknown rather than truncated: truncation
+    /// would turn an absurd topology into a small plausible one and let
+    /// [`crate::lighting::validate_command`] accept a channel on the strength
+    /// of it.
     pub fn channel_count(&self) -> Option<u8> {
-        self.channels.value().map(|channels| channels.len() as u8)
+        let channels = self.channels.value()?;
+        u8::try_from(channels.len()).ok()
     }
 }
 
@@ -595,6 +603,45 @@ mod tests {
                 .is_some_and(|channels| channels.iter().all(|c| !c.led_count.is_known())),
             "an uncounted LED total must never become a number"
         );
+    }
+
+    /// The channel list comes from the controller's own answer, so its length
+    /// is not this product's to trust. A count that does not fit a channel
+    /// index has to read as unknown: truncating 257 channels to 1 would let a
+    /// command address channel 1 on the strength of a topology nobody believes.
+    #[test]
+    fn a_channel_count_that_cannot_fit_an_index_is_unknown_rather_than_truncated() {
+        let absurd = RgbTopology {
+            node: Evidenced::known("/dev/hidraw12".into(), "sysfs"),
+            firmware: Evidenced::known("1.5.0".into(), "report 0x11"),
+            channels: Evidenced::known(
+                (0..=u16::from(u8::MAX))
+                    .map(|index| RgbChannel {
+                        index: index as u8,
+                        accessories: Vec::new(),
+                        led_count: Evidenced::unknown("not counted", "report 0x21"),
+                    })
+                    .collect(),
+                "report 0x21",
+            ),
+        };
+        assert_eq!(absurd.channel_count(), None);
+
+        // The largest topology that still fits is still reported.
+        let full = RgbTopology {
+            channels: Evidenced::known(
+                (0..u16::from(u8::MAX))
+                    .map(|index| RgbChannel {
+                        index: index as u8,
+                        accessories: Vec::new(),
+                        led_count: Evidenced::unknown("not counted", "report 0x21"),
+                    })
+                    .collect(),
+                "report 0x21",
+            ),
+            ..absurd
+        };
+        assert_eq!(full.channel_count(), Some(u8::MAX));
     }
 
     #[test]
