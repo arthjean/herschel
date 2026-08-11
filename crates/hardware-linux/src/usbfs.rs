@@ -37,19 +37,21 @@ pub const USBFS_ROOT_ENV: &str = "KORI_USBFS_ROOT";
 /// `ioctl` group of the USB device filesystem, `'U'`.
 const USBFS_GROUP: u8 = b'U';
 
-/// Largest payload handed to one `USBDEVFS_BULK` call.
+/// Largest payload one `USBDEVFS_BULK` call may carry.
 ///
-/// Large enough that a whole panel frame is one call. It was 16 KiB, which
-/// split a 115 200 byte frame across eight `ioctl`s with a user-space return
-/// between each, and the panel painted only a band of what it was sent. No
-/// short packet is involved either way, since 16 KiB is a whole multiple of the
-/// endpoint's 512 byte maximum, but the gaps are real and the reference
+/// A whole panel frame has to fit, and it does with room to spare. It was 16
+/// KiB, which split a 115 200 byte frame across eight `ioctl`s with a user-space
+/// return between each, and the panel painted only a band of what it was sent.
+/// No short packet is involved either way, since 16 KiB is a whole multiple of
+/// the endpoint's 512 byte maximum, but the gaps are real and the reference
 /// implementation does not have them: liquidctl's `bulk_buffer_size` for the
 /// 2023 and 2024 models is 2 MiB, so it writes the frame whole.
 ///
-/// The kernel's own ceiling for one transfer is far above this. The value is a
-/// bound on the contiguous buffer a single call asks the kernel to hold, and
-/// this product's largest transfer by a wide margin is one frame.
+/// This is a ceiling, not a chunk size. A payload above it is refused, because
+/// splitting one is exactly the bug that was photographed on 2026-08-08 and the
+/// only reason this constant exists. Enlarging the split moved that bug rather
+/// than removing it; refusing removes it. The kernel's own limit for a single
+/// transfer is far above this value, so nothing this product sends comes close.
 pub const MAX_BULK_CHUNK: usize = 2 * 1024 * 1024;
 
 /// How long one bulk call may block before the kernel gives up.
@@ -68,6 +70,8 @@ pub enum UsbfsError {
     Busy { interface: u8 },
     #[error("endpoint {endpoint:#04x} is an IN endpoint and cannot be written")]
     NotAnOutEndpoint { endpoint: u8 },
+    #[error("a transfer of {bytes} bytes exceeds the {limit} byte ceiling and will not be split")]
+    PayloadTooLarge { bytes: usize, limit: usize },
     #[error("{path}: {detail}")]
     Io { path: String, detail: String },
     #[error("the device accepted {wrote} of {expected} bytes")]
@@ -106,17 +110,38 @@ impl UsbfsError {
 
 /// Moving a byte stream to one bulk endpoint.
 ///
-/// A trait rather than a concrete file for the same reason [`crate::rgb::HidTransport`]
+/// A trait rather than a concrete file for the same reason [`crate::hid::HidTransport`]
 /// is one: the frame encoder, the probe and the daemon are all provable against
 /// a recording double, and only this module knows how a real transfer happens.
 pub trait BulkTransport: Send {
     /// Write `payload` to `endpoint` as one transfer.
     ///
-    /// Implementations refuse an IN endpoint rather than reinterpreting it.
+    /// Every implementation calls [`check_transfer`] first, including the
+    /// recording double a test drives.
     fn write_bulk(&mut self, endpoint: u8, payload: &[u8]) -> Result<(), UsbfsError>;
 
     /// Where the bytes go, for the capability record's evidence.
     fn source(&self) -> String;
+}
+
+/// What every bulk transport refuses before it moves a byte.
+///
+/// Part of the [`BulkTransport`] contract rather than of one implementation.
+/// The trait promises *one* transfer to an OUT endpoint, and a caller that
+/// broke either half has to be told so wherever it hands the bytes over: a test
+/// double that accepted a payload the hardware would not is a test that proves
+/// the wrong thing.
+pub fn check_transfer(endpoint: u8, payload: &[u8]) -> Result<(), UsbfsError> {
+    if endpoint & 0x80 != 0 {
+        return Err(UsbfsError::NotAnOutEndpoint { endpoint });
+    }
+    if payload.len() > MAX_BULK_CHUNK {
+        return Err(UsbfsError::PayloadTooLarge {
+            bytes: payload.len(),
+            limit: MAX_BULK_CHUNK,
+        });
+    }
+    Ok(())
 }
 
 /// The `usbfs` device node, with one interface claimed for as long as it lives.
@@ -177,28 +202,24 @@ impl Drop for Usbfs {
 
 impl BulkTransport for Usbfs {
     fn write_bulk(&mut self, endpoint: u8, payload: &[u8]) -> Result<(), UsbfsError> {
-        if endpoint & 0x80 != 0 {
-            return Err(UsbfsError::NotAnOutEndpoint { endpoint });
+        check_transfer(endpoint, payload)?;
+
+        // SAFETY: `payload` outlives the call, the endpoint is an OUT endpoint
+        // as checked above so the kernel only reads through the pointer, and the
+        // opcode's size matches the struct it points at.
+        let wrote = unsafe {
+            ioctl::ioctl(
+                self.file.as_fd(),
+                BulkIoctl::new(endpoint, payload, BULK_TIMEOUT),
+            )
         }
+        .map_err(|error| UsbfsError::errno(&self.path, self.interface, error))?;
 
-        for chunk in payload.chunks(MAX_BULK_CHUNK) {
-            // SAFETY: `chunk` outlives the call, the endpoint is an OUT
-            // endpoint as checked above so the kernel only reads through the
-            // pointer, and the opcode's size matches the struct it points at.
-            let wrote = unsafe {
-                ioctl::ioctl(
-                    self.file.as_fd(),
-                    BulkIoctl::new(endpoint, chunk, BULK_TIMEOUT),
-                )
-            }
-            .map_err(|error| UsbfsError::errno(&self.path, self.interface, error))?;
-
-            if wrote != chunk.len() {
-                return Err(UsbfsError::ShortWrite {
-                    wrote,
-                    expected: chunk.len(),
-                });
-            }
+        if wrote != payload.len() {
+            return Err(UsbfsError::ShortWrite {
+                wrote,
+                expected: payload.len(),
+            });
         }
         Ok(())
     }
@@ -380,25 +401,13 @@ mod tests {
 
     #[test]
     fn an_in_endpoint_is_refused_before_any_ioctl_happens() {
-        struct Refusing;
-        impl BulkTransport for Refusing {
-            fn write_bulk(&mut self, endpoint: u8, _payload: &[u8]) -> Result<(), UsbfsError> {
-                if endpoint & 0x80 != 0 {
-                    return Err(UsbfsError::NotAnOutEndpoint { endpoint });
-                }
-                Ok(())
-            }
-            fn source(&self) -> String {
-                "test".into()
-            }
-        }
         // The direction bit is what separates the two, and 0x81 is the exact
         // interrupt IN address the Kraken's HID interface publishes.
         assert_eq!(
-            Refusing.write_bulk(0x81, &[0]),
+            check_transfer(0x81, &[0]),
             Err(UsbfsError::NotAnOutEndpoint { endpoint: 0x81 })
         );
-        assert!(Refusing.write_bulk(0x02, &[0]).is_ok());
+        assert!(check_transfer(0x02, &[0]).is_ok());
     }
 
     #[test]
@@ -419,6 +428,39 @@ mod tests {
         assert_eq!(
             node_in(root, &fake.root_path().join("bus/usb/devices")),
             None
+        );
+    }
+
+    #[test]
+    fn a_payload_above_the_ceiling_is_refused_rather_than_split() {
+        // Splitting a frame is the bug that was photographed on 2026-08-08: the
+        // panel painted a band of the new picture and kept the rest of the old
+        // one, while every transfer reported success. Enlarging the split moved
+        // that bug to a bigger size; refusing removes it.
+        assert_eq!(
+            check_transfer(0x02, &vec![0u8; MAX_BULK_CHUNK + 1]),
+            Err(UsbfsError::PayloadTooLarge {
+                bytes: MAX_BULK_CHUNK + 1,
+                limit: MAX_BULK_CHUNK,
+            })
+        );
+
+        // A whole frame, the largest thing this product transfers, clears the
+        // ceiling by a wide margin. Checked at compile time as well: a frame
+        // that outgrew the ceiling would start being refused at runtime, and
+        // this build must never get that far.
+        const { assert!(crate::lcd::FRAME_BYTES < MAX_BULK_CHUNK) };
+        assert!(check_transfer(0x02, &vec![0u8; crate::lcd::FRAME_BYTES]).is_ok());
+
+        // And the refusal reaches a caller through a real transport, not only
+        // through the check: the frame path drives a `BulkTransport`.
+        let kraken = crate::testing::FakeKraken::new("2.0.0");
+        let recorder = kraken.bulk_recorder();
+        let mut link = kraken.link();
+        assert!(link.send_frame(&vec![0u8; crate::lcd::FRAME_BYTES]).is_ok());
+        assert!(
+            recorder.bytes() > 0,
+            "a frame within the ceiling still goes out"
         );
     }
 
