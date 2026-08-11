@@ -362,7 +362,10 @@ pub struct CollectorFailure {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Ordered so a collector can key a map: the daemon tracks one health state per
+/// collector, and the order the variants are declared in is the order those
+/// states are reported in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Collector {
     Kraken,
