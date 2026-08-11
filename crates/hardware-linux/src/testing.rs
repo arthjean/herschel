@@ -636,7 +636,7 @@ impl crate::usbfs::BulkTransport for RecordingBulk {
 /// Built for the LCD path: it responds to the firmware request and to the
 /// display report only a device carrying a panel responds to, and it records
 /// every report it was sent. [`FakeKraken::without_panel`] is the same device
-/// with no screen behind it, which is the case US-016 must keep read-only.
+/// with no screen behind it, which is the case the gate must keep read-only.
 pub struct FakeKraken {
     firmware: String,
     /// `None` for a Kraken whose cap carries no display.

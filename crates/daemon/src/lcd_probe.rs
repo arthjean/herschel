@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! US-016's write probe: the only code that sends an unvalidated frame.
+//! The frame write probe: the only code that sends an unvalidated frame.
 //!
 //! It mirrors [`crate::rgb_probe`] and exists for the same reason. The transfer
 //! sequence is adapted from a working implementation, which is evidence that it

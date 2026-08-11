@@ -5,8 +5,8 @@
 
 //! One [`DisplayPreset`] in, one exact framebuffer out.
 //!
-//! FR-14 asks that the editor's preview and the bytes the panel receives come
-//! from the same description. This crate is how: the GPUI client renders a
+//! The editor's preview and the bytes the panel receives come from the same
+//! description. This crate is how: the GPUI client renders a
 //! preset to see it, the daemon renders the same preset to send it, and neither
 //! extracts pixels from the other. A difference between what the window shows
 //! and what the panel shows could then only be a difference in the preset.
@@ -1297,9 +1297,9 @@ mod tests {
 
     #[test]
     fn a_still_picture_compiles_to_the_one_frame_the_renderer_draws() {
-        // FR-14 for the compiled path: the table the daemon plays and the
-        // picture the per-tick renderer produces are the same bytes, because
-        // one calls the other.
+        // One description, one output, on the compiled path too: the table the
+        // daemon plays and the picture the per-tick renderer produces are the
+        // same bytes, because one calls the other.
         let directory = testing::scratch("still").unwrap();
         let path = directory.join("one.gif");
         testing::write_gif(&path, 16, &[(Rgb::new(0x20, 0x80, 0xc0), 10)]).unwrap();
@@ -1540,8 +1540,8 @@ mod tests {
 
     #[test]
     fn a_preview_repaint_stays_inside_the_frame_budget() {
-        // US-017 gives the preview 16.7 ms at P95, which is the budget for the
-        // shipped build. An unoptimized build is an order of magnitude slower
+        // The preview gets 16.7 ms at P95, which is the budget for the shipped
+        // build. An unoptimized build is an order of magnitude slower
         // for reasons that have nothing to do with this code, so it is held to
         // a ceiling that still catches a real regression rather than to a
         // number it was never meant to meet.
@@ -1578,7 +1578,7 @@ mod tests {
 
     #[test]
     fn the_panel_carries_no_wordmark_at_all() {
-        // FR-20 and US-017 AC-6 ask for the project's own wordmark or no logo.
+        // The panel carries the project's own wordmark or no logo at all.
         // It is now no logo: the panel shows the reading it exists to show and
         // nothing that names anybody, which is the one arrangement that cannot
         // be mistaken for a vendor's.

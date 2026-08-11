@@ -24,16 +24,17 @@ pub const MAX_BRIGHTNESS: u8 = 100;
 
 /// Brightness the write probe uses on live hardware.
 ///
-/// US-013 tests a deliberately dim color: enough to see on the strip, far from
-/// anything that stresses the controller's current budget.
+/// The write probe sends a deliberately dim color: enough to see on the strip,
+/// far from anything that stresses the controller's current budget.
 pub const PROBE_BRIGHTNESS: u8 = 10;
 
 /// Shortest interval the daemon leaves between two commands on one channel.
 ///
 /// The controller acknowledges nothing, so cadence is the only backpressure
-/// there is. The floor is measured by the US-013 write probe and recorded in
-/// `docs/ep-003-evidence.md`; it is deliberately set well above the observed
-/// per-command cost rather than at it.
+/// there is. The floor is measured by the write probe and recorded under
+/// `cadence` in `docs/rgb-write-probe-1.5.0-fixed-and-off.json`, which landed
+/// five commands at every interval down to 10 ms without an error. This value
+/// is deliberately set well above that rather than at it.
 pub const MIN_COMMAND_INTERVAL_MS: u64 = 50;
 
 /// A 24-bit color, as the operator typed it.
@@ -138,9 +139,9 @@ impl From<Brightness> for u8 {
 
 /// The animated effects this product exposes.
 ///
-/// The list is short on purpose: an effect appears here only once the US-013
-/// write probe has run its exact command on the owned controller. Adding a
-/// variant without that evidence is what FR-12 forbids.
+/// The list is short on purpose: an effect appears here only once the write
+/// probe has run its exact command on the owned controller. Adding a variant
+/// without that evidence is forbidden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LightingEffect {
@@ -508,8 +509,8 @@ mod tests {
 
     #[test]
     fn the_probe_brightness_is_dim_but_visible() {
-        // A constant assertion on purpose: this is the value US-013 sends to
-        // real hardware, so the bound belongs with the constant.
+        // A constant assertion on purpose: this is the value the write probe
+        // sends to real hardware, so the bound belongs with the constant.
         const _: () = assert!(
             PROBE_BRIGHTNESS > 0 && PROBE_BRIGHTNESS <= 25,
             "the write probe must be visible and stay low-brightness"
@@ -656,8 +657,8 @@ mod tests {
             serde_json::from_str::<LightingProgram>(&json).unwrap(),
             program
         );
-        // US-015: a saved effect must not pin the configuration to one wire
-        // encoding, so no packet byte may appear in the stored form.
+        // A saved effect must not pin the configuration to one wire encoding,
+        // so no packet byte may appear in the stored form.
         for protocol_byte in ["0x2a", "42,4", "report", "packet"] {
             assert!(!json.contains(protocol_byte), "{json}");
         }

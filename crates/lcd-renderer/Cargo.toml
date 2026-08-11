@@ -15,7 +15,7 @@ testing = []
 kori-core.workspace = true
 thiserror.workspace = true
 
-# Decodes the picture US-017 lets an operator pick. Default features are off so
+# Decodes the picture an operator picks. Default features are off so
 # the graph carries three decoders rather than the twenty the crate can build;
 # MIT OR Apache-2.0, compatible with this project's GPL-3.0-or-later.
 #

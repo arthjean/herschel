@@ -12,8 +12,8 @@
 //! costs one transfer however often Apply is activated, and an infographic
 //! whose readings did not move costs none. Whether a fraction of a degree
 //! survives into a different picture depends on where the antialiased end of
-//! the gauge happens to fall, so nothing here promises it either way. US-018
-//! asks for one frame a second regardless.
+//! the gauge happens to fall, so nothing here promises it either way. The
+//! stream produces one frame a second regardless.
 //!
 //! **The brightness is not part of that comparison.** It is a panel setting
 //! carried by its own report, so it is written before the picture is compared
@@ -24,10 +24,9 @@
 //!
 //! **At most one frame is ever outstanding.** The transfer is synchronous, so
 //! "outstanding" here means the sample that arrived while the previous frame
-//! was still being written. US-018 requires that such a sample replace the
-//! pending one rather than queue behind it: a panel showing a temperature from
-//! four seconds ago because three frames are waiting is worse than a panel that
-//! skipped them.
+//! was still being written. Such a sample replaces the pending one rather than
+//! queueing behind it: a panel showing a temperature from four seconds ago
+//! because three frames are waiting is worse than a panel that skipped them.
 //!
 //! **An animation is decoded once and then only copied.** A GIF the operator
 //! picks is compiled to a table of finished framebuffers when it is applied, so
@@ -61,9 +60,8 @@ pub struct DisplayExecutor {
     ///
     /// A stream that kept retrying every second would hammer an endpoint that
     /// has already refused, so it stops until something changes: the device
-    /// coming back, or the operator applying a preset by hand. That is what
-    /// US-018 means by retrying only after a reconnect or an explicit
-    /// recoverable state.
+    /// coming back, or the operator applying a preset by hand. A faulted
+    /// stream retries only after a reconnect or an explicit recoverable state.
     faulted: Option<String>,
     /// Frames discarded because a newer sample replaced them.
     dropped: u64,
@@ -268,7 +266,7 @@ impl DisplayExecutor {
 
         // The cursor walks the wall clock rather than the tick count. A tick
         // that ran late skips the frames it slept through, which is the same
-        // rule US-018 sets for a late telemetry frame and for the same reason:
+        // rule a late telemetry frame follows and for the same reason:
         // a backlog of old pictures has nothing to offer a panel. The loop is
         // bounded because every delay is at least MIN_FRAME_DELAY_MS.
         let mut skipped = 0u32;
@@ -834,7 +832,7 @@ mod tests {
 
     #[test]
     fn a_late_tick_skips_the_frames_it_slept_through_rather_than_playing_them_all() {
-        // The same rule US-018 sets for a late telemetry frame, for the same
+        // The same rule a late telemetry frame follows, for the same
         // reason: a backlog of old pictures has nothing to offer a panel. What
         // it does not do is play the animation in slow motion, which is what a
         // cursor advancing one step per tick would produce.

@@ -5,15 +5,15 @@
 # Base) and 1e71:2021 (RGB Controller), and to nothing else. Every rule below
 # names one of those two identifiers.
 
-# US-013 lighting: the RGB controller's hidraw node.
+# Lighting: the RGB controller's hidraw node.
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2021", TAG+="uaccess"
 
-# US-016 panel: the Kraken's hidraw node carries the display commands, and its
+# Panel: the Kraken's hidraw node carries the display commands, and its
 # usbfs node the framebuffer's bulk endpoint.
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300e", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="300e", TAG+="uaccess"
 
-# US-012 cooling: the kraken2023 hwmon attributes.
+# Cooling: the kraken2023 hwmon attributes.
 #
 # uaccess cannot serve these. It works by having systemd-logind place an ACL on
 # a device node under /dev, and a hwmon device has none: its control surface is

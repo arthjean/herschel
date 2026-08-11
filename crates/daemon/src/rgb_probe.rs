@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! US-013's capability probe for the RGB controller.
+//! The capability probe for the RGB controller.
 //!
 //! Two modes, and the difference between them is the whole point.
 //!
@@ -93,7 +93,7 @@ pub enum Restoration {
     NotNeeded,
 }
 
-/// Everything US-013 has to record.
+/// Everything a write probe run has to record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteProbeReport {
     /// Which command set this run was authorized to send.
@@ -157,21 +157,20 @@ impl Operator for Terminal {
 
 /// Which commands a run is allowed to send.
 ///
-/// US-013 tests one allowlisted low-brightness fixed color and off, and nothing
-/// else. The two animated candidates are a separate, separately authorized
-/// step, because they are US-015's evidence rather than US-013's: they reuse
-/// the command sequence US-013 establishes, and until that sequence has been
-/// seen to work there is nothing to extend.
+/// The base run tests one allowlisted low-brightness fixed color and off, and
+/// nothing else. The two animated candidates are a separate, separately
+/// authorized step: they reuse the command sequence the base run establishes,
+/// and until that sequence has been seen to work there is nothing to extend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeScope {
-    /// The US-013 set: a dim fixed color, then off.
+    /// The base set: a dim fixed color, then off.
     FixedAndOff,
-    /// The US-013 set, then the two US-015 effect candidates, then off again.
+    /// The base set, then the two effect candidates, then off again.
     WithEffects,
     /// Every effect parameter the Lighting screen lets an operator select.
     ///
-    /// US-015 requires that only values the record validates can be selected,
-    /// and [`Self::WithEffects`] exercises each effect at one speed only. This
+    /// Only values the record validates may be selected on that screen, and
+    /// [`Self::WithEffects`] exercises each effect at one speed only. This
     /// scope sends every speed of both effects and both directions of the one
     /// effect that travels, so no selectable value rests on a table borrowed
     /// from another implementation.
@@ -183,7 +182,7 @@ impl ProbeScope {
     ///
     /// [`Self::EffectSweep`] stays on the first channel. Speed and direction
     /// are firmware behavior rather than channel behavior, and the channel
-    /// bits were already mapped one to one onto physical fans by the US-013
+    /// bits were already mapped one to one onto physical fans by the base
     /// run, so sweeping every channel would triple an operator's watching time
     /// to re-observe a fact that is already recorded.
     fn channels(self, reported: &[RgbChannel]) -> Vec<RgbChannel> {
@@ -205,7 +204,7 @@ impl ProbeScope {
     /// What this run will send, in the words the operator authorizes.
     ///
     /// Read out before the confirmation is asked, so what is authorized is
-    /// what actually leaves the process. A prompt that named only the US-013
+    /// what actually leaves the process. A prompt that named only the base
     /// set would understate a run carrying the two animated candidates, and an
     /// authorization given against the wrong description is not one.
     fn description(self) -> String {
@@ -754,9 +753,10 @@ mod tests {
 
     #[test]
     fn the_sweep_covers_every_value_the_screen_can_select() {
-        // US-015 lets an operator select a speed and a direction. Each one has
-        // to have been sent to this controller once, or it is exposed on the
-        // strength of a table borrowed from another implementation. The
+        // The Lighting screen lets an operator select a speed and a direction.
+        // Each one has to have been sent to this controller once, or it is
+        // exposed on the strength of a table borrowed from another
+        // implementation. The
         // expectation is built from the same `ALL` arrays the screen builds
         // its selects from, so a value added there without being swept here
         // fails this test rather than reaching an operator unproven.

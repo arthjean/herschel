@@ -25,7 +25,7 @@
 //! the 64-byte report plus its identifier byte add up to.
 //!
 //! Being adapted from a working implementation is not evidence that a command
-//! is safe on *this* firmware. That is what US-013's write probe is for, and
+//! is safe on *this* firmware. That is what `--rgb-write-probe` is for, and
 //! why [`VALIDATED_FIRMWARE`] gates every production write.
 
 use std::path::PathBuf;
@@ -62,8 +62,10 @@ pub const MAX_ACCESSORIES_PER_CHANNEL: usize = 6;
 /// `1.5.0` was validated on 2026-08-06 against the owned `1e71:2021`, three
 /// channels each carrying one F140 RGB Core. Both scopes ran with zero write
 /// errors and the operator confirmed every step:
-/// `docs/ep-003-write-probe-us013.json` covers the fixed color and off, and
-/// `docs/ep-003-write-probe-us015.json` adds Breathing and Spectrum Wave.
+/// `docs/rgb-write-probe-1.5.0-fixed-and-off.json` covers the fixed color and
+/// off, and `docs/rgb-write-probe-1.5.0-with-effects.json` adds Breathing and
+/// Spectrum Wave. `docs/rgb-write-probe-1.5.0-effect-sweep.json` covers every
+/// speed and direction the Lighting screen can select.
 pub const VALIDATED_FIRMWARE: &[&str] = &["1.5.0"];
 
 /// Whether this exact firmware has been proven on real hardware.
@@ -777,8 +779,8 @@ mod tests {
 
     #[test]
     fn no_firmware_is_writable_until_a_probe_records_one() {
-        // The gate fails closed. When US-013 fills `VALIDATED_FIRMWARE`, this
-        // still holds for anything outside the recorded list.
+        // The gate fails closed. Once a write probe fills `VALIDATED_FIRMWARE`,
+        // this still holds for anything outside the recorded list.
         assert!(!is_validated_firmware("0.0.0"));
         assert!(!is_validated_firmware(""));
         for firmware in VALIDATED_FIRMWARE {

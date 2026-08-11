@@ -259,13 +259,13 @@ pub struct DisplayState {
     ///
     /// [`DisplayState::streaming`] cannot say this on its own: it is equally
     /// false for a preset that reads no telemetry and for a panel that was
-    /// never written. US-018 stops a faulted stream until an explicit
+    /// never written. The daemon stops a faulted stream until an explicit
     /// recoverable state arrives, and a screen that cannot see the fault cannot
     /// offer one.
     pub faulted: Option<String>,
     /// Frames dropped because a transfer was still in flight when the next
-    /// sample arrived. US-018 keeps at most one frame pending, so this counts
-    /// what that ceiling discarded.
+    /// sample arrived. The streamer keeps at most one frame pending, so this
+    /// counts what that ceiling discarded.
     pub dropped_frames: u64,
 }
 
@@ -295,7 +295,7 @@ pub struct ApplyOutcome {
     /// Number of kernel attributes actually written.
     ///
     /// Zero means the request matched the confirmed state and was
-    /// deduplicated, which is what US-009 requires of a repeated Apply.
+    /// deduplicated, which is what a repeated Apply must do.
     pub writes: u32,
     /// True when nothing was written because the state already matched.
     pub deduplicated: bool,

@@ -5,8 +5,8 @@
 //!
 //! A [`DisplayPreset`] is a description, not pixels. It carries no resolution,
 //! no pixel format and no protocol byte, so the same value can be rendered into
-//! the GPUI preview and into the framebuffer the daemon sends, which is what
-//! FR-14 requires of the editor. The rendering itself lives in
+//! the GPUI preview and into the framebuffer the daemon sends, so the editor
+//! previews the exact bytes the panel receives. The rendering itself lives in
 //! `kori-lcd-renderer`, and both processes call it.
 //!
 //! Nothing here reads a file or touches a device. A preset naming a static
@@ -23,16 +23,16 @@ use crate::telemetry::TelemetrySnapshot;
 
 /// How often the daemon redraws a preset that reads telemetry.
 ///
-/// Exactly one frame per second, which is both what US-018 asks for and the
-/// rate the collectors sample at: a faster panel would repeat readings, and a
-/// slower one would show stale ones.
+/// Exactly one frame per second, which is the rate the collectors sample at:
+/// a faster panel would repeat readings, and a slower one would show stale
+/// ones.
 pub const FRAME_INTERVAL_MS: u64 = 1_000;
 
 /// Widest image this product will decode, per side.
 ///
-/// US-017 fixes the ceiling. It is applied to the dimensions the file declares,
-/// before any pixel buffer is allocated, so an image claiming an enormous size
-/// is refused rather than resized.
+/// The ceiling is applied to the dimensions the file declares, before any pixel
+/// buffer is allocated, so an image claiming an enormous size is refused rather
+/// than resized.
 pub const MAX_IMAGE_DIMENSION: u32 = 8192;
 
 /// Longest path a preset may carry, so a peer cannot grow a frame without end.
@@ -55,7 +55,7 @@ pub const MAX_ANIMATION_FRAMES: usize = 120;
 /// Shortest a frame may stay on the glass, in milliseconds.
 ///
 /// Measured, not chosen: one picture costs two transfer sequences and four
-/// acknowledgments, which EP-004 timed at 79 to 80 ms end to end. A GIF asking
+/// acknowledgments, timed at 79 to 80 ms end to end on the owned panel. A GIF asking
 /// for less would not be played faster, it would be played late and forever
 /// further behind, so the delay is raised to what the transport can hold.
 pub const MIN_FRAME_DELAY_MS: u64 = 80;
@@ -71,9 +71,9 @@ pub const DEFAULT_FRAME_DELAY_MS: u64 = 100;
 /// What kind of picture the panel shows.
 ///
 /// Four entries, each of which something in this product actually produces: the
-/// infographic US-018 streams, the single reading that gives one metric the
-/// whole dial, the solid field the US-016 transport probe sends, and a static
-/// image the operator picks. Nothing is listed that the renderer cannot draw.
+/// infographic the daemon streams, the single reading that gives one metric the
+/// whole dial, the solid field the transport probe sends, and a static image
+/// the operator picks. Nothing is listed that the renderer cannot draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayMode {
@@ -237,8 +237,8 @@ impl LcdMetric {
     /// Read this metric out of a snapshot.
     ///
     /// A metric whose collector reported nothing produces a sample with no
-    /// value. The renderer turns that into `--` and a neutral arc, which is
-    /// what US-018 requires instead of a zero that looks like a reading.
+    /// value. The renderer turns that into `--` and a neutral arc, rather than
+    /// a zero that looks like a reading.
     pub fn sample(self, telemetry: &TelemetrySnapshot) -> MetricSample {
         let value = match self {
             Self::CpuTemperature => telemetry.system.cpu_temperature_c.copied(),
@@ -401,7 +401,7 @@ pub struct DisplayPreset {
 }
 
 impl DisplayPreset {
-    /// The preset a panel starts on: the dual infographic US-018 delivers.
+    /// The preset a panel starts on: the dual infographic.
     pub fn default_infographic() -> Self {
         Self {
             mode: DisplayMode::DualInfographic,

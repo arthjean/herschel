@@ -32,7 +32,7 @@ pub const NVML_LIBRARY: &str = "libnvidia-ml.so.1";
 
 /// The GPU this build reads.
 ///
-/// Index 0 is the first device NVML enumerates. The PRD scopes v1 to the
+/// Index 0 is the first device NVML enumerates. This version is scoped to the
 /// development machine's single discrete GPU, so there is no selection to
 /// make and none is invented.
 pub const DEVICE_INDEX: u32 = 0;

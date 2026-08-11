@@ -20,7 +20,7 @@ pub mod telemetry;
 
 /// The product's own name.
 ///
-/// FR-20: original branding, never NZXT's. It lives here rather than in the
+/// Original branding, never NZXT's. It lives here rather than in the
 /// client's theme because the daemon draws it onto the panel too, and the
 /// wordmark on the hardware and the wordmark in the window must be one string.
 pub const PRODUCT_NAME: &str = "Kori";
@@ -50,8 +50,8 @@ impl std::fmt::Display for DeviceId {
 
 /// The two devices this version is allowed to touch.
 ///
-/// FR-01: detection and writes stay inside this allowlist until a later PRD
-/// adds another validated device.
+/// Detection and writes stay inside this allowlist until another device is
+/// validated against real hardware.
 pub const KRAKEN_BASE: DeviceId = DeviceId::new(0x1e71, 0x300e);
 pub const RGB_CONTROLLER: DeviceId = DeviceId::new(0x1e71, 0x2021);
 

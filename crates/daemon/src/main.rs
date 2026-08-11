@@ -37,14 +37,14 @@ Options:
   --rgb-probe        The same record, with the RGB controller's topology read
                      from the device. Asks the controller what it is; sends no
                      color, no mode and no parameter, so it changes nothing.
-  --rgb-write-probe  US-013's write probe. Sends lighting commands this product
-                     has not validated on this firmware, one channel at a time,
-                     and refuses to start without a typed confirmation. Prints
-                     the evidence record as JSON on stdout.
-      --with-effects   Also test the two animated candidates (US-015).
+  --rgb-write-probe  Sends lighting commands this product has not validated on
+                     this firmware, one channel at a time, and refuses to start
+                     without a typed confirmation. Prints the evidence record as
+                     JSON on stdout.
+      --with-effects   Also test the two animated candidates.
       --sweep-effects  Instead, sweep every effect speed and direction the
                        Lighting screen can select, on the first channel only.
-                       This is what evidences the selectable values (US-015).
+                       This is what evidences the selectable values.
       --restore HEX    Leave every channel on this color instead of off.
   --probe            The capability record with both devices asked what they
                      are. This is what re-records docs/capability-record.json,
@@ -54,10 +54,10 @@ Options:
                      brightness and no orientation, so it changes nothing. A
                      device with no panel answers the second one not at all,
                      which is how this tells the two apart.
-  --lcd-write-probe  US-016's write probe. Sends solid frames this product has
-                     not validated on this firmware, one color at a time, and
-                     refuses to start without a typed confirmation. Prints the
-                     evidence record as JSON on stdout.
+  --lcd-write-probe  Sends solid frames this product has not validated on this
+                     firmware, one color at a time, and refuses to start
+                     without a typed confirmation. Prints the evidence record
+                     as JSON on stdout.
   --version          Print the version and exit.
   --help             Print this message.
 ";
@@ -110,7 +110,7 @@ fn print_rgb_capabilities() -> Result<(), String> {
     Ok(())
 }
 
-/// Run US-013's write probe against the connected controller.
+/// Run the lighting write probe against the connected controller.
 ///
 /// The per-device lock is taken first and held for the whole run, so the probe
 /// and the daemon can never write to the controller at the same time. Refusing
@@ -247,7 +247,7 @@ fn print_full_capabilities() -> Result<(), String> {
     Ok(())
 }
 
-/// Run US-016's write probe against the connected panel.
+/// Run the frame write probe against the connected panel.
 ///
 /// The per-device lock is taken first and held for the whole run, so the probe
 /// and the daemon can never address the Kraken at the same time. Refusing when

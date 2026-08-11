@@ -6,8 +6,8 @@
 //! GPUI depends on an HTTP client crate unconditionally and hands one to the
 //! application context. Nothing in this product calls it, but "nothing calls
 //! it" is a claim about today's code, not a guarantee. Installing a client that
-//! cannot succeed turns FR-17 into a property of the binary: a request that is
-//! ever attempted fails loudly instead of reaching the network.
+//! cannot succeed turns "no network" into a property of the binary: a request
+//! that is ever attempted fails loudly instead of reaching the network.
 
 use futures::future::BoxFuture;
 use gpui::http_client::{AsyncBody, HttpClient, Response, Url, http};

@@ -31,7 +31,7 @@
 //! width.
 //!
 //! Being adapted from a working implementation is not evidence that a command
-//! is safe on *this* firmware. That is what US-016's write probe is for, and
+//! is safe on *this* firmware. That is what `--lcd-write-probe` is for, and
 //! why [`VALIDATED_FIRMWARE`] gates every frame.
 
 use std::path::{Path, PathBuf};
@@ -89,7 +89,7 @@ pub const SUPPORTED_FIRMWARE_MAJOR: u8 = 2;
 /// `2.0.0` was validated on 2026-08-07 against the owned `1e71:300e`. Four
 /// solid frames plus a restoration, zero transfer errors, every step described
 /// by the operator, and the color the probe sent is the color that appeared in
-/// all four cases: `docs/ep-004-write-probe-us016.json`. The `hwmon` readings
+/// all four cases: `docs/lcd-write-probe-2.0.0.json`. The `hwmon` readings
 /// were taken immediately before and after and did not move, so the transfer
 /// leaves the thermal interface alone.
 pub const VALIDATED_FIRMWARE: &[&str] = &["2.0.0"];

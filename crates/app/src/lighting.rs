@@ -14,8 +14,8 @@
 //!
 //! One rule is specific to lighting. Switching a channel to Off must not lose
 //! the color it was showing, because Off is a mode the operator comes back
-//! from. The editor therefore keeps the fixed color alive across an Off, which
-//! is what US-014 means by the prior color remaining available for restoration.
+//! from. The editor therefore keeps the fixed color alive across an Off, so it
+//! stays available for restoration.
 
 use kori_core::lighting::{
     Brightness, EffectDirection, EffectSpeed, LightingEffect, LightingError, LightingProgram, Rgb,
@@ -45,7 +45,7 @@ impl LightingMode {
         if effects_available {
             // An effect that is not proven on this controller is absent, not
             // disabled: a disabled control still tells the operator the feature
-            // exists here, and US-015 requires that it does not.
+            // exists here, and an unproven effect must not claim that.
             modes.extend(LightingEffect::ALL.map(Self::Effect));
         }
         modes
