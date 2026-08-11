@@ -340,12 +340,6 @@ impl Orientation {
             Self::Deg270 => Self::Deg0,
         }
     }
-
-    pub fn from_degrees(degrees: u16) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|orientation| orientation.degrees() == degrees)
-    }
 }
 
 /// One metric slot of the infographic: what it shows and in which colors.
