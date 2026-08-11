@@ -108,12 +108,62 @@ fn kernel_release() -> Evidenced<String> {
 }
 
 /// Resolve every capability of one allowlisted device.
+///
+/// The surfaces that depend on a device answering (`rgb`, `lcd`) start from no
+/// topology at all, because this pass opens no device node. The daemon folds in
+/// what the device actually said with [`attach_rgb_topology`] and
+/// [`attach_lcd_topology`].
 fn capabilities_for(id: DeviceId, hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
     match id {
-        KRAKEN_BASE => kraken_capabilities(hwmon),
+        KRAKEN_BASE => kraken_capabilities(hwmon)
+            .into_iter()
+            .chain(lcd_capabilities(None))
+            .collect(),
         RGB_CONTROLLER => rgb_capabilities(None),
         _ => Vec::new(),
     }
+}
+
+/// Swap one device's capabilities for a freshly resolved set.
+///
+/// Only the listed ids are replaced, so a device that carries surfaces this
+/// topology says nothing about keeps them. Assigning the whole vector instead
+/// works only for a device whose every capability comes from one topology,
+/// which is a fact about today's allowlist rather than about this function.
+fn replace_capabilities(
+    device: &mut DeviceRecord,
+    replaced: &[CapabilityId],
+    fresh: Vec<Capability>,
+) {
+    device
+        .capabilities
+        .retain(|capability| !replaced.contains(&capability.id));
+    device.capabilities.extend(fresh);
+}
+
+/// The last two rungs both write gates share: a firmware, and a validated one.
+///
+/// Returns the refusal when there is one, `None` when the device cleared both.
+/// The heads of the two ladders genuinely differ (a channel count on one side,
+/// a firmware generation on the other), so only the common tail is shared: a
+/// mechanism general enough to cover both heads would hide which evidence
+/// actually opened the path.
+fn firmware_gate(
+    firmware: &Evidenced<String>,
+    validated: &[&str],
+    subject: &str,
+) -> Option<CapabilityState> {
+    let Some(firmware) = firmware.value() else {
+        return Some(CapabilityState::Unvalidated {
+            reason: format!(
+                "The {subject} did not report a firmware revision, so its command set \
+                 cannot be matched against a validated one."
+            ),
+        });
+    };
+    (!validated.contains(&firmware.as_str())).then(|| CapabilityState::Unvalidated {
+        reason: format!("Firmware {firmware} is not validated for this operation."),
+    })
 }
 
 fn kraken_capabilities(hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
@@ -138,7 +188,6 @@ fn kraken_capabilities(hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
                 reason: reason.clone(),
             },
         })
-        .chain(lcd_capabilities(None))
         .collect();
     };
 
@@ -206,9 +255,6 @@ fn kraken_capabilities(hwmon: Option<&HwmonCapabilities>) -> Vec<Capability> {
         curve(CapabilityId::PumpCurve, 1),
         curve(CapabilityId::FanCurve, 2),
     ]
-    .into_iter()
-    .chain(lcd_capabilities(None))
-    .collect()
 }
 
 /// Resolve the LCD surface against whatever the Kraken actually answered.
@@ -277,27 +323,22 @@ fn lcd_state(topology: Option<&LcdTopology>) -> CapabilityState {
         ));
     }
 
-    let Some(firmware) = topology.firmware.value() else {
-        return unvalidated(
-            "The device did not report a firmware revision, so its transfer sequence \
-             cannot be matched against a validated one."
-                .to_string(),
-        );
-    };
-    match crate::hid::firmware_major(firmware) {
-        Some(major) if major == crate::lcd::SUPPORTED_FIRMWARE_MAJOR => {}
-        _ => {
-            return unvalidated(format!(
-                "Firmware {firmware} is not the {}.x generation this transfer sequence \
-                 was written for.",
-                crate::lcd::SUPPORTED_FIRMWARE_MAJOR
-            ));
-        }
-    }
-    if !crate::lcd::is_validated_firmware(firmware) {
+    // The generation check sits before the shared tail: a 1.x Kraken would be
+    // sent a transfer sequence written for a firmware it is not, which is a
+    // different refusal from "this exact revision was never driven".
+    if let Some(firmware) = topology.firmware.value()
+        && crate::hid::firmware_major(firmware) != Some(crate::lcd::SUPPORTED_FIRMWARE_MAJOR)
+    {
         return unvalidated(format!(
-            "Firmware {firmware} is not validated for this operation."
+            "Firmware {firmware} is not the {}.x generation this transfer sequence \
+             was written for.",
+            crate::lcd::SUPPORTED_FIRMWARE_MAJOR
         ));
+    }
+    if let Some(refusal) =
+        firmware_gate(&topology.firmware, crate::lcd::VALIDATED_FIRMWARE, "panel")
+    {
+        return refusal;
     }
 
     CapabilityState::Available {
@@ -315,15 +356,11 @@ pub fn attach_lcd_topology(record: &mut CapabilityRecord, topology: LcdTopology)
     else {
         return;
     };
-    device.capabilities.retain(|capability| {
-        !matches!(
-            capability.id,
-            CapabilityId::LcdFrame | CapabilityId::LcdDisplayControl
-        )
-    });
-    device
-        .capabilities
-        .extend(lcd_capabilities(Some(&topology)));
+    replace_capabilities(
+        device,
+        &[CapabilityId::LcdFrame, CapabilityId::LcdDisplayControl],
+        lcd_capabilities(Some(&topology)),
+    );
     device.lcd = Some(topology);
 }
 
@@ -373,17 +410,12 @@ fn rgb_state(topology: Option<&RgbTopology>) -> CapabilityState {
         return unvalidated("The controller reported zero lighting channels.".to_string());
     }
 
-    let Some(firmware) = topology.firmware.value() else {
-        return unvalidated(
-            "The controller did not report a firmware revision, so its command set \
-             cannot be matched against a validated one."
-                .to_string(),
-        );
-    };
-    if !crate::rgb::is_validated_firmware(firmware) {
-        return unvalidated(format!(
-            "Firmware {firmware} is not validated for this operation."
-        ));
+    if let Some(refusal) = firmware_gate(
+        &topology.firmware,
+        crate::rgb::VALIDATED_FIRMWARE,
+        "controller",
+    ) {
+        return refusal;
     }
 
     CapabilityState::Available {
@@ -405,7 +437,11 @@ pub fn attach_rgb_topology(record: &mut CapabilityRecord, topology: RgbTopology)
     else {
         return;
     };
-    device.capabilities = rgb_capabilities(Some(&topology));
+    replace_capabilities(
+        device,
+        &[CapabilityId::RgbFixedColor, CapabilityId::RgbEffects],
+        rgb_capabilities(Some(&topology)),
+    );
     device.rgb = Some(topology);
 }
 
