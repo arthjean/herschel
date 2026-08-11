@@ -7,6 +7,7 @@
 //! configuration. The server wraps it in a mutex, so requests are serialized:
 //! two clients can never interleave a command.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use kori_core::capability::{CapabilityId, CapabilityRecord, DeviceRecord};
@@ -22,7 +23,7 @@ use kori_core::profile::{
     CoolingProgram, Incompatibility, Profile, incompatibilities, program_incompatibilities,
     validate_program,
 };
-use kori_core::telemetry::{CollectorFailure, TelemetrySnapshot};
+use kori_core::telemetry::{Collector, TelemetrySnapshot};
 use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 use kori_hardware_linux::SysfsRoot;
 use kori_hardware_linux::probe::probe;
@@ -59,8 +60,14 @@ pub struct Daemon {
     lighting: LightingExecutor,
     /// The sole writer of the panel.
     display: DisplayExecutor,
-    /// Collector failures already recorded, so one fault is logged once.
-    reported_failures: Vec<CollectorFailure>,
+    /// The failure each collector is currently reported under, so one fault is
+    /// logged once and a recovery is logged exactly when it stops.
+    ///
+    /// Keyed by collector rather than held as a list of whole failures: the
+    /// question asked in both directions is "is this collector failing, and with
+    /// what detail", and a list forced one direction to compare whole records
+    /// and the other to compare only the name.
+    reported_failures: BTreeMap<Collector, String>,
 }
 
 impl Daemon {
@@ -128,7 +135,7 @@ impl Daemon {
             cooling: CoolingExecutor::open(sysfs),
             lighting,
             display,
-            reported_failures: Vec::new(),
+            reported_failures: BTreeMap::new(),
         };
 
         daemon.record_access_mode();
@@ -413,7 +420,7 @@ impl Daemon {
             Request::SaveProfile { profile } => self.save_profile(profile),
             Request::ActivateProfile { name } => self.activate_profile(&name),
             Request::DeleteProfile { name } => self.delete_profile(&name),
-            Request::Telemetry => Response::Telemetry(Box::new(self.telemetry())),
+            Request::Telemetry => Response::Telemetry(Box::new(self.sampler.snapshot())),
             Request::ApplyProgram { program } => match self.execute(&program) {
                 Ok(outcome) => Response::Applied(Box::new(outcome)),
                 Err(error) => Response::Error(error),
@@ -434,10 +441,16 @@ impl Daemon {
         }
     }
 
-    /// The latest sampling pass, with any change in collector health logged.
-    pub fn telemetry(&mut self) -> TelemetrySnapshot {
-        let snapshot = self.sampler.snapshot();
-
+    /// Bring the daemon's record of the hardware back in line with the latest
+    /// sample, and log what changed.
+    ///
+    /// Runs on the daemon's own clock rather than on a client request. Every
+    /// fact it settles is one the hardware owns: whether the device is still
+    /// there, whether the curve it was told to run is the one it is running,
+    /// whether a collector is failing. A daemon serving nobody has to answer
+    /// them just as often as one with a window open, because the writes it is
+    /// protecting happened either way.
+    fn reconcile(&mut self, snapshot: &TelemetrySnapshot) {
         // A device that has gone away invalidates the executor's record of
         // what it committed. Without this, an Apply after a reconnect could
         // deduplicate against a program the hardware no longer holds and
@@ -470,34 +483,43 @@ impl Daemon {
             }
         }
 
-        for failure in &snapshot.failed {
-            if !self.reported_failures.contains(failure) {
+        self.record_collector_health(snapshot);
+    }
+
+    /// Log every collector that started failing and every one that stopped.
+    ///
+    /// Both directions ask the same question of the same map, so a fault is
+    /// logged once, a changed detail is logged again, and a recovery is logged
+    /// exactly when the collector leaves the failing set.
+    fn record_collector_health(&mut self, snapshot: &TelemetrySnapshot) {
+        let current: BTreeMap<Collector, String> = snapshot
+            .failed
+            .iter()
+            .map(|failure| (failure.collector, failure.detail.clone()))
+            .collect();
+
+        for (collector, detail) in &current {
+            if self.reported_failures.get(collector) != Some(detail) {
                 self.diagnostics.record(
                     crate::now_unix_ms(),
                     EventKind::CollectorFailed {
-                        collector: failure.collector,
-                        detail: failure.detail.clone(),
+                        collector: *collector,
+                        detail: detail.clone(),
                     },
                 );
             }
         }
-        for previous in &self.reported_failures {
-            if !snapshot
-                .failed
-                .iter()
-                .any(|failure| failure.collector == previous.collector)
-            {
+        for collector in self.reported_failures.keys() {
+            if !current.contains_key(collector) {
                 self.diagnostics.record(
                     crate::now_unix_ms(),
                     EventKind::CollectorRecovered {
-                        collector: previous.collector,
+                        collector: *collector,
                     },
                 );
             }
         }
-        self.reported_failures = snapshot.failed.clone();
-
-        snapshot
+        self.reported_failures = current;
     }
 
     /// Gate a cooling program, then write it.
@@ -627,18 +649,34 @@ impl Daemon {
         }
     }
 
-    /// Redraw the panel from the latest sample.
+    /// One pass of the daemon's own clock: settle what the hardware says, then
+    /// redraw the panel from it.
     ///
-    /// Called once a second by the server's own ticker, never by a client, so
-    /// the panel keeps its readings current with the window closed. A tick that
-    /// finds nothing to do costs one render and no transfer, because the
-    /// executor compares the picture it produced against the one the panel
-    /// already holds.
-    pub fn tick_display(&mut self) {
+    /// Called once a second by the server's ticker, never by a client, so both
+    /// halves keep happening with the window closed. That is the point of doing
+    /// it here: the reconciliation guards writes this daemon made, and a write
+    /// does not stop needing a guard because nobody is looking at it.
+    ///
+    /// A tick that finds nothing to do costs one sample and one render and no
+    /// transfer, because the executor compares the picture it produced against
+    /// the one the panel already holds.
+    pub fn tick(&mut self) {
+        let snapshot = self.sampler.snapshot();
+        self.reconcile(&snapshot);
+
+        // The panel is on the device the reconciliation may have just declared
+        // gone, and redrawing would put a frame straight back into the record
+        // that pass dropped. Nothing is sent until the device answers again,
+        // which is also what keeps a disconnected Kraken from being handed a
+        // frame a second forever.
+        if !snapshot.kraken.present {
+            return;
+        }
+
         let Some(preset) = self.display.active().cloned() else {
             return;
         };
-        let samples = preset.samples(&self.sampler.snapshot());
+        let samples = preset.samples(&snapshot);
         if let Some(outcome) = self.display.refresh(&samples)
             && outcome.frames > 0
         {
@@ -663,7 +701,7 @@ impl Daemon {
     /// `None` means nothing is playing, so the caller has only the telemetry
     /// cadence to wake for.
     ///
-    /// No diagnostic is recorded per frame, unlike [`Self::tick_display`]. An
+    /// No diagnostic is recorded per frame, unlike [`Self::tick`]. An
     /// animation runs at up to a dozen frames a second, which would fill the
     /// event ring in a couple of minutes and push out the events that say what
     /// the hardware actually did. A transfer that fails still stops the stream

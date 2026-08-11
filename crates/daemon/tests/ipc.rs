@@ -158,7 +158,11 @@ impl Harness {
         )
         .unwrap();
         let listener = kori_daemon::server::bind_socket(&paths.socket).unwrap();
-        let server = Server::attach(listener, daemon);
+        // The daemon's own clock carries the reconciliation, not just the
+        // panel redraw, so a test that waits on the daemon noticing something
+        // waits on this. At the shipped one second per pass every such test
+        // would spend a real second doing nothing.
+        let server = Server::attach(listener, daemon).with_frame_interval(interval);
         let shutdown = server.shutdown_handle();
         let thread = std::thread::spawn(move || server.run());
 
@@ -203,6 +207,27 @@ impl Harness {
             let snapshot = client.telemetry().expect("telemetry is served");
             if condition(&snapshot) || std::time::Instant::now() >= deadline {
                 return snapshot;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Poll status until `condition` holds, or give up.
+    ///
+    /// What the daemon settles on its own clock is only visible through status,
+    /// and it happens whether or not anything is asking. This is how a test
+    /// waits for it without pretending a client request caused it.
+    fn wait_for_status(
+        &self,
+        client: &mut Client,
+        limit: Duration,
+        mut condition: impl FnMut(&kori_core::ipc::DaemonStatus) -> bool,
+    ) -> kori_core::ipc::DaemonStatus {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            let status = client.status().expect("status is served");
+            if condition(&status) || std::time::Instant::now() >= deadline {
+                return status;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -1619,6 +1644,10 @@ fn preset(mode: DisplayMode) -> DisplayPreset {
 /// record would let the next Apply deduplicate against a picture the glass no
 /// longer holds, and would leave the link believing it is still primed when the
 /// device it was primed against is gone.
+///
+/// The client here only watches. Nothing it sends causes the record to be
+/// dropped: the daemon settles that on its own clock, which is what makes the
+/// same thing happen with no window open at all.
 #[test]
 fn a_kraken_that_goes_away_takes_the_panel_record_with_it() {
     let harness = Harness::start_lcd("lcd-disconnect", "2.0.0");
@@ -1641,21 +1670,56 @@ fn a_kraken_that_goes_away_takes_the_panel_record_with_it() {
             .remove_attribute(&harness.hwmon_path(), attribute);
     }
 
-    let snapshot = harness.wait_for_telemetry(&mut client, Duration::from_secs(5), |snapshot| {
-        !snapshot.kraken.present
+    let status = harness.wait_for_status(&mut client, Duration::from_secs(5), |status| {
+        status.display.committed.is_none()
     });
-    assert!(!snapshot.kraken.present, "the device is gone");
-
-    let status = client.status().unwrap();
     assert!(
         status.display.committed.is_none(),
         "the panel record must not outlive the device it describes"
+    );
+    assert!(
+        !client.telemetry().unwrap().kraken.present,
+        "the device is gone"
     );
     // The preset the operator asked for is deliberately kept, which is what
     // lets the panel resume on its own once the device answers again. Only the
     // claim about what the glass currently holds is dropped. The fixture's link
     // is in memory and never notices the device leave, so `streaming` still
     // reads true here; on real hardware the transport would be gone.
+}
+
+/// The daemon settles what the hardware says with nothing connected to it.
+///
+/// The reconciliation used to hang off the telemetry request, so a machine with
+/// the window closed never noticed a device leave and never checked that the
+/// curve it wrote is the one the firmware is running. Both are guards on writes
+/// this daemon made, and a write does not stop needing a guard because nobody is
+/// looking. This opens no client until after the fact, so the only thing that
+/// can have moved the state is the daemon's own clock.
+#[test]
+fn the_daemon_notices_a_device_leaving_with_no_client_connected() {
+    let harness = Harness::start_lcd("lcd-headless", "2.0.0");
+    {
+        let mut client = harness.client();
+        client
+            .apply_display(preset(DisplayMode::DualInfographic))
+            .expect("a validated firmware accepts a frame");
+        assert!(client.status().unwrap().display.committed.is_some());
+    }
+
+    // Nothing is connected from here until the assertion below.
+    for attribute in ["temp1_input", "fan1_input", "fan2_input", "name"] {
+        harness
+            .fake
+            .remove_attribute(&harness.hwmon_path(), attribute);
+    }
+    std::thread::sleep(FAST_INTERVAL * 20);
+
+    let mut client = harness.client();
+    assert!(
+        client.status().unwrap().display.committed.is_none(),
+        "the daemon must settle this on its own clock, not when a client asks"
+    );
 }
 
 /// A picture the operator chose survives the machine being turned off.

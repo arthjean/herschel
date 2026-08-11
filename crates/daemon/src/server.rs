@@ -103,17 +103,20 @@ impl Server {
             .and_then(|addr| addr.as_pathname().map(Path::to_path_buf))
     }
 
-    /// Redraw the panel forever, on its own cadence.
+    /// Run the daemon's own clock forever.
     ///
-    /// The panel belongs to the daemon, not to a client: a preset keeps its
-    /// readings current with the window closed, which is the whole reason the
-    /// rendering lives on this side of the socket.
+    /// Everything the daemon owes the hardware rather than a client happens
+    /// here: reconciling what the device reports against what this process
+    /// committed, and redrawing the panel. Both belong to the daemon, not to a
+    /// window: a preset keeps its readings current and a curve keeps being
+    /// checked with nobody connected, which is the whole reason they live on
+    /// this side of the socket.
     ///
     /// A tick that runs late does not catch up. The missed frames are counted
     /// and discarded, because the next tick draws the current reading and a
     /// backlog of old ones has nothing to offer a panel.
     ///
-    /// This one thread carries both cadences: the telemetry redraw at
+    /// This one thread carries both cadences: the telemetry pass at
     /// `frame_interval`, and an animation on the clock its own file declares.
     /// One thread rather than two because the writes to the panel are
     /// serialized by construction here, and a second thread would put that back
@@ -151,7 +154,7 @@ impl Server {
                         for _ in 0..missed {
                             daemon.drop_display_frame();
                         }
-                        daemon.tick_display();
+                        daemon.tick();
                     }
                 }
 
