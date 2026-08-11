@@ -2,18 +2,18 @@
 
 Native open source Linux application to monitor and control NZXT hardware.
 
-> Status: foundation implemented (EP-001), in review. The daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. No hardware write is implemented yet. This project is neither affiliated with nor endorsed by NZXT.
+> Status: the daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. Cooling, lighting and panel writes are implemented, each gated on a firmware this project validated on the owned hardware. This project is neither affiliated with nor endorsed by NZXT.
 
 ## Measured footprint
 
-| Measurement | Observed | PRD v1.2 budget |
+| Measurement | Observed | Budget |
 |---|---|---|
 | Cold start, median over 5 launches | 327 ms | ≤ 700 ms |
 | `RssAnon` at idle, memory allocated by the process | 81.3 MiB | ≤ 110 MiB |
 | Total `VmRSS` at idle | 253.2 MiB | ≤ 320 MiB |
 | CPU at idle, 5 min average | 1.10% | ≤ 1.5% |
 
-Total `VmRSS` is dominated by the graphics driver and shader compiler mappings linked in by GPUI, shared with the other GPU clients on the machine: an empty GPUI window accounts for 288.1 MiB of it. This is a non-regression ceiling, not an optimization target. The metric the project steers by is `RssAnon`. Full breakdown in [`docs/ep-001-evidence.md`](./docs/ep-001-evidence.md).
+Total `VmRSS` is dominated by the graphics driver and shader compiler mappings linked in by GPUI, shared with the other GPU clients on the machine: an empty GPUI window accounts for 288.1 MiB of it. This is a non-regression ceiling, not an optimization target. The metric the project steers by is `RssAnon`.
 
 ## Intent
 
@@ -50,7 +50,7 @@ Verified development environment:
 | RGB | `1e71:2021` NZXT RGB Controller, `bcdDevice` 0105 |
 | Thermal driver | `kraken2023` on HID interface 1 |
 
-The driver exposes liquid temperature, two RPM/PWM channels and 40 curve points per channel. The Kraken also exposes a class `0xff` interface 0 with no kernel driver: that is the candidate for the LCD transport, to be validated by US-016. The RGB and LCD capabilities stay blocked until their protocol is validated on the real hardware.
+The driver exposes liquid temperature, two RPM/PWM channels and 40 curve points per channel. The Kraken also exposes a class `0xff` interface 0 with no kernel driver: that is the LCD framebuffer transport, validated on firmware `2.0.0`. An RGB or LCD capability stays blocked until its protocol is validated on the real hardware, firmware by firmware.
 
 Observed capabilities are recorded in [`docs/capability-record.json`](./docs/capability-record.json), with serial numbers redacted.
 
@@ -61,10 +61,11 @@ crates/
 ├── app             GPUI, screens, native controls and the client data feed
 ├── daemon          device ownership, sampling, writes and Unix IPC
 ├── core            capabilities, telemetry, profiles, IPC protocol and diagnostics
-└── hardware-linux  sysfs, hwmon, system sensors and the single write path
+├── hardware-linux  sysfs, hwmon, system sensors and the single write path
+└── lcd-renderer    one DisplayPreset to one exact framebuffer, or to frames
 ```
 
-The `lcd-renderer` crate (`DisplayPreset` and the exact framebuffer) will arrive with EP-004, once the LCD transport is proven on `1e71:300e`. It is not created empty: a module nothing calls is not a foundation.
+The `lcd-renderer` crate turns one `DisplayPreset` into the exact framebuffer, and into the frames an animated picture plays. It has two callers by design: the client renders a preset to preview it, the daemon renders the same preset to send it.
 
 The thermal path goes entirely through the `kraken2023` driver: no kernel driver is detached and no USB endpoint is opened for the thermal side. Telemetry only reads, and three independent collectors (Kraken, CPU/memory, GPU) sample in parallel so that one failing sensor does not stop the others. GPU metrics go through NVML, loaded dynamically: without an NVIDIA driver, the GPU is simply unavailable.
 
@@ -156,19 +157,12 @@ The application holds three primary destinations:
 
 Explicitly out of scope: Web Integrations, cloud, accounts, firmware updates, remote API, unvalidated NZXT devices and non-NZXT hardware control.
 
-## Product plan
-
-- [Full PRD](./tasks/prd-native-kori-hardware-control.md)
-- [Epic and story tracking](./tasks/prd-native-kori-hardware-control-status.json)
-
-The first story validates GPUI under Wayland and X11 with a representative LCD screen, then measures startup, memory, CPU, keyboard focus and scaling before extending the interface.
-
 ## Research
 
-The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only PRD.
+The [initial exploration of the NZXT GitHub organization and the Linux ecosystem](./nzxt-linux-github-research.md) is kept as decision history. Its initial recommendation of a Web Integrations runtime has been replaced by the hardware-only direction described above.
 
 ## License
 
 [GPL-3.0-or-later](./LICENSE). No external code is imported before its license and its compatibility have been verified.
 
-The dependency inventory and the compatibility audit are still due before any package distribution (US-020).
+The dependency inventory and the compatibility audit are still due before any package distribution.

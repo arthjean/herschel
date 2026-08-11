@@ -105,8 +105,11 @@ cargo test --workspace
     doubling is "only required once after initialization" ends in a question
     mark, and its code doubles every static image.
 
-  Evidence, including the photograph that found the first rule:
-  `docs/ep-004-evidence.md`.
+  The first rule was found by photographing the glass on 2026-08-08: a solid
+  magenta frame, sent and reported `confirmed`, painted a narrow band while the
+  rest of the panel kept the previous picture. `confirmed` was honest about
+  what it claims, which is that the `ioctl` returned without error for all
+  115 200 bytes. The panel was taking a fraction of them.
 
 ## Workspace shape
 
@@ -121,8 +124,8 @@ crates/app             GPUI window, holds no hardware handle
 
 Do not create a crate or module before something calls it. `lcd-renderer` has
 two callers by design: the client renders a preset to preview it and the daemon
-renders the same preset to send it, which is how FR-14 is satisfied rather than
-asserted. Neither extracts pixels from the other.
+renders the same preset to send it, which is how the preview is proven to match
+the glass rather than asserted to. Neither extracts pixels from the other.
 
 ## Interface
 
@@ -133,7 +136,9 @@ asserted. Neither extracts pixels from the other.
   decorative.
 - UI work also passes: Wayland and X11, 920x640 and 1280x720, 100% and 200%
   scale, the screen completed by keyboard alone, and a capture committed under
-  `docs/screenshots/`.
+  `docs/screenshots/` showing the screen as the change leaves it. A capture that
+  outlives the interface it shows is deleted with it, not kept as history: it
+  documents an interface nobody can reach.
 - Steer by `RssAnon` (budget 110 MiB) and cold start (700 ms median over 5
   launches). Total `VmRSS` is a non-regression ceiling dominated by the GPU
   driver mappings, not an optimization target.
@@ -143,13 +148,10 @@ asserted. Neither extracts pixels from the other.
 
 ## Delivery
 
-- `tasks/prd-native-kori-hardware-control.md` is the plan of record and
-  `tasks/prd-native-kori-hardware-control-status.json` tracks `EP-NNN` and
-  `US-NNN` status. Update the tracker in the same change as the work it
-  describes.
-- A completed epic gets `docs/ep-NNN-evidence.md`: one row per acceptance
-  criterion, naming the implementing code and the test or observation that
-  proves it.
+- A write probe run is recorded under `docs/` as
+  `<device>-write-probe-<firmware>-<scope>.json`, and the constant it unblocks
+  cites that file by name. A firmware in a `VALIDATED_FIRMWARE` list with no
+  such file next to it is not evidence, it is an assertion.
 - Start every Rust source with the two SPDX header lines. `REUSE.toml` covers
   only the files that cannot carry a comment.
 - Verify a dependency's license against GPL-3.0-or-later before importing it,
@@ -162,8 +164,8 @@ asserted. Neither extracts pixels from the other.
 
 ## Reference
 
-- Product scope, quality gates and story acceptance: `tasks/prd-native-kori-hardware-control.md`
-- Kernel ABI, observed attribute modes and measured evidence: `docs/ep-002-evidence.md`
-- LCD transport, panel geometry and what is still unproven: `docs/ep-004-evidence.md`
-- Startup, memory and CPU measurements: `docs/ep-001-evidence.md`
 - Observed device capabilities: `docs/capability-record.json`
+- What each write probe sent and what the operator saw: `docs/lcd-write-probe-2.0.0.json`,
+  `docs/rgb-write-probe-1.5.0-fixed-and-off.json`,
+  `docs/rgb-write-probe-1.5.0-with-effects.json`,
+  `docs/rgb-write-probe-1.5.0-effect-sweep.json`
