@@ -7,6 +7,7 @@
 //! permissions with `access(2)`. It never opens a writable descriptor, and a
 //! device outside the allowlist is recorded and then left untouched.
 
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kori_core::capability::{
@@ -19,6 +20,25 @@ use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER, is_allowlisted};
 use crate::hwmon::{self, HwmonInstance, curve_is_complete};
 use crate::sysfs::SysfsRoot;
 use crate::usb;
+
+/// The sysfs path of an allowlisted device that is actually present.
+///
+/// `None` covers both "not on this machine" and "present but not supported",
+/// which are the same answer to every caller that is about to open a node: there
+/// is nothing here to talk to. Written once here rather than at each call site,
+/// because a site that forgot the support filter would happily resolve a node on
+/// a device the record says nothing is proven about.
+pub fn device_path(record: &CapabilityRecord, id: DeviceId) -> Option<PathBuf> {
+    record
+        .device(id)
+        .filter(|device| device.is_supported())
+        .map(|device| PathBuf::from(&device.usb.sysfs_path))
+}
+
+/// The `hidraw` node `usbhid` created for a present allowlisted device.
+pub fn hidraw_node(record: &CapabilityRecord, id: DeviceId) -> Option<PathBuf> {
+    usb::hidraw_node(&device_path(record, id)?)
+}
 
 /// Run a complete read-only probe of the machine.
 pub fn probe(root: &SysfsRoot) -> CapabilityRecord {
