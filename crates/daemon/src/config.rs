@@ -225,10 +225,13 @@ impl Configuration {
         Ok(profile)
     }
 
-    /// Remove a stored profile.
+    /// Remove a stored profile, activating the safe one when it was active.
     ///
-    /// When the deleted profile is active, the safe profile is activated and
-    /// committed first, so no window exists where the active profile is gone.
+    /// Both edits land in one commit. The file is replaced by a rename, so a
+    /// single document carrying "this profile is gone and the safe one is
+    /// active" is one atomic transition: no reader can see the file between
+    /// them, and a write that fails leaves the profile both present and
+    /// selected rather than deleted from the selection but not from the list.
     pub fn delete_profile(&mut self, name: &str) -> Result<Option<String>, ConfigError> {
         if name == SAFE_PROFILE_NAME {
             return Err(ConfigError::MissingActiveProfile(name.to_string()));
@@ -237,15 +240,14 @@ impl Configuration {
             return Err(ConfigError::MissingActiveProfile(name.to_string()));
         }
 
-        let activated = if self.document.active_profile == name {
-            self.commit_change(|document| document.active_profile = SAFE_PROFILE_NAME.to_string())?;
-            Some(SAFE_PROFILE_NAME.to_string())
-        } else {
+        self.commit_change(|document| {
+            document.profiles.retain(|p| p.name != name);
+            if document.active_profile == name {
+                document.active_profile = SAFE_PROFILE_NAME.to_string();
+                return Some(SAFE_PROFILE_NAME.to_string());
+            }
             None
-        };
-
-        self.commit_change(|document| document.profiles.retain(|p| p.name != name))?;
-        Ok(activated)
+        })
     }
 
     /// What the daemon last committed to the hardware.
@@ -890,7 +892,7 @@ fan = 90
     }
 
     #[test]
-    fn deleting_the_active_profile_activates_the_safe_one_first() {
+    fn deleting_the_active_profile_activates_the_safe_one_in_the_same_write() {
         let temp = TempConfig::new("delete-active");
         let mut config = Configuration::load(temp.file());
         config.save_profile(named("Loud")).unwrap();
@@ -902,6 +904,39 @@ fan = 90
 
         let reloaded = Configuration::load(temp.file());
         assert!(reloaded.active_profile().is_safe_builtin());
+        assert!(reloaded.profile("Loud").is_none());
+    }
+
+    /// A deletion that cannot be written leaves the profile both listed and
+    /// selected.
+    ///
+    /// The two edits are one commit, so there is no order in which the file
+    /// ends up with the selection moved and the profile still there. Splitting
+    /// them would produce exactly that, and the operator would find their
+    /// profile intact but no longer active with nothing on screen saying why.
+    #[test]
+    fn a_deletion_that_cannot_be_written_changes_nothing_at_all() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            return; // Root ignores the directory mode.
+        }
+
+        let temp = TempConfig::new("delete-failure");
+        let mut config = Configuration::load(temp.file());
+        config.save_profile(named("Loud")).unwrap();
+        config.activate("Loud").unwrap();
+
+        std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let error = config.delete_profile("Loud").unwrap_err();
+        std::fs::set_permissions(&temp.dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(matches!(error, ConfigError::Io(_)), "{error:?}");
+        assert!(config.profile("Loud").is_some());
+        assert_eq!(config.active_profile_name(), "Loud");
+
+        let reloaded = Configuration::load(temp.file());
+        assert!(reloaded.profile("Loud").is_some());
+        assert_eq!(reloaded.active_profile_name(), "Loud");
     }
 
     #[test]
