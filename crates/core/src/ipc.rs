@@ -178,6 +178,32 @@ pub enum Response {
     Error(IpcError),
 }
 
+impl Response {
+    /// The name this variant travels under, for an error that has to say what
+    /// arrived instead of what was expected.
+    ///
+    /// The strings are the wire tags, so a mismatch reported to an operator
+    /// names something they can find in a frame rather than a label invented
+    /// for the message.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Hello { .. } => "hello",
+            Self::Status(_) => "status",
+            Self::Capabilities(_) => "capabilities",
+            Self::Profiles { .. } => "profiles",
+            Self::Activated(_) => "activated",
+            Self::Saved { .. } => "saved",
+            Self::Deleted { .. } => "deleted",
+            Self::Telemetry(_) => "telemetry",
+            Self::Applied(_) => "applied",
+            Self::Lit(_) => "lit",
+            Self::Shown(_) => "shown",
+            Self::Diagnostics(_) => "diagnostics",
+            Self::Error(_) => "error",
+        }
+    }
+}
+
 /// The result of one lighting command.
 ///
 /// The controller acknowledges no state: there is no report that reads a
@@ -669,6 +695,107 @@ mod tests {
             directory.join(SOCKET_FILE_NAME),
             Path::new("/run/user/1000/kori/kori.sock")
         );
+    }
+
+    /// [`Response::kind`] is what an operator is shown when the daemon answers
+    /// something the client did not ask for, so it has to be the tag the frame
+    /// actually carries. The two are separate hand-written mirrors of the same
+    /// variant list, and only this makes them agree.
+    #[test]
+    fn every_response_kind_is_the_tag_it_travels_under() {
+        let status = DaemonStatus {
+            daemon_version: "0.1.0".into(),
+            protocol_version: PROTOCOL_VERSION,
+            access: AccessMode::ReadWrite,
+            devices: Vec::new(),
+            active_profile: "Onboard safe".into(),
+            config: ConfigState::Defaults,
+            cooling: None,
+            lighting: Vec::new(),
+            display: DisplayState {
+                panel: None,
+                committed: None,
+                streaming: false,
+                faulted: None,
+                dropped_frames: 0,
+            },
+            socket_path: "/run/user/1000/kori/kori.sock".into(),
+        };
+        let record = CapabilityRecord {
+            schema_version: crate::capability::CAPABILITY_SCHEMA_VERSION,
+            context: crate::capability::ProbeContext {
+                kernel_release: crate::capability::Evidenced::unknown("not read", "test"),
+                probed_at_unix_ms: 0,
+            },
+            devices: Vec::new(),
+            rejected: Vec::new(),
+        };
+        let preset = DisplayPreset::default_infographic();
+
+        let responses = vec![
+            Response::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                daemon_version: "0.1.0".into(),
+            },
+            Response::Status(Box::new(status)),
+            Response::Capabilities(Box::new(record)),
+            Response::Profiles {
+                active: "Onboard safe".into(),
+                profiles: Vec::new(),
+            },
+            Response::Activated(ActivationOutcome {
+                name: "Onboard safe".into(),
+                hardware: HardwareState::Onboard,
+                applied: None,
+            }),
+            Response::Saved {
+                name: "Silent".into(),
+            },
+            Response::Deleted {
+                name: "Silent".into(),
+                activated_instead: None,
+            },
+            Response::Telemetry(Box::new(TelemetrySnapshot::unavailable(
+                0,
+                crate::telemetry::Unavailable::absent("no hwmon"),
+            ))),
+            Response::Applied(Box::new(ApplyOutcome::untouched(HardwareState::Onboard))),
+            Response::Lit(LightingOutcome {
+                channel: 1,
+                program: LightingProgram::Off,
+                hardware: HardwareState::Confirmed,
+                writes: 1,
+                deduplicated: false,
+            }),
+            Response::Shown(Box::new(DisplayOutcome {
+                preset,
+                hardware: HardwareState::Confirmed,
+                frames: 1,
+                deduplicated: false,
+                brightness_sent: true,
+            })),
+            Response::Diagnostics(
+                crate::diagnostics::DiagnosticsLog::default().export(0, "0.1.0", None),
+            ),
+            Response::Error(IpcError::NoDevice),
+        ];
+
+        let mut seen: Vec<&'static str> = Vec::with_capacity(responses.len());
+        for response in &responses {
+            let encoded = serde_json::to_value(response).unwrap();
+            assert_eq!(
+                encoded.get("response").and_then(serde_json::Value::as_str),
+                Some(response.kind()),
+                "{} does not travel under its own kind",
+                response.kind()
+            );
+            assert!(
+                !seen.contains(&response.kind()),
+                "{} is claimed by two variants",
+                response.kind()
+            );
+            seen.push(response.kind());
+        }
     }
 
     #[test]
