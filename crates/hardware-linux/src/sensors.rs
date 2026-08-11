@@ -172,11 +172,21 @@ fn read_cpu_times(path: &Path) -> Result<CpuTimes, Unavailable> {
             Unavailable::unparsable(format!("{} has no aggregate cpu line.", path.display()))
         })?;
 
+    // Every field or none. Dropping the ones that fail to parse would slide the
+    // remaining fields down, so `fields[3]` would stop being idle time while the
+    // length check still passed, and the load would be computed from the wrong
+    // two counters without anything saying so.
     let fields: Vec<u64> = line
         .split_whitespace()
         .skip(1)
-        .filter_map(|field| field.parse().ok())
-        .collect();
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| {
+            Unavailable::unparsable(format!(
+                "{} publishes a cpu field that is not a number.",
+                path.display()
+            ))
+        })?;
     // user, nice, system, idle, iowait: the first five are all that is needed,
     // and every later field still counts towards the total.
     if fields.len() < 5 {
