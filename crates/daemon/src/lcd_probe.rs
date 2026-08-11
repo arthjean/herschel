@@ -40,11 +40,21 @@ pub const PROBE_COLORS: [(&str, Rgb); 4] = [
     ("white", Rgb::new(0xff, 0xff, 0xff)),
 ];
 
-/// Brightness every probe frame is sent at.
+/// Brightness every probe frame is sent at, as a percentage.
 ///
 /// Half, so a panel that has never been driven by this product is not asked to
-/// go to full output on its first frame.
-const PROBE_BRIGHTNESS: u8 = 50;
+/// go to full output on its first frame. Deliberately not the lighting probe's
+/// level: a strip at 10% is still unmistakable in a case, and a panel at 10% is
+/// not something an operator can read across a desk, which is what this run
+/// asks them to do.
+const PROBE_PERCENT: u8 = 50;
+
+/// The same level, checked by the build.
+///
+/// The record names the percentage every frame was sent at, so a constant that
+/// silently fell back to off would produce evidence for a frame nothing ever
+/// displayed.
+const PROBE_LEVEL: Brightness = Brightness::from_percent(PROBE_PERCENT);
 
 /// One frame the probe sent, with everything observable about it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,7 +173,7 @@ pub fn run<O: Operator>(
     operator.note(&format!(
         "About to send {frames} unvalidated frames to a panel running firmware \
          {firmware}.\n\
-         Each is one solid color at {PROBE_BRIGHTNESS}% brightness, laid out at \
+         Each is one solid color at {PROBE_PERCENT}% brightness, laid out at \
          {width}x{height} in {format}.\n\
          Nothing else is sent: no orientation change, no image, no animation.\n\
          Watch the panel while this runs.",
@@ -181,7 +191,7 @@ pub fn run<O: Operator>(
 
     for (name, color) in PROBE_COLORS {
         let mut preset = DisplayPreset::solid(color);
-        preset.brightness = Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF);
+        preset.brightness = PROBE_LEVEL;
         // The panel is left on its own orientation, so nothing this run sends
         // can leave a rotation behind.
         preset.orientation = Orientation::Deg0;
@@ -191,7 +201,7 @@ pub fn run<O: Operator>(
             operator,
             &preset,
             &panel,
-            &format!("solid {name} at {PROBE_BRIGHTNESS}%"),
+            &format!("solid {name} at {PROBE_PERCENT}%"),
             &format!("What does the panel show now? (expected: a {name} field)"),
         ));
     }

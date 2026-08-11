@@ -40,6 +40,13 @@ use crate::probe::{CONFIRMATION_PHRASE, Operator, authorized};
 /// triplet order is right.
 pub const PROBE_COLOR: Rgb = Rgb::new(0xff, 0xff, 0xff);
 
+/// Brightness every program this probe sends is built at.
+///
+/// Checked by the build rather than at runtime: the record this probe writes
+/// names the level, so a constant that silently fell back to off would produce
+/// evidence for a command nothing ever ran.
+const PROBE_LEVEL: Brightness = Brightness::from_percent(PROBE_BRIGHTNESS);
+
 /// Intervals the cadence measurement steps down through, in milliseconds.
 ///
 /// Bounded and ordered from slow to fast: the fastest interval that completed
@@ -227,7 +234,7 @@ impl ProbeScope {
                     programs.push(LightingProgram::Effect {
                         effect,
                         colors: colors.clone(),
-                        brightness: Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF),
+                        brightness: PROBE_LEVEL,
                         speed,
                         direction: *direction,
                     });
@@ -330,7 +337,7 @@ fn breathing() -> LightingProgram {
     LightingProgram::Effect {
         effect: LightingEffect::Breathing,
         colors: vec![PROBE_COLOR],
-        brightness: Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF),
+        brightness: PROBE_LEVEL,
         speed: EffectSpeed::Normal,
         direction: EffectDirection::Forward,
     }
@@ -340,7 +347,7 @@ fn spectrum_wave() -> LightingProgram {
     LightingProgram::Effect {
         effect: LightingEffect::SpectrumWave,
         colors: Vec::new(),
-        brightness: Brightness::new(PROBE_BRIGHTNESS).unwrap_or(Brightness::OFF),
+        brightness: PROBE_LEVEL,
         speed: EffectSpeed::Normal,
         direction: EffectDirection::Forward,
     }
