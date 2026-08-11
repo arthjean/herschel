@@ -22,10 +22,17 @@ use crate::usb;
 pub const KRAKEN_DRIVER: &str = "kraken2023";
 
 /// A `hwmon` instance and the USB device it belongs to.
-#[derive(Debug, Clone)]
+///
+/// Identity only. Reading an instance's attributes costs one `access(2)` per
+/// file and there are more than eighty of them per channel, so it is a separate
+/// step: the daemon locates the Kraken's directory on every reconnect and needs
+/// none of that, while the capability record needs all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HwmonInstance {
     pub device: DeviceId,
-    pub capabilities: HwmonCapabilities,
+    pub driver: String,
+    /// Canonical directory of the instance, not the `class/hwmon` symlink.
+    pub path: PathBuf,
 }
 
 /// Discover every `hwmon` instance that resolves to a USB device.
@@ -43,15 +50,16 @@ pub fn discover(root: &SysfsRoot) -> Vec<HwmonInstance> {
         };
         found.push(HwmonInstance {
             device,
-            capabilities: read_capabilities(&entry, driver),
+            driver,
+            path: std::fs::canonicalize(&entry).unwrap_or(entry),
         });
     }
     found
 }
 
-/// Read every attribute of one `hwmon` directory.
-fn read_capabilities(path: &Path, driver: String) -> HwmonCapabilities {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+/// Read every attribute of one `hwmon` instance.
+pub fn read_capabilities(instance: &HwmonInstance) -> HwmonCapabilities {
+    let resolved = instance.path.clone();
     let mut attributes = Vec::new();
 
     for entry in sorted_entries(&resolved) {
@@ -76,7 +84,7 @@ fn read_capabilities(path: &Path, driver: String) -> HwmonCapabilities {
 
     HwmonCapabilities {
         curve_points: curve_channels(&resolved),
-        driver,
+        driver: instance.driver.clone(),
         path: resolved.display().to_string(),
         attributes,
     }
@@ -196,14 +204,14 @@ impl KrakenHwmon {
     /// Find the `kraken2023` instance belonging to the allowlisted Kraken.
     ///
     /// An instance from another driver, or one that resolves to a device
-    /// outside the allowlist, is never returned.
+    /// outside the allowlist, is never returned. Nothing but the directory is
+    /// read: this runs again on every reconnect, and the attribute sweep the
+    /// capability record needs would be several hundred syscalls thrown away.
     pub fn locate(root: &SysfsRoot) -> Option<Self> {
         discover(root)
             .into_iter()
-            .find(|instance| {
-                instance.device == KRAKEN_BASE && instance.capabilities.driver == KRAKEN_DRIVER
-            })
-            .map(|instance| Self::new(instance.capabilities.path))
+            .find(|instance| instance.device == KRAKEN_BASE && instance.driver == KRAKEN_DRIVER)
+            .map(|instance| Self::new(instance.path))
     }
 
     pub fn path(&self) -> &Path {
@@ -296,7 +304,30 @@ mod tests {
         let found = discover(&fake.root());
         assert_eq!(found.len(), 1, "only the USB-backed instance resolves");
         assert_eq!(found[0].device, KRAKEN_BASE);
-        assert_eq!(found[0].capabilities.driver, KRAKEN_DRIVER);
+        assert_eq!(found[0].driver, KRAKEN_DRIVER);
+    }
+
+    #[test]
+    fn locating_the_kraken_reads_no_attribute_of_any_instance() {
+        // The daemon calls this on every reconnect. It resolves a directory and
+        // must not pay for the attribute sweep the capability record needs, so
+        // this asserts the shape rather than the cost: the located path is the
+        // instance's own, reached without a `HwmonCapabilities` in sight.
+        let fake = FakeSysfs::new("hwmon-locate");
+        fake.add_kraken();
+        let hwmon = fake.add_kraken_hwmon();
+        fake.add_unrelated_hwmon();
+
+        let located = KrakenHwmon::locate(&fake.root()).expect("the fixture exposes kraken2023");
+        assert_eq!(
+            located.path(),
+            std::fs::canonicalize(&hwmon).unwrap().as_path()
+        );
+
+        // An instance from another driver on the same bus is never returned.
+        let empty = FakeSysfs::new("hwmon-locate-empty");
+        empty.add_unrelated_hwmon();
+        assert_eq!(KrakenHwmon::locate(&empty.root()), None);
     }
 
     #[test]
@@ -306,7 +337,7 @@ mod tests {
         fake.add_kraken_hwmon();
 
         let found = discover(&fake.root());
-        let capabilities = &found[0].capabilities;
+        let capabilities = &read_capabilities(&found[0]);
         assert_eq!(
             capabilities
                 .attribute("temp1_input")
@@ -343,7 +374,7 @@ mod tests {
         fake.add_kraken_hwmon();
 
         let found = discover(&fake.root());
-        let channels = &found[0].capabilities.curve_points;
+        let channels = &read_capabilities(&found[0]).curve_points;
         assert_eq!(channels.len(), 2);
         assert_eq!(channels[0].temp_index, 1);
         assert_eq!(channels[1].temp_index, 2);
@@ -359,21 +390,21 @@ mod tests {
         fake.add_kraken();
         let hwmon = fake.add_kraken_hwmon();
 
-        let before = discover(&fake.root());
-        let pwm1 = before[0].capabilities.attribute("pwm1").unwrap();
+        let before = read_capabilities(&discover(&fake.root())[0]);
+        let pwm1 = before.attribute("pwm1").unwrap();
         assert!(pwm1.readable);
         assert!(!pwm1.writable, "no udev rule means no write access");
-        assert!(!before[0].capabilities.curve_points[0].writable);
+        assert!(!before.curve_points[0].writable);
 
         fake.grant_write(&hwmon, "pwm1");
         for point in 1..=40 {
             fake.grant_write(&hwmon, &format!("temp1_auto_point{point}_pwm"));
         }
 
-        let after = discover(&fake.root());
-        assert!(after[0].capabilities.attribute("pwm1").unwrap().writable);
-        assert!(after[0].capabilities.curve_points[0].writable);
-        assert!(!after[0].capabilities.curve_points[1].writable);
+        let after = read_capabilities(&discover(&fake.root())[0]);
+        assert!(after.attribute("pwm1").unwrap().writable);
+        assert!(after.curve_points[0].writable);
+        assert!(!after.curve_points[1].writable);
     }
 
     #[test]

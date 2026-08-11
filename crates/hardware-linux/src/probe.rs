@@ -60,7 +60,7 @@ pub fn probe(root: &SysfsRoot) -> CapabilityRecord {
         let hwmon = hwmon_instances
             .iter()
             .find(|instance: &&HwmonInstance| instance.device == discovered.id)
-            .map(|instance| instance.capabilities.clone());
+            .map(hwmon::read_capabilities);
 
         devices.push(DeviceRecord {
             support: SupportState::Supported,
