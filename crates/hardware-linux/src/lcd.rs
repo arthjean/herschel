@@ -330,8 +330,39 @@ impl LcdLink {
         Self { hid, bulk }
     }
 
+    /// Both halves in one string, for a message an operator reads.
+    ///
+    /// Never for a capability record: it carries two separate node fields, and
+    /// filling either with this fused string records a path that does not
+    /// exist. [`LcdLink::topology`] is what a record is built from.
     pub fn source(&self) -> String {
         format!("{} and {}", self.hid.source(), self.bulk.source())
+    }
+
+    /// Where the display commands go.
+    pub fn hid_source(&self) -> String {
+        self.hid.source()
+    }
+
+    /// Where the framebuffer goes.
+    pub fn bulk_source(&self) -> String {
+        self.bulk.source()
+    }
+
+    /// Ask the panel what it is, and record it with each half named.
+    ///
+    /// Only this type knows which source belongs in which field, so it is the
+    /// one that builds the record. A caller reaching for [`LcdLink::source`] to
+    /// fill both would put the fused string in each, and the capability record
+    /// would then name two nodes that neither exist nor were opened.
+    pub fn topology(&mut self) -> LcdTopology {
+        let (hid, bulk) = (self.hid.source(), self.bulk.source());
+        match query(self.hid.as_mut()) {
+            Ok(inventory) => topology_from(&inventory, &hid, Some(&bulk)),
+            Err(error) => {
+                LcdTopology::silent(hid, Evidenced::known(bulk, "usbfs"), error.to_string())
+            }
+        }
     }
 
     /// Set brightness and orientation on the panel itself.
@@ -425,11 +456,6 @@ impl LcdLink {
     pub fn read_report(&mut self) -> Result<Option<[u8; REPORT_BYTES]>, LcdError> {
         Ok(self.hid.read_report(ANSWER_TIMEOUT)?)
     }
-
-    /// Ask the panel what it is currently set to.
-    pub fn inventory(&mut self) -> Result<LcdInventory, LcdError> {
-        query(self.hid.as_mut())
-    }
 }
 
 /// Exactly what one frame put on the wire, for the probe's record.
@@ -455,15 +481,31 @@ pub struct FrameReport {
     pub end: [u8; REPORT_BYTES],
 }
 
+/// What the record says about the bulk half, present or not.
+///
+/// One function rather than a match at each site, because "no node was
+/// published" and "a node was published" are the only two answers and they must
+/// read identically wherever the record is assembled.
+fn bulk_evidence(bulk: Option<&str>) -> Evidenced<String> {
+    match bulk {
+        Some(node) => Evidenced::known(node.to_string(), "sysfs"),
+        None => Evidenced::unknown(
+            "the device publishes no usbfs node for its bulk interface",
+            "sysfs",
+        ),
+    }
+}
+
 /// Build the capability record's LCD section from a Kraken that answered.
 pub fn inspect<T: HidTransport + ?Sized>(transport: &mut T, bulk: Option<&str>) -> LcdTopology {
     let source = transport.source();
     let inventory = match query(transport) {
         Ok(inventory) => inventory,
+        // The node was reached even though the transport failed, and the bulk
+        // half keeps whatever was established about it rather than inheriting
+        // the display half's failure.
         Err(error) => {
-            let mut topology = LcdTopology::unavailable(error.to_string(), source.clone());
-            topology.hid_node = Evidenced::known(source, "sysfs");
-            return topology;
+            return LcdTopology::silent(source, bulk_evidence(bulk), error.to_string());
         }
     };
     topology_from(&inventory, &source, bulk)
@@ -471,18 +513,14 @@ pub fn inspect<T: HidTransport + ?Sized>(transport: &mut T, bulk: Option<&str>) 
 
 /// Turn one answered inventory into the record's LCD section.
 ///
-/// Split from [`inspect`] so a caller holding an already-open link can record
-/// the same evidence without asking the device a second time.
-pub fn topology_from(inventory: &LcdInventory, source: &str, bulk: Option<&str>) -> LcdTopology {
+/// Split from [`inspect`] so [`LcdLink::topology`] can record the same evidence
+/// from a link that is already open. Private: the two public ways to obtain a
+/// record both go through it, and neither hands a caller the chance to pair an
+/// inventory with the wrong node.
+fn topology_from(inventory: &LcdInventory, source: &str, bulk: Option<&str>) -> LcdTopology {
     LcdTopology {
         hid_node: Evidenced::known(source.to_string(), "sysfs"),
-        bulk_node: match bulk {
-            Some(node) => Evidenced::known(node.to_string(), "sysfs"),
-            None => Evidenced::unknown(
-                "the device publishes no usbfs node for its bulk interface",
-                "sysfs",
-            ),
-        },
+        bulk_node: bulk_evidence(bulk),
         firmware: match inventory.firmware.clone() {
             Some(firmware) => Evidenced::known(firmware, format!("{source} report 0x11 0x01")),
             None => Evidenced::unknown(silence("firmware"), format!("{source} report 0x11 0x01")),
@@ -527,38 +565,41 @@ pub fn connect(device: Option<&Path>, hid_node: Option<PathBuf>) -> (LcdTopology
 
     let mut hid = match Hidraw::open(&path) {
         Ok(link) => link,
+        // The bulk half was never reached, so it carries that rather than the
+        // display half's permission failure. A record that blamed a path it
+        // never opened would send an operator to the wrong rule.
         Err(error) => {
-            let mut topology = LcdTopology::unavailable(error.to_string(), source.clone());
-            topology.hid_node = Evidenced::known(source, "sysfs");
-            // The bulk half was never reached, so it carries that rather than
-            // the display half's permission failure. A record that blamed a
-            // path it never opened would send an operator to the wrong rule.
-            topology.bulk_node = Evidenced::unknown(
+            let never_tried = Evidenced::unknown(
                 "not attempted: the display commands could not be opened first",
                 "usbfs",
             );
-            return (topology, None);
+            return (
+                LcdTopology::silent(source, never_tried, error.to_string()),
+                None,
+            );
         }
     };
     hid.drain();
 
     // The bulk half is claimed first so its failure is recorded on the
     // topology, rather than discovered later by a frame that cannot be sent.
-    let bulk = device.map(|device| Usbfs::claim(device, BULK_INTERFACE));
-    let bulk_source = match &bulk {
-        Some(Ok(usbfs)) => Some(usbfs.source()),
-        _ => None,
+    // Flattened to one `Result` on purpose: a claim that failed and a device
+    // that published no node are both "there is no bulk half, and here is why",
+    // and keeping them as separate states meant three passes over the same
+    // value with one state silently borrowing the other's reason.
+    let bulk = match device {
+        Some(device) => Usbfs::claim(device, BULK_INTERFACE).map_err(|error| error.to_string()),
+        None => Err("the device publishes no usbfs node for its bulk interface".to_string()),
     };
+    let bulk_source = bulk.as_ref().ok().map(|usbfs| usbfs.source());
 
     let mut topology = inspect(&mut hid, bulk_source.as_deref());
-    if let Some(Err(error)) = &bulk {
-        topology.bulk_node = Evidenced::unknown(error.to_string(), "usbfs");
+    if let Err(reason) = &bulk {
+        topology.bulk_node = Evidenced::unknown(reason.clone(), "usbfs");
     }
 
     let link = match bulk {
-        Some(Ok(usbfs)) if topology.answered() => {
-            Some(LcdLink::new(Box::new(hid), Box::new(usbfs)))
-        }
+        Ok(usbfs) if topology.answered() => Some(LcdLink::new(Box::new(hid), Box::new(usbfs))),
         _ => None,
     };
     (topology, link)
@@ -816,6 +857,31 @@ mod tests {
         assert!(!topology.answered());
         assert!(!topology.panel.is_known());
         assert_eq!(topology.firmware.value().map(String::as_str), Some("2.0.4"));
+    }
+
+    #[test]
+    fn a_link_records_each_half_under_its_own_node() {
+        // The record carries two node fields and they are different paths. The
+        // caller that had to fill them used to reach for `source()`, which
+        // fuses both, so the record named a display node and a framebuffer node
+        // that neither existed nor were opened.
+        let kraken = FakeKraken::new("2.0.0");
+        let mut link = kraken.link();
+        let topology = link.topology();
+
+        let hid = topology.hid_node.value().expect("the display node");
+        let bulk = topology.bulk_node.value().expect("the framebuffer node");
+        assert_eq!(hid, "fake:hidraw10");
+        assert_eq!(bulk, "fake:usbfs interface 0");
+        assert_ne!(hid, bulk);
+        assert!(
+            !hid.contains(" and ") && !bulk.contains(" and "),
+            "neither field may hold both halves: {hid:?} / {bulk:?}"
+        );
+
+        // And the answer itself survived the round trip.
+        assert!(topology.answered());
+        assert_eq!(topology.firmware.value().map(String::as_str), Some("2.0.0"));
     }
 
     #[test]

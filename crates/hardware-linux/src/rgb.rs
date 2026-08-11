@@ -420,13 +420,9 @@ pub fn inspect<T: HidTransport + ?Sized>(transport: &mut T) -> RgbTopology {
     let source = transport.source();
     let inventory = match query(transport) {
         Ok(inventory) => inventory,
-        Err(error) => {
-            let mut topology = RgbTopology::unavailable(error.to_string(), source.clone());
-            // The node was resolved even though the transport failed, so the
-            // record keeps that fact instead of losing it.
-            topology.node = Evidenced::known(source, "sysfs");
-            return topology;
-        }
+        // The node was resolved even though the transport failed, so the record
+        // keeps that fact instead of losing it.
+        Err(error) => return RgbTopology::silent(source, error.to_string()),
     };
 
     RgbTopology {
@@ -464,11 +460,7 @@ pub fn connect(node: Option<PathBuf>) -> (RgbTopology, Option<Hidraw>) {
 
     let mut link = match Hidraw::open(&path) {
         Ok(link) => link,
-        Err(error) => {
-            let mut topology = RgbTopology::unavailable(error.to_string(), source.clone());
-            topology.node = Evidenced::known(source, "sysfs");
-            return (topology, None);
-        }
+        Err(error) => return (RgbTopology::silent(source, error.to_string()), None),
     };
     link.drain();
 

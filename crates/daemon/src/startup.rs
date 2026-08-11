@@ -239,8 +239,11 @@ pub(crate) fn connect_display(
             lcd::connect(device.as_deref(), node)
         }
         LcdBackend::Link(mut link) => {
-            let inventory = link.inventory().ok().unwrap_or_default();
-            let topology = lcd::topology_from(&inventory, &link.source(), Some(&link.source()));
+            // The link builds its own record. It knows which of its two sources
+            // is the display node and which is the framebuffer's, and filling
+            // both fields from the fused `source()` recorded two nodes that
+            // neither existed nor were opened.
+            let topology = link.topology();
             let answered = topology.answered();
             (topology, answered.then_some(*link))
         }
