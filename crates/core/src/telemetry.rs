@@ -21,7 +21,7 @@ use crate::profile::Channel;
 
 /// Interval between two samples, in milliseconds.
 ///
-/// FR-05: Kraken, CPU, GPU and RAM are sampled once per second.
+/// Kraken, CPU, GPU and RAM are sampled once per second.
 pub const SAMPLE_INTERVAL_MS: u64 = 1_000;
 
 /// Age at which a retained value is presented as stale.
@@ -32,7 +32,7 @@ pub const DROP_AFTER_MS: u64 = 10_000;
 
 /// Longest history the product keeps, in milliseconds.
 ///
-/// FR-16: fifteen minutes, in memory, and no history database anywhere.
+/// Fifteen minutes, in memory, and no history database anywhere.
 pub const HISTORY_WINDOW_MS: u64 = 15 * 60 * 1_000;
 
 /// Liquid temperature at which the firmware failsafe owns the cooler.
@@ -131,6 +131,19 @@ impl<T> Reading<T> {
         match self {
             Self::Valid { value } => Some(value),
             Self::Unavailable { .. } => None,
+        }
+    }
+
+    /// The same reading with its value converted, keeping the failure intact.
+    ///
+    /// A gap survives as a gap. Three call sites wrote this match out by hand to
+    /// widen a byte or a memory figure into the `f32` a chart plots, and a
+    /// hand-written one is a place where an `Unavailable` can quietly become a
+    /// zero, which is the one substitution this product refuses to make.
+    pub fn map<U>(&self, convert: impl FnOnce(&T) -> U) -> Reading<U> {
+        match self {
+            Self::Valid { value } => Reading::valid(convert(value)),
+            Self::Unavailable { cause } => Reading::unavailable(cause.clone()),
         }
     }
 
@@ -417,7 +430,7 @@ impl SafetyAlert {
 /// A single zero-RPM reading is not a fault: a tachometer misses a pulse now
 /// and then. [`STALL_SAMPLE_COUNT`] consecutive zero readings on a channel that
 /// is being commanded to turn is, and at one sample per second the condition
-/// surfaces well inside the two seconds US-012 allows.
+/// surfaces well inside the two seconds a stall may stay unreported.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AlertTracker {
     pump_zero_samples: u8,
@@ -560,6 +573,25 @@ impl<T> MetricView<T> {
         }
     }
 
+    /// The same view with its value converted, keeping the freshness intact.
+    ///
+    /// Freshness is a state rather than a label, so widening a duty byte into
+    /// the number a readout formats must not lose the fact that it is stale.
+    pub fn map<U>(&self, convert: impl FnOnce(&T) -> U) -> MetricView<U> {
+        match self {
+            Self::Fresh { value } => MetricView::Fresh {
+                value: convert(value),
+            },
+            Self::Stale { value, age_ms } => MetricView::Stale {
+                value: convert(value),
+                age_ms: *age_ms,
+            },
+            Self::Unavailable { cause } => MetricView::Unavailable {
+                cause: cause.clone(),
+            },
+        }
+    }
+
     pub fn is_stale(&self) -> bool {
         matches!(self, Self::Stale { .. })
     }
@@ -596,7 +628,7 @@ impl<T: Copy> MetricView<T> {
 ///
 /// A temporary read failure does not blank a readout: the previous value stays
 /// visible and ages out. [`STALE_AFTER_MS`] and [`DROP_AFTER_MS`] are the two
-/// thresholds US-006 sets.
+/// thresholds that decide when.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tracked<T> {
     last_valid: Option<(T, u64)>,
@@ -665,7 +697,7 @@ pub struct HistoryPoint {
 
 /// A bounded in-memory series.
 ///
-/// FR-16: nothing older than the window is kept, and nothing is written
+/// Nothing older than the window is kept, and nothing is written
 /// anywhere. The deque is pruned by timestamp, so a sampler that stalls cannot
 /// leave a series longer than the window either.
 #[derive(Debug, Clone)]
@@ -759,6 +791,39 @@ pub fn format_binary_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn converting_a_reading_keeps_a_gap_as_a_gap() {
+        let valid: Reading<u16> = Reading::valid(2_970);
+        assert_eq!(valid.map(|rpm| f32::from(*rpm)).copied(), Some(2_970.0));
+
+        // The whole point: a failure must not become a zero on the way through.
+        let missing: Reading<u16> = Reading::unavailable(Unavailable::unreadable("fan1_input"));
+        let widened = missing.map(|rpm| f32::from(*rpm));
+        assert_eq!(widened.value(), None);
+        assert!(widened.cause().is_some(), "the reason has to survive");
+    }
+
+    #[test]
+    fn converting_a_view_keeps_how_old_it_is() {
+        let fresh: MetricView<u8> = MetricView::Fresh { value: 180 };
+        assert_eq!(fresh.map(|duty| f32::from(*duty)).copied(), Some(180.0));
+
+        let stale: MetricView<u8> = MetricView::Stale {
+            value: 180,
+            age_ms: 3_000,
+        };
+        let widened = stale.map(|duty| f32::from(*duty));
+        assert!(widened.is_stale(), "freshness is a state, not a label");
+        assert_eq!(widened.copied(), Some(180.0));
+
+        let missing: MetricView<u8> = MetricView::Unavailable {
+            cause: Some(Unavailable::unreadable("pwm1")),
+        };
+        let widened = missing.map(|duty| f32::from(*duty));
+        assert!(widened.is_unavailable());
+        assert_eq!(widened.copied(), None);
+    }
     use super::*;
 
     fn valid(value: f32) -> Reading<f32> {
@@ -846,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_history_window_is_the_fifteen_minutes_the_prd_allows() {
+    fn the_default_history_window_is_fifteen_minutes() {
         assert_eq!(History::default().window_ms(), 15 * 60 * 1_000);
     }
 

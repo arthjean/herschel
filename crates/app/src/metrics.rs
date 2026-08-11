@@ -78,39 +78,27 @@ impl MetricBook {
     /// duplicate points into a fifteen-minute window.
     pub fn observe(&mut self, snapshot: &TelemetrySnapshot) {
         let kraken_at = snapshot.kraken.at_unix_ms;
-        let fresh_kraken = kraken_at > self.kraken_at_unix_ms;
+        let fresh_kraken = advanced(&mut self.kraken_at_unix_ms, kraken_at);
         self.observe_kraken(&snapshot.kraken, fresh_kraken);
-        if fresh_kraken {
-            self.kraken_at_unix_ms = kraken_at;
-        }
 
         let system_at = snapshot.system.at_unix_ms;
-        let fresh_system = system_at > self.system_at_unix_ms;
+        let fresh_system = advanced(&mut self.system_at_unix_ms, system_at);
         self.cpu_load
             .observe(&snapshot.system.cpu_load_percent, system_at, fresh_system);
         self.cpu_temperature
             .observe(&snapshot.system.cpu_temperature_c, system_at, fresh_system);
         self.memory.observe(&snapshot.system.memory, system_at);
-        let occupancy = match &snapshot.system.memory {
-            Reading::Valid { value } => Reading::valid(value.percent()),
-            Reading::Unavailable { cause } => Reading::unavailable(cause.clone()),
-        };
+        let occupancy = snapshot.system.memory.map(|usage| usage.percent());
         self.memory_percent
             .observe(&occupancy, system_at, fresh_system);
-        if fresh_system {
-            self.system_at_unix_ms = system_at;
-        }
 
         let gpu_at = snapshot.gpu.at_unix_ms;
-        let fresh_gpu = gpu_at > self.gpu_at_unix_ms;
+        let fresh_gpu = advanced(&mut self.gpu_at_unix_ms, gpu_at);
         self.gpu_load
             .observe(&snapshot.gpu.load_percent, gpu_at, fresh_gpu);
         self.gpu_temperature
             .observe(&snapshot.gpu.temperature_c, gpu_at, fresh_gpu);
         self.gpu_name.observe(&snapshot.gpu.name, gpu_at);
-        if fresh_gpu {
-            self.gpu_at_unix_ms = gpu_at;
-        }
     }
 
     fn observe_kraken(&mut self, kraken: &KrakenTelemetry, record: bool) {
@@ -124,10 +112,7 @@ impl MetricBook {
                 Channel::Pump => &mut self.pump,
                 Channel::Fan => &mut self.fan,
             };
-            let rpm = match &source.rpm {
-                Reading::Valid { value } => Reading::valid(*value as f32),
-                Reading::Unavailable { cause } => Reading::unavailable(cause.clone()),
-            };
+            let rpm = source.rpm.map(|value| *value as f32);
             metrics.rpm.observe(&rpm, at, record);
             metrics.duty.observe(&source.duty, at);
             metrics.mode.observe(&source.mode, at);
@@ -140,6 +125,22 @@ impl MetricBook {
             Channel::Fan => &self.fan,
         }
     }
+}
+
+/// Whether a section's own clock moved, recording the new reading if it did.
+///
+/// Each section of a snapshot ages on its own: a wedged GPU collector must not
+/// be kept looking fresh by a Kraken that is still answering. Polling faster
+/// than the sampler must also not stack duplicate points into a fifteen-minute
+/// window, so a repeated timestamp records nothing. Written once rather than
+/// three times, because three copies is three chances to compare one section's
+/// clock against another's.
+fn advanced(last: &mut u64, at_unix_ms: u64) -> bool {
+    let fresh = at_unix_ms > *last;
+    if fresh {
+        *last = at_unix_ms;
+    }
+    fresh
 }
 
 #[cfg(test)]
