@@ -118,6 +118,21 @@ impl Brightness {
         Ok(Self(percent))
     }
 
+    /// A brightness fixed at compile time.
+    ///
+    /// For a literal the build can check, so an out-of-range constant fails the
+    /// build rather than being carried at runtime. The alternative in use before
+    /// this was `new(..).unwrap_or(OFF)`, which turned a wrong constant into a
+    /// probe that sends nothing while its record claims a level: a fabricated
+    /// default in the one place this product exists to keep honest.
+    ///
+    /// Only ever call this in a `const` binding. Reached at runtime with a value
+    /// out of range it panics, which is why nothing here takes a variable.
+    pub const fn from_percent(percent: u8) -> Self {
+        assert!(percent <= MAX_BRIGHTNESS, "brightness is a percentage");
+        Self(percent)
+    }
+
     pub fn percent(self) -> u8 {
         self.0
     }
