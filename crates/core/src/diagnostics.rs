@@ -308,9 +308,13 @@ impl Default for DiagnosticsLog {
 
 impl DiagnosticsLog {
     pub fn with_capacity(capacity: usize) -> Self {
+        // One bound, decided once. The allocation is only a hint and is held
+        // down to the default so a large capacity does not reserve for events
+        // that may never arrive.
+        let capacity = capacity.max(1);
         Self {
             events: VecDeque::with_capacity(capacity.min(DEFAULT_CAPACITY)),
-            capacity: capacity.max(1),
+            capacity,
             redactor: Redactor::new(),
         }
     }
@@ -326,7 +330,7 @@ impl DiagnosticsLog {
             severity: kind.severity(),
             kind,
         };
-        if self.events.len() == self.capacity {
+        while self.events.len() >= self.capacity {
             self.events.pop_front();
         }
         self.events.push_back(event);
