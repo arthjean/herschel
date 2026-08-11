@@ -11,7 +11,8 @@
 
 use kori_core::profile::Channel;
 use kori_core::telemetry::{
-    History, KrakenTelemetry, MemoryUsage, MetricView, PwmMode, Reading, TelemetrySnapshot, Tracked,
+    History, KrakenTelemetry, MemoryUsage, MetricView, PwmMode, Reading, TelemetrySnapshot,
+    Tracked, Unavailable,
 };
 
 /// One numeric metric: its last valid value and its recent series.
@@ -88,7 +89,18 @@ impl MetricBook {
         self.cpu_temperature
             .observe(&snapshot.system.cpu_temperature_c, system_at, fresh_system);
         self.memory.observe(&snapshot.system.memory, system_at);
-        let occupancy = snapshot.system.memory.map(|usage| usage.percent());
+        // Occupancy is derived, so it can be missing for a reason the memory
+        // reading itself does not carry: a total of zero is a figure that was
+        // never read, and 0% would draw an empty bar rather than no bar.
+        let occupancy = match &snapshot.system.memory {
+            Reading::Valid { value } => match value.percent() {
+                Some(percent) => Reading::valid(percent),
+                None => Reading::unavailable(Unavailable::unparsable(
+                    "The memory collector reported no total, so occupancy has no percentage.",
+                )),
+            },
+            Reading::Unavailable { cause } => Reading::unavailable(cause.clone()),
+        };
         self.memory_percent
             .observe(&occupancy, system_at, fresh_system);
 

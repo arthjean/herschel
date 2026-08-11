@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kori_core::telemetry::{MemoryUsage, Reading, SystemTelemetry, Unavailable, clamp_percent};
+use kori_core::telemetry::{MemoryUsage, Reading, SystemTelemetry, Unavailable};
 
 use crate::sysfs::{SysfsRoot, read_attribute, read_attribute_detailed, sorted_entries};
 
@@ -105,7 +105,7 @@ impl SystemSensors {
         }
 
         let busy = total.saturating_sub(idle) as f32 / total as f32 * 100.0;
-        Reading::valid(clamp_percent(busy))
+        Reading::percent(busy, path.display())
     }
 
     /// Package temperature in degrees Celsius.
@@ -300,7 +300,8 @@ mod tests {
         let usage = sensors.memory().copied().expect("meminfo is readable");
         assert_eq!(usage.total_bytes, 31_979_068 * 1024);
         assert_eq!(usage.used_bytes, (31_979_068 - 21_489_412) * 1024);
-        assert!(usage.percent() > 0.0 && usage.percent() < 100.0);
+        let occupancy = usage.percent().expect("a real total is never zero");
+        assert!(occupancy > 0.0 && occupancy < 100.0);
     }
 
     #[test]

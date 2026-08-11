@@ -863,7 +863,8 @@ fn telemetry_reaches_the_client_with_every_section_sampled() {
     // The system section, from /proc and the CPU hwmon instance.
     let memory = snapshot.system.memory.copied().unwrap();
     assert_eq!(memory.total_bytes, 31_979_068 * 1024);
-    assert!(memory.percent() > 0.0 && memory.percent() < 100.0);
+    let occupancy = memory.percent().expect("a sampled total is never zero");
+    assert!(occupancy > 0.0 && occupancy < 100.0);
     assert_eq!(snapshot.system.cpu_temperature_c.copied(), Some(46.75));
 
     assert_eq!(snapshot.interval_ms, FAST_INTERVAL.as_millis() as u64);

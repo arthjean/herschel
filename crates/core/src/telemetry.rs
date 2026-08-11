@@ -155,6 +155,25 @@ impl<T: Copy> Reading<T> {
     }
 }
 
+impl Reading<f32> {
+    /// A percentage reading, clamped into 0-100.
+    ///
+    /// Every collector that produces a percentage divides, and a division is
+    /// where a non-finite value comes from. Deciding what to do with one here,
+    /// once, is what keeps each collector from having to answer that question
+    /// separately, and keeps the answer from being a number a real sensor could
+    /// also have reported. `measured` names what was being read, and is only
+    /// formatted when the value has to be refused.
+    pub fn percent(value: f32, measured: impl std::fmt::Display) -> Self {
+        match clamp_percent(value) {
+            Some(percent) => Self::valid(percent),
+            None => Self::unavailable(Unavailable::unparsable(format!(
+                "{measured} did not resolve to a finite percentage."
+            ))),
+        }
+    }
+}
+
 /// Control mode of one kernel PWM channel.
 ///
 /// The values are the `pwm[1-2]_enable` ABI of `nzxt-kraken3`. Mode 0 is the
@@ -270,9 +289,13 @@ pub struct MemoryUsage {
 
 impl MemoryUsage {
     /// Occupancy as a percentage, clamped into 0-100.
-    pub fn percent(self) -> f32 {
+    ///
+    /// `None` when the collector reported no total at all. A machine with no
+    /// memory does not exist, so a zero total means the figure was never read,
+    /// and returning 0% for it would draw an empty bar next to a full one.
+    pub fn percent(self) -> Option<f32> {
         if self.total_bytes == 0 {
-            return 0.0;
+            return None;
         }
         clamp_percent(self.used_bytes as f32 / self.total_bytes as f32 * 100.0)
     }
@@ -620,11 +643,15 @@ impl History {
 }
 
 /// Clamp a percentage into the 0-100 range the interface promises.
-pub fn clamp_percent(value: f32) -> f32 {
-    if value.is_nan() {
-        return 0.0;
-    }
-    value.clamp(0.0, 100.0)
+///
+/// `None` when the value is not finite. Clamping a NaN or an infinity onto an
+/// end of the range would publish 0 or 100, and both are figures a working
+/// sensor reports, so the result would be indistinguishable from a measurement:
+/// the one substitution this module exists to prevent. A percentage that could
+/// not be computed is a gap, and [`Reading::percent`] is how a collector says
+/// so in one line.
+pub fn clamp_percent(value: f32) -> Option<f32> {
+    value.is_finite().then(|| value.clamp(0.0, 100.0))
 }
 
 /// Format a temperature with exactly one decimal place.
@@ -789,27 +816,69 @@ mod tests {
 
     #[test]
     fn percentages_are_clamped_and_temperatures_keep_one_decimal() {
-        assert_eq!(clamp_percent(-5.0), 0.0);
-        assert_eq!(clamp_percent(140.0), 100.0);
-        assert_eq!(clamp_percent(f32::NAN), 0.0);
+        assert_eq!(clamp_percent(-5.0), Some(0.0));
+        assert_eq!(clamp_percent(140.0), Some(100.0));
         assert_eq!(format_temperature(46.75), "46.8");
         assert_eq!(format_temperature(29.0), "29.0");
     }
 
+    /// Clamping a non-finite value onto an end of the range would publish 0 or
+    /// 100, and a working sensor reports both. The gap has to stay a gap here
+    /// for the same reason it does everywhere else in this module.
     #[test]
-    fn memory_occupancy_is_a_clamped_percentage() {
+    fn a_percentage_that_is_not_a_number_never_becomes_zero_or_a_hundred() {
+        for impossible in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(clamp_percent(impossible), None, "{impossible}");
+
+            let reading = Reading::percent(impossible, "/proc/stat");
+            assert!(!reading.is_valid());
+            let detail = reading.cause().unwrap().detail();
+            assert!(detail.contains("/proc/stat"), "{detail}");
+            assert!(detail.contains("finite percentage"), "{detail}");
+        }
+
+        // A value that is a number still arrives clamped and valid.
+        assert_eq!(Reading::percent(140.0, "nvml").copied(), Some(100.0));
+        assert_eq!(Reading::percent(-1.0, "nvml").copied(), Some(0.0));
+        assert_eq!(Reading::percent(42.5, "nvml").copied(), Some(42.5));
+    }
+
+    #[test]
+    fn memory_is_reported_in_explicit_binary_units() {
+        assert_eq!(format_binary_bytes(0), "0 B");
+        assert_eq!(format_binary_bytes(2048), "2 KiB");
+        assert_eq!(format_binary_bytes(12 * 1024 * 1024), "12 MiB");
+        assert_eq!(format_binary_bytes(32 * 1024 * 1024 * 1024), "32.0 GiB");
+    }
+
+    /// A zero total is a figure that was never read. Reporting 0% for it would
+    /// draw an empty bar next to a full one, which is the same confusion a
+    /// zeroed temperature causes.
+    #[test]
+    fn memory_occupancy_is_a_clamped_percentage_or_nothing_at_all() {
         let usage = MemoryUsage {
             used_bytes: 512,
             total_bytes: 1024,
         };
-        assert!((usage.percent() - 50.0).abs() < 0.001);
+        assert!((usage.percent().unwrap() - 50.0).abs() < 0.001);
+
         assert_eq!(
             MemoryUsage {
                 used_bytes: 1,
                 total_bytes: 0
             }
             .percent(),
-            0.0
+            None
+        );
+        // Including when nothing at all was read, which is the shape the
+        // collector produces before it has answered once.
+        assert_eq!(
+            MemoryUsage {
+                used_bytes: 0,
+                total_bytes: 0
+            }
+            .percent(),
+            None
         );
     }
 

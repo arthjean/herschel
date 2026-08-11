@@ -16,7 +16,7 @@
 
 use std::ffi::OsStr;
 
-use kori_core::telemetry::{GpuTelemetry, Reading, Unavailable, clamp_percent};
+use kori_core::telemetry::{GpuTelemetry, Reading, Unavailable};
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 
@@ -123,7 +123,7 @@ impl GpuSensor {
                 ))),
             },
             load_percent: match device.utilization_rates() {
-                Ok(rates) => Reading::valid(clamp_percent(rates.gpu as f32)),
+                Ok(rates) => Reading::percent(rates.gpu as f32, "NVML utilization"),
                 Err(error) => Reading::unavailable(Unavailable::unreadable(format!(
                     "NVML did not report utilization: {error}"
                 ))),
