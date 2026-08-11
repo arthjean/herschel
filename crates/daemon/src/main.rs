@@ -326,6 +326,33 @@ fn serve() -> Result<(), String> {
     }
 
     let server = Server::attach(listener, daemon);
+    stop_on_signal(server.shutdown_handle())?;
     server.run();
+    Ok(())
+}
+
+/// Turn a termination signal into the orderly shutdown the server implements.
+///
+/// Without this, `systemctl stop` kills the process outright and the server's
+/// own teardown never runs: the ticker is not joined, a command in flight is not
+/// allowed to finish, and the socket is left behind for the next start to clean
+/// up. All three are already handled correctly on the shutdown path, which until
+/// now nothing but a test could reach.
+///
+/// The signals are delivered to an ordinary thread rather than to a handler, so
+/// what runs on receipt is normal code taking normal locks. A second signal is
+/// not waited for: an operator who sends one is asking for the process to go,
+/// and the kernel releases every lock this daemon holds whatever way it exits.
+fn stop_on_signal(handle: kori_daemon::server::ShutdownHandle) -> Result<(), String> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+
+    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGINT])
+        .map_err(|error| format!("could not install the signal handler: {error}"))?;
+
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            handle.stop();
+        }
+    });
     Ok(())
 }

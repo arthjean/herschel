@@ -193,9 +193,19 @@ impl Server {
         // to leave the hardware in.
         let _ = ticker.join();
 
+        // The socket goes before the last wait, so no further client can
+        // connect while this is finishing.
         if let Some(path) = self.local_path() {
             let _ = std::fs::remove_file(path);
         }
+
+        // A client thread already inside `handle` holds this lock for the
+        // length of one command, which is the length of one hardware write.
+        // Taking it once here lets that write finish before the process
+        // returns. Client threads are not joined: one sitting idle on an open
+        // connection would block shutdown forever, and it is the write that
+        // has to complete, not the connection.
+        drop(self.daemon.lock());
     }
 }
 
