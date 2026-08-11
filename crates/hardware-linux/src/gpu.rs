@@ -38,16 +38,22 @@ pub const NVML_LIBRARY: &str = "libnvidia-ml.so.1";
 pub const DEVICE_INDEX: u32 = 0;
 
 /// A resolved GPU interface, or the reason there is none.
+///
+/// One field, not an interface beside an optional cause: those two were only
+/// ever set together, and holding them apart meant every read had to invent a
+/// reason for the state where both were absent. That state cannot happen, and a
+/// fabricated reason for it is exactly what this product refuses to put in
+/// front of an operator.
 pub struct GpuSensor {
-    nvml: Option<Nvml>,
-    cause: Option<Unavailable>,
+    nvml: Result<Nvml, Unavailable>,
 }
 
 impl std::fmt::Debug for GpuSensor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `Nvml` is not `Debug`, so the handle is reported as present or not.
         f.debug_struct("GpuSensor")
-            .field("available", &self.nvml.is_some())
-            .field("cause", &self.cause)
+            .field("available", &self.nvml.is_ok())
+            .field("cause", &self.nvml.as_ref().err())
             .finish()
     }
 }
@@ -67,23 +73,18 @@ impl GpuSensor {
     }
 
     fn from_result(result: Result<Nvml, nvml_wrapper::error::NvmlError>) -> Self {
-        match result {
-            Ok(nvml) => Self {
-                nvml: Some(nvml),
-                cause: None,
-            },
-            Err(error) => Self {
-                nvml: None,
-                cause: Some(Unavailable::absent(format!(
+        Self {
+            nvml: result.map_err(|error| {
+                Unavailable::absent(format!(
                     "NVML is not available on this machine: {error}. GPU metrics stay \
                      unavailable and every other metric keeps updating."
-                ))),
-            },
+                ))
+            }),
         }
     }
 
     pub fn is_available(&self) -> bool {
-        self.nvml.is_some()
+        self.nvml.is_ok()
     }
 
     /// One GPU sample.
@@ -92,13 +93,9 @@ impl GpuSensor {
     /// temperature but not for utilization reports one value and one `N/A`
     /// rather than losing both.
     pub fn sample(&self, at_unix_ms: u64) -> GpuTelemetry {
-        let Some(nvml) = &self.nvml else {
-            return GpuTelemetry::unavailable(
-                at_unix_ms,
-                self.cause.clone().unwrap_or_else(|| {
-                    Unavailable::absent("No GPU management interface was resolved.")
-                }),
-            );
+        let nvml = match &self.nvml {
+            Ok(nvml) => nvml,
+            Err(cause) => return GpuTelemetry::unavailable(at_unix_ms, cause.clone()),
         };
 
         let device = match nvml.device_by_index(DEVICE_INDEX) {
