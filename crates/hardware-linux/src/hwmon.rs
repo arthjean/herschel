@@ -257,13 +257,14 @@ impl KrakenHwmon {
     /// All forty points or none: a partially readable curve cannot be used as
     /// a last known-good snapshot, so it is reported as unavailable instead.
     pub fn curve(&self, channel: Channel) -> Result<TemperatureCurve, Unavailable> {
-        let mut points = Vec::with_capacity(CURVE_POINT_COUNT);
-        for index in 0..CURVE_POINT_COUNT {
-            points.push(read_parsed::<u8>(
-                &self.attribute(&curve_point_attribute(channel, index)),
-            )?);
+        let mut points = [0u8; CURVE_POINT_COUNT];
+        for (index, point) in points.iter_mut().enumerate() {
+            *point = read_parsed::<u8>(&self.attribute(&curve_point_attribute(channel, index)))?;
         }
-        Ok(TemperatureCurve { points })
+        // The array is sized by the ABI's own constant, so the curve is built
+        // through the door that cannot refuse rather than through the one that
+        // would hand back a `Result` nothing here could act on.
+        Ok(TemperatureCurve::from_points(points))
     }
 
     /// Everything one channel reports in a single pass.

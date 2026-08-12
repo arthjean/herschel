@@ -612,14 +612,23 @@ mod tests {
     /// A curve this editor could not have produced is not read into the plot.
     /// Showing an arbitrary reading of it would claim the operator drew
     /// something they never did.
+    ///
+    /// Such a curve carries the ABI's forty points like any other; what it does
+    /// not do is lie on the segments the nine editor nodes define. That is the
+    /// only way one can fail to round-trip now that the point count is a
+    /// property of the type.
     #[test]
     fn a_curve_that_does_not_round_trip_leaves_the_plot_alone() {
         let mut editor = CoolingEditor::new();
         let before = *editor.curve(Channel::Pump);
-        let short = kori_core::profile::TemperatureCurve { points: Vec::new() };
+
+        let mut bent = CurveNodes::flat(120).interpolate();
+        // Point 2 sits between the nodes on points 0 and 5, so moving it alone
+        // puts the curve off their segment without touching a node position.
+        bent.points_mut()[2] = 200;
         editor.adopt(&CoolingProgram::Curve {
-            pump: short.clone(),
-            fan: short,
+            pump: bent,
+            fan: bent,
         });
 
         assert_eq!(*editor.curve(Channel::Pump), before);

@@ -96,25 +96,24 @@ impl CurveNodes {
     /// monotone, so a non-decreasing node set always produces a non-decreasing
     /// curve.
     pub fn interpolate(&self) -> TemperatureCurve {
-        let points = (0..CURVE_POINT_COUNT)
-            .map(|point| {
-                // Which segment the point falls in, by arithmetic rather than
-                // by search: node `n` sits on point `n * CURVE_NODE_STEP_C`.
-                // Capping at the second-to-last node is what keeps the two ends
-                // of the segment on distinct points, including for the last
-                // node, which the ABI pins one step short of its own spacing.
-                let lower = (point / CURVE_NODE_STEP_C).min(CURVE_NODE_COUNT - 2);
-                let low_point = Self::point_index(lower);
-                let high_point = Self::point_index(lower + 1);
-                let low = self.duty[lower] as f32;
-                let high = self.duty[lower + 1] as f32;
-                let fraction = (point - low_point) as f32 / (high_point - low_point) as f32;
-                (low + (high - low) * fraction)
-                    .round()
-                    .clamp(0.0, MAX_DUTY as f32) as u8
-            })
-            .collect();
-        TemperatureCurve { points }
+        let mut points = [0u8; CURVE_POINT_COUNT];
+        for (point, entry) in points.iter_mut().enumerate() {
+            // Which segment the point falls in, by arithmetic rather than by
+            // search: node `n` sits on point `n * CURVE_NODE_STEP_C`. Capping
+            // at the second-to-last node is what keeps the two ends of the
+            // segment on distinct points, including for the last node, which
+            // the ABI pins one step short of its own spacing.
+            let lower = (point / CURVE_NODE_STEP_C).min(CURVE_NODE_COUNT - 2);
+            let low_point = Self::point_index(lower);
+            let high_point = Self::point_index(lower + 1);
+            let low = self.duty[lower] as f32;
+            let high = self.duty[lower + 1] as f32;
+            let fraction = (point - low_point) as f32 / (high_point - low_point) as f32;
+            *entry = (low + (high - low) * fraction)
+                .round()
+                .clamp(0.0, MAX_DUTY as f32) as u8;
+        }
+        TemperatureCurve::from_points(points)
     }
 
     /// The curve the editor starts from when no profile defines one.
@@ -140,17 +139,22 @@ impl CurveNodes {
     /// Each node sits on a whole ABI point, so this reads the stored value
     /// directly and is the exact inverse of [`CurveNodes::interpolate`].
     ///
-    /// A curve with the wrong point count cannot be sampled, so the caller
-    /// gets `None` rather than a set built from whatever was there.
+    /// `None` when the curve is not one this editor could have drawn. Nine
+    /// nodes describe forty points only when the thirty-one points between them
+    /// lie on the segments they define; a curve that came from somewhere else,
+    /// a hand-edited file or a future editor with a different node count, does
+    /// not. Sampling it anyway would put a plot on screen whose own
+    /// interpolation is a different curve from the one the device is running,
+    /// and the next Apply would silently write that different curve. So the
+    /// answer is checked rather than assumed: the nodes are sampled, expanded
+    /// again, and compared against what was passed in.
     pub fn from_curve(curve: &TemperatureCurve) -> Option<Self> {
-        if curve.points.len() != CURVE_POINT_COUNT {
-            return None;
-        }
         let mut duty = [0u8; CURVE_NODE_COUNT];
         for (index, entry) in duty.iter_mut().enumerate() {
-            *entry = curve.points[Self::point_index(index)];
+            *entry = curve.points()[Self::point_index(index)];
         }
-        Some(Self { duty })
+        let nodes = Self { duty };
+        (nodes.interpolate() == *curve).then_some(nodes)
     }
 }
 
@@ -193,11 +197,11 @@ mod tests {
     fn nodes_interpolate_to_exactly_forty_integer_points() {
         let nodes = CurveNodes::starting_ramp();
         let curve = nodes.interpolate();
-        assert_eq!(curve.points.len(), CURVE_POINT_COUNT);
+        assert_eq!(curve.points().len(), CURVE_POINT_COUNT);
         // The endpoints land on the nodes rather than near them.
-        assert_eq!(curve.points[0], nodes.duty[0]);
+        assert_eq!(curve.points()[0], nodes.duty[0]);
         assert_eq!(
-            curve.points[CURVE_POINT_COUNT - 1],
+            curve.points()[CURVE_POINT_COUNT - 1],
             nodes.duty[CURVE_NODE_COUNT - 1]
         );
         assert!(validate_curve(Channel::Pump, &curve).is_ok());
@@ -211,10 +215,10 @@ mod tests {
         let curve = nodes.interpolate();
         // Node 1 sits on point index 5, so point 2 is two fifths of the way
         // up: 0 + 90 * 2/5 = 36.
-        assert_eq!(curve.points[0], 0);
-        assert_eq!(curve.points[2], 36);
-        assert_eq!(curve.points[5], 90);
-        assert!(curve.points.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(curve.points()[0], 0);
+        assert_eq!(curve.points()[2], 36);
+        assert_eq!(curve.points()[5], 90);
+        assert!(curve.points().windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     /// Every point lands on the segment its own two nodes define. The last
@@ -228,7 +232,7 @@ mod tests {
         };
         let curve = nodes.interpolate();
 
-        for (index, &duty) in curve.points.iter().enumerate() {
+        for (index, &duty) in curve.points().iter().enumerate() {
             let lower = (index / CURVE_NODE_STEP_C).min(CURVE_NODE_COUNT - 2);
             let (low, high) = (nodes.duty[lower], nodes.duty[lower + 1]);
             assert!(
@@ -238,10 +242,10 @@ mod tests {
         }
 
         // Both ends of the last, shorter segment are exact.
-        assert_eq!(curve.points[35], nodes.duty[7]);
-        assert_eq!(curve.points[CURVE_POINT_COUNT - 1], nodes.duty[8]);
+        assert_eq!(curve.points()[35], nodes.duty[7]);
+        assert_eq!(curve.points()[CURVE_POINT_COUNT - 1], nodes.duty[8]);
         // And its midpoint is interpolated over four points, not five.
-        assert_eq!(curve.points[37], 243);
+        assert_eq!(curve.points()[37], 243);
     }
 
     #[test]
@@ -346,13 +350,33 @@ mod tests {
             // step would drift a saved curve over repeated loads.
             assert_eq!(CurveNodes::from_curve(&nodes.interpolate()), Some(nodes));
         }
+    }
 
-        // A curve of the wrong length cannot be sampled into nodes.
-        assert!(
-            CurveNodes::from_curve(&TemperatureCurve {
-                points: vec![100; 12]
-            })
-            .is_none()
+    /// Nine nodes cannot describe every curve the ABI can hold. One that bends
+    /// between two nodes is read back as `None` rather than as the nine values
+    /// that happen to sit under the node positions, because those nine expand
+    /// into a different curve from the one stored, and the editor would then be
+    /// showing a plot the device is not running.
+    #[test]
+    fn a_curve_this_editor_could_not_have_drawn_is_not_sampled_into_nodes() {
+        let mut bent = CurveNodes::flat(120).interpolate();
+        // Points 0 and 5 carry two adjacent nodes, so point 2 lies on the
+        // segment between them. Moving it alone puts the curve off that
+        // segment while leaving every node position untouched.
+        bent.points_mut()[2] = 200;
+        assert!(CurveNodes::from_curve(&bent).is_none());
+
+        // The nodes themselves still read back, which is what makes the
+        // refusal about the shape between them rather than about the values.
+        assert_eq!(bent.points()[0], 120);
+        assert_eq!(bent.points()[5], 120);
+
+        // And a curve that does lie on its segments still round-trips.
+        let drawn = CurveNodes::flat(120).interpolate();
+        assert_eq!(
+            CurveNodes::from_curve(&drawn),
+            Some(CurveNodes::flat(120)),
+            "a curve this editor drew has to load back into the editor"
         );
     }
 

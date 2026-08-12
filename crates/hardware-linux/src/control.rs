@@ -32,7 +32,7 @@ use std::io::Write;
 use std::path::Path;
 
 use kori_core::ipc::ChannelReadback;
-use kori_core::profile::{CURVE_POINT_COUNT, Channel, MAX_DUTY, TemperatureCurve};
+use kori_core::profile::{CURVE_POINT_COUNT, Channel, TemperatureCurve};
 use kori_core::telemetry::PwmMode;
 
 use crate::hwmon::{KrakenHwmon, curve_point_attribute, duty_attribute, mode_attribute};
@@ -184,16 +184,6 @@ impl CoolingControl {
         channel: Channel,
         curve: &TemperatureCurve,
     ) -> Result<Applied, WriteFailure> {
-        if curve.points.len() != CURVE_POINT_COUNT {
-            return Err(WriteFailure::new(
-                curve_point_attribute(channel, 0),
-                format!(
-                    "a curve must carry exactly {CURVE_POINT_COUNT} points, got {}",
-                    curve.points.len()
-                ),
-            ));
-        }
-
         let mut writes = self.stage_curve(channel, curve)?;
         // The one transfer that actually programs the device.
         self.write(&mode_attribute(channel), PwmMode::Curve.to_kernel())?;
@@ -211,9 +201,9 @@ impl CoolingControl {
         // "readback for every attribute that supports it" means here.
         if let Ok(written) = self.hwmon.curve(channel) {
             let confirmed = written
-                .points
+                .points()
                 .iter()
-                .zip(curve.points.iter())
+                .zip(curve.points().iter())
                 .filter(|(read, expected)| read == expected)
                 .count();
             readback.curve_points_confirmed = Some(confirmed as u16);
@@ -324,7 +314,7 @@ impl CoolingControl {
             self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
             writes += 2;
         }
-        for (index, duty) in curve.points.iter().enumerate() {
+        for (index, duty) in curve.points().iter().enumerate() {
             self.write(&curve_point_attribute(channel, index), *duty)?;
         }
         Ok(writes + CURVE_POINT_COUNT as u32)
@@ -336,20 +326,18 @@ impl CoolingControl {
     /// holding it changes nothing an operator could hear or measure. When it
     /// cannot be read, the curve's own value at the current liquid temperature
     /// says the same thing one step less directly. With neither available the
-    /// last point wins: a curve is validated non-decreasing, so that is its
-    /// highest duty, and a transition that cools too hard is safe where one that
-    /// cools too little is not.
+    /// curve's highest duty wins, because a transition that cools too hard is
+    /// safe where one that cools too little is not.
     fn transition_duty(&self, channel: Channel, curve: &TemperatureCurve) -> u8 {
         if let Some(duty) = self.hwmon.duty(channel).copied() {
             return duty.max(channel.min_duty());
         }
-        let from_curve = self
-            .hwmon
+        self.hwmon
             .liquid_temperature_c()
             .copied()
             .and_then(|temperature_c| curve.duty_at(temperature_c))
-            .or_else(|| curve.points.last().copied());
-        from_curve.unwrap_or(MAX_DUTY).max(channel.min_duty())
+            .unwrap_or_else(|| curve.highest_duty())
+            .max(channel.min_duty())
     }
 
     /// Write one attribute, or say exactly which one refused.
@@ -461,7 +449,7 @@ mod tests {
         // Write-only attributes: unconfirmed rather than wrong.
         assert_eq!(readback.curve_points_confirmed, None);
         assert_eq!(readback.mismatch, None);
-        assert_eq!(fake.written_curve(&hwmon, 2), curve.points);
+        assert_eq!(fake.written_curve(&hwmon, 2), *curve.points());
 
         // Nothing outside the forty points and the mode moved: the pump is
         // still where it was, so the failsafe above 59 C is untouched.
@@ -495,7 +483,7 @@ mod tests {
         );
         assert_eq!(applied.readback.mode, Some(PwmMode::Curve));
         assert_eq!(applied.readback.mismatch, None);
-        assert_eq!(fake.written_curve(&hwmon, 2), second.points);
+        assert_eq!(fake.written_curve(&hwmon, 2), *second.points());
     }
 
     #[test]
@@ -527,26 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn a_curve_of_the_wrong_length_is_refused_before_the_first_write() {
-        let (fake, hwmon, control) = writable("control-short-curve");
-
-        let error = control
-            .apply_curve(
-                Channel::Pump,
-                &TemperatureCurve {
-                    points: vec![120; 39],
-                },
-            )
-            .unwrap_err();
-        assert!(error.detail.contains("exactly 40"), "{error}");
-        assert_eq!(fake.written_curve(&hwmon, 1), vec![0u8; CURVE_POINT_COUNT]);
-        assert_eq!(
-            control.hwmon().mode(Channel::Pump).copied(),
-            Some(PwmMode::FullSpeed)
-        );
-    }
-
-    #[test]
     fn an_unwritable_attribute_names_itself_and_points_at_the_udev_rule() {
         if running_as_root() {
             return; // Root ignores the permission bits this test relies on.
@@ -570,9 +538,7 @@ mod tests {
 
         // The device cannot hand the curve back, so the caller supplies the
         // one it committed.
-        let snapshot = control
-            .snapshot(Channel::Pump)
-            .with_curve(Some(original.clone()));
+        let snapshot = control.snapshot(Channel::Pump).with_curve(Some(original));
         assert_eq!(snapshot.mode, Some(PwmMode::Curve));
         assert!(snapshot.restores_behavior());
 
@@ -588,7 +554,7 @@ mod tests {
             control.hwmon().mode(Channel::Pump).copied(),
             Some(PwmMode::Curve)
         );
-        assert_eq!(fake.written_curve(&hwmon, 1), original.points);
+        assert_eq!(fake.written_curve(&hwmon, 1), *original.points());
     }
 
     #[test]

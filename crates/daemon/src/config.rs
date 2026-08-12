@@ -549,11 +549,11 @@ mod tests {
     fn a_committed_curve_survives_a_reload_without_a_profile() {
         let temp = TempConfig::new("session-program");
         let mut drawn = TemperatureCurve::flat(140);
-        for (index, point) in drawn.points.iter_mut().enumerate() {
+        for (index, point) in drawn.points_mut().iter_mut().enumerate() {
             *point = 140 + index as u8;
         }
         let program = CoolingProgram::Curve {
-            pump: drawn.clone(),
+            pump: drawn,
             fan: drawn,
         };
 
@@ -706,14 +706,14 @@ mod tests {
     fn a_hundred_save_and_reload_cycles_do_not_change_a_value() {
         let temp = TempConfig::new("durability");
         let mut curve = TemperatureCurve::flat(120);
-        for (index, point) in curve.points.iter_mut().enumerate() {
+        for (index, point) in curve.points_mut().iter_mut().enumerate() {
             *point = 120 + index as u8;
         }
         let profile = Profile {
             name: "Curve".into(),
             program: CoolingProgram::Curve {
-                pump: curve.clone(),
-                fan: curve.clone(),
+                pump: curve,
+                fan: curve,
             },
             device: Some(kori_core::KRAKEN_BASE),
             lighting: Vec::new(),

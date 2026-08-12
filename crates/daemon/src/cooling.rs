@@ -140,7 +140,7 @@ impl CoolingExecutor {
     fn committed_curve(&self, channel: Channel) -> Option<TemperatureCurve> {
         self.committed.iter().find_map(|(entry, commit)| {
             match (entry == &channel, &commit.target) {
-                (true, Target::Curve(curve)) => Some(curve.clone()),
+                (true, Target::Curve(curve)) => Some(*curve),
                 _ => None,
             }
         })
@@ -171,8 +171,8 @@ impl CoolingExecutor {
                 fan: *fan,
             }),
             (Target::Curve(pump), Target::Curve(fan)) => Some(CoolingProgram::Curve {
-                pump: pump.clone(),
-                fan: fan.clone(),
+                pump: *pump,
+                fan: *fan,
             }),
             _ => None,
         }
@@ -207,8 +207,8 @@ impl CoolingExecutor {
                 (Channel::Fan, Target::Fixed(*fan)),
             ],
             CoolingProgram::Curve { pump, fan } => vec![
-                (Channel::Pump, Target::Curve(pump.clone())),
-                (Channel::Fan, Target::Curve(fan.clone())),
+                (Channel::Pump, Target::Curve(*pump)),
+                (Channel::Fan, Target::Curve(*fan)),
             ],
         };
 
@@ -450,7 +450,7 @@ impl CoolingExecutor {
                     // Put the record back to what the channel is running now.
                     match (snapshot.mode, &snapshot.curve, snapshot.duty) {
                         (Some(PwmMode::Curve), Some(curve), _) => {
-                            self.commit(snapshot.channel, Target::Curve(curve.clone()));
+                            self.commit(snapshot.channel, Target::Curve(*curve));
                         }
                         (Some(PwmMode::Fixed), _, Some(duty)) => {
                             self.commit(snapshot.channel, Target::Fixed(duty));
@@ -505,10 +505,17 @@ impl CoolingExecutor {
 /// The window spans the point the temperature names and its two neighbors,
 /// widened by the driver's percentage rounding in both directions.
 fn accepts_duty(curve: &TemperatureCurve, liquid_c: f32, reported: u8) -> bool {
-    let center = TemperatureCurve::point_index_for(liquid_c);
+    // A temperature that names no point cannot contradict the curve, so nothing
+    // is claimed about the device from it. This used to be reached only because
+    // `duty_at` had already turned the same temperature away two lines earlier
+    // at the single call site, which left the slice below relying on a check
+    // made somewhere else.
+    let Some(center) = TemperatureCurve::point_index_for(liquid_c) else {
+        return true;
+    };
     let first = center.saturating_sub(1);
     let last = (center + 1).min(CURVE_POINT_COUNT - 1);
-    let window = &curve.points[first..=last];
+    let window = &curve.points()[first..=last];
     let (Some(low), Some(high)) = (window.iter().min(), window.iter().max()) else {
         return true;
     };
@@ -625,21 +632,21 @@ mod tests {
         let outcome = executor.apply(
             clock.tick(),
             &CoolingProgram::Curve {
-                pump: curve.clone(),
-                fan: curve.clone(),
+                pump: curve,
+                fan: curve,
             },
         );
         assert_eq!(outcome.hardware, HardwareState::Confirmed);
         assert_eq!(outcome.writes, 82);
-        assert_eq!(fake.written_curve(&hwmon, 1), curve.points);
-        assert_eq!(fake.written_curve(&hwmon, 2), curve.points);
+        assert_eq!(fake.written_curve(&hwmon, 1), *curve.points());
+        assert_eq!(fake.written_curve(&hwmon, 2), *curve.points());
 
         // The same curve again is deduplicated even though the device cannot
         // read its points back: the record is what makes that safe.
         let repeat = executor.apply(
             clock.tick(),
             &CoolingProgram::Curve {
-                pump: curve.clone(),
+                pump: curve,
                 fan: curve,
             },
         );
@@ -675,7 +682,7 @@ mod tests {
         let (_fake, _hwmon, mut executor) = executor("cooling-verify", true);
         let curve = CurveNodes::flat(255).interpolate();
         let program = CoolingProgram::Curve {
-            pump: curve.clone(),
+            pump: curve,
             fan: curve,
         };
         assert_eq!(
@@ -719,8 +726,8 @@ mod tests {
         executor.apply(
             clock.tick(),
             &CoolingProgram::Curve {
-                pump: curve.clone(),
-                fan: curve.clone(),
+                pump: curve,
+                fan: curve,
             },
         );
 

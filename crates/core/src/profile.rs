@@ -163,14 +163,92 @@ impl CoolingProgram {
     }
 }
 
-/// Exactly one PWM value per kernel curve point.
+/// The wire and on-disk shape of a curve, which is a list of unknown length.
+///
+/// Kept separate from [`TemperatureCurve`] so the length is checked exactly
+/// once, at the boundary where a list of unknown length actually arrives, and
+/// so the object written to a config file or a socket frame stays the
+/// `{"points": [..]}` it has always been.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CurveWire {
+    points: Vec<u8>,
+}
+
+/// Exactly one PWM value per kernel curve point.
+///
+/// The point count is a property of the type rather than something each caller
+/// rechecks. It was the latter, and the four separate checks that resulted did
+/// not cover the same ground: the divergence window in the daemon indexes this
+/// array directly, and it stayed in bounds only because a length check in a
+/// different crate happened to run two lines earlier. An invariant that holds
+/// by construction is what makes that indexing safe to read.
+///
+/// A curve arriving from a socket frame or a config file is a list of unknown
+/// length, so it enters through [`TemperatureCurve::new`] and is refused there
+/// when it does not carry the ABI's count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "CurveWire", into = "CurveWire")]
 pub struct TemperatureCurve {
-    pub points: Vec<u8>,
+    points: [u8; CURVE_POINT_COUNT],
+}
+
+impl TryFrom<CurveWire> for TemperatureCurve {
+    type Error = ValidationError;
+
+    fn try_from(wire: CurveWire) -> Result<Self, Self::Error> {
+        Self::new(wire.points)
+    }
+}
+
+impl From<TemperatureCurve> for CurveWire {
+    fn from(curve: TemperatureCurve) -> Self {
+        Self {
+            points: curve.points.to_vec(),
+        }
+    }
 }
 
 impl TemperatureCurve {
+    /// A curve from a list whose length is not known yet.
+    ///
+    /// The one door into the type from outside, and the only place the ABI's
+    /// point count is compared against anything.
+    pub fn new(points: Vec<u8>) -> Result<Self, ValidationError> {
+        let points: [u8; CURVE_POINT_COUNT] =
+            points
+                .as_slice()
+                .try_into()
+                .map_err(|_| ValidationError::CurvePointCount {
+                    expected: CURVE_POINT_COUNT,
+                    actual: points.len(),
+                })?;
+        Ok(Self { points })
+    }
+
+    /// A curve from a list that already carries the ABI's count.
+    ///
+    /// For a caller that built the array from [`CURVE_POINT_COUNT`] itself, so
+    /// it does not have to handle a refusal that cannot happen. Without it such
+    /// a caller would reach for an unwrap on a `Result` it can prove is `Ok`,
+    /// which is the failure mode this crate refuses everywhere else.
+    pub fn from_points(points: [u8; CURVE_POINT_COUNT]) -> Self {
+        Self { points }
+    }
+
+    /// The duty commanded at each ABI point, in ascending temperature order.
+    pub fn points(&self) -> &[u8; CURVE_POINT_COUNT] {
+        &self.points
+    }
+
+    /// The same, for a caller editing a point in place.
+    ///
+    /// A `&mut [u8; N]` lets every existing edit through and lets no caller
+    /// change how many points there are, which is the whole invariant.
+    pub fn points_mut(&mut self) -> &mut [u8; CURVE_POINT_COUNT] {
+        &mut self.points
+    }
+
     /// Temperature in degrees Celsius of the point at `index`.
     pub fn temperature_at(index: usize) -> u8 {
         CURVE_FIRST_TEMP_C + index as u8
@@ -179,7 +257,7 @@ impl TemperatureCurve {
     /// A flat curve at `duty`, used as a starting point in the editor.
     pub fn flat(duty: u8) -> Self {
         Self {
-            points: vec![duty; CURVE_POINT_COUNT],
+            points: [duty; CURVE_POINT_COUNT],
         }
     }
 
@@ -188,22 +266,35 @@ impl TemperatureCurve {
     /// Clamped at both ends: the ABI starts at 20 C and the firmware runs the
     /// last point above 59 C, so a reading outside the range still names the
     /// point that is in force.
-    pub fn point_index_for(temperature_c: f32) -> usize {
+    ///
+    /// `None` for a temperature that is not a number. Clamping propagates a
+    /// NaN and the cast that follows turns it into index 0, which would answer
+    /// "the duty commanded at 20 C" for a reading nothing measured: the same
+    /// fabricated default [`crate::telemetry::clamp_percent`] refuses, in the
+    /// path that decides whether the device is running the committed curve.
+    pub fn point_index_for(temperature_c: f32) -> Option<usize> {
+        if !temperature_c.is_finite() {
+            return None;
+        }
         let offset = (temperature_c - CURVE_FIRST_TEMP_C as f32).round();
-        offset.clamp(0.0, (CURVE_POINT_COUNT - 1) as f32) as usize
+        Some(offset.clamp(0.0, (CURVE_POINT_COUNT - 1) as f32) as usize)
     }
 
     /// The duty this curve commands at `temperature_c`.
     ///
-    /// `None` when the curve does not carry the ABI's point count, because a
-    /// curve of the wrong length names no duty at any temperature.
+    /// `None` only when the temperature names no point, which is a temperature
+    /// that is not a number. Every curve carries every point.
     pub fn duty_at(&self, temperature_c: f32) -> Option<u8> {
-        if self.points.len() != CURVE_POINT_COUNT {
-            return None;
-        }
-        self.points
-            .get(Self::point_index_for(temperature_c))
-            .copied()
+        Some(self.points[Self::point_index_for(temperature_c)?])
+    }
+
+    /// The highest duty this curve ever commands.
+    ///
+    /// The last point, because [`validate_curve`] refuses a curve that
+    /// decreases. Named here so the callers that need a safe fallback duty do
+    /// not each restate that reasoning next to an indexing expression.
+    pub fn highest_duty(&self) -> u8 {
+        self.points[CURVE_POINT_COUNT - 1]
     }
 }
 
@@ -337,17 +428,14 @@ pub fn validate_duty(channel: Channel, value: u8) -> Result<(), ValidationError>
 ///
 /// Every point is checked. A curve is never written partially, so a single
 /// invalid point rejects the whole transaction.
+///
+/// The point count is not among the checks: a [`TemperatureCurve`] that exists
+/// carries it, and [`TemperatureCurve::new`] is where a list that does not is
+/// turned away.
 pub fn validate_curve(channel: Channel, curve: &TemperatureCurve) -> Result<(), ValidationError> {
-    if curve.points.len() != CURVE_POINT_COUNT {
-        return Err(ValidationError::CurvePointCount {
-            expected: CURVE_POINT_COUNT,
-            actual: curve.points.len(),
-        });
-    }
-
     let min = channel.min_duty();
     let mut previous: Option<(u8, u8)> = None;
-    for (index, &value) in curve.points.iter().enumerate() {
+    for (index, &value) in curve.points().iter().enumerate() {
         let temperature_c = TemperatureCurve::temperature_at(index);
         if value < min {
             return Err(ValidationError::CurveDutyOutOfRange {
@@ -624,28 +712,78 @@ mod tests {
         );
     }
 
+    /// The count is refused at the one door a list of unknown length comes
+    /// through, rather than by each caller that later reads the curve.
     #[test]
-    fn curve_requires_exactly_forty_points() {
-        let short = TemperatureCurve {
-            points: vec![100; 39],
-        };
-        let error = validate_curve(Channel::Fan, &short).unwrap_err();
-        assert!(matches!(
-            error,
-            ValidationError::CurvePointCount {
-                expected: 40,
-                actual: 39
-            }
-        ));
+    fn a_list_that_is_not_forty_points_never_becomes_a_curve() {
+        for actual in [0usize, 39, 41] {
+            let error = TemperatureCurve::new(vec![100; actual]).unwrap_err();
+            assert_eq!(
+                error,
+                ValidationError::CurvePointCount {
+                    expected: CURVE_POINT_COUNT,
+                    actual
+                }
+            );
+        }
+        assert!(TemperatureCurve::new(vec![100; CURVE_POINT_COUNT]).is_ok());
     }
 
+    /// The same door, reached from the wire. A stored profile or a socket frame
+    /// carrying a short curve is refused while it is still a frame, so nothing
+    /// downstream has to ask again.
     #[test]
-    fn curve_must_not_decrease() {
-        let mut curve = TemperatureCurve::flat(120);
-        curve.points[20] = 119;
-        let error = validate_curve(Channel::Pump, &curve).unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("40 C"), "{message}");
+    fn a_curve_of_the_wrong_length_is_refused_at_deserialization() {
+        let short = r#"{"points":[100,100,100]}"#;
+        let error = serde_json::from_str::<TemperatureCurve>(short).unwrap_err();
+        assert!(error.to_string().contains("exactly 40"), "{error}");
+
+        // And the accepted form is byte for byte what earlier builds wrote, so
+        // no profile on disk needs rewriting and no schema version moves.
+        let curve = TemperatureCurve::flat(120);
+        let json = serde_json::to_string(&curve).unwrap();
+        assert!(json.starts_with(r#"{"points":["#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<TemperatureCurve>(&json).unwrap(),
+            curve
+        );
+    }
+
+    /// A temperature that is not a number names no point. The clamped form
+    /// answered index 0, which on a validated curve is its lowest duty, so an
+    /// unreadable temperature would have read as the coolest one there is.
+    #[test]
+    fn a_temperature_that_is_not_a_number_names_no_point_and_no_duty() {
+        let curve = TemperatureCurve::flat(200);
+        for impossible in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                TemperatureCurve::point_index_for(impossible),
+                None,
+                "{impossible}"
+            );
+            assert_eq!(curve.duty_at(impossible), None, "{impossible}");
+        }
+
+        // A reading outside the ABI's range still names the point in force.
+        assert_eq!(TemperatureCurve::point_index_for(-40.0), Some(0));
+        assert_eq!(
+            TemperatureCurve::point_index_for(200.0),
+            Some(CURVE_POINT_COUNT - 1)
+        );
+        assert_eq!(curve.duty_at(31.2), Some(200));
+    }
+
+    /// The fallback duty callers reach for when nothing can be measured.
+    #[test]
+    fn the_highest_duty_is_the_last_point_of_a_non_decreasing_curve() {
+        let curve = CurveNodes::starting_ramp().interpolate();
+        assert!(validate_curve(Channel::Pump, &curve).is_ok());
+        assert_eq!(curve.highest_duty(), MAX_DUTY);
+        assert_eq!(
+            curve.highest_duty(),
+            *curve.points().iter().max().unwrap(),
+            "a validated curve never decreases, so its last point is its highest"
+        );
     }
 
     #[test]
@@ -656,6 +794,15 @@ mod tests {
             CURVE_LAST_TEMP_C
         );
         assert_eq!(CURVE_LAST_TEMP_C, 59);
+    }
+
+    #[test]
+    fn curve_must_not_decrease() {
+        let mut curve = TemperatureCurve::flat(120);
+        curve.points_mut()[20] = 119;
+        let error = validate_curve(Channel::Pump, &curve).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("40 C"), "{message}");
     }
 
     #[test]

@@ -479,13 +479,13 @@ fn out_of_range_values_are_rejected_with_their_accepted_range() {
     }
 
     let mut curve = TemperatureCurve::flat(200);
-    curve.points[30] = 100;
+    curve.points_mut()[30] = 100;
     let response = client
         .request(Request::SaveProfile {
             profile: Profile {
                 name: "Falling".into(),
                 program: CoolingProgram::Curve {
-                    pump: curve.clone(),
+                    pump: curve,
                     fan: curve,
                 },
                 device: None,
@@ -1091,16 +1091,22 @@ fn a_curve_apply_writes_forty_values_per_channel_in_one_transaction() {
     let outcome = apply(
         &mut client,
         CoolingProgram::Curve {
-            pump: curve.clone(),
-            fan: curve.clone(),
+            pump: curve,
+            fan: curve,
         },
     );
     assert_eq!(outcome.hardware, HardwareState::Confirmed);
     assert_eq!(outcome.writes, 2 * (CURVE_POINT_COUNT as u32 + 1));
 
     // Every point landed, in the order the ABI expects.
-    assert_eq!(harness.fake.written_curve(&harness.hwmon, 1), curve.points);
-    assert_eq!(harness.fake.written_curve(&harness.hwmon, 2), curve.points);
+    assert_eq!(
+        harness.fake.written_curve(&harness.hwmon, 1),
+        *curve.points()
+    );
+    assert_eq!(
+        harness.fake.written_curve(&harness.hwmon, 2),
+        *curve.points()
+    );
     let hwmon = harness.hwmon_path();
     assert_eq!(read_attribute(&hwmon, "pwm1_enable"), "2");
     assert_eq!(read_attribute(&hwmon, "pwm2_enable"), "2");
@@ -1127,12 +1133,12 @@ fn a_non_monotonic_curve_is_refused_before_the_first_point_is_written() {
     let mut client = harness.client();
 
     let mut curve = CurveNodes::starting_ramp().interpolate();
-    curve.points[30] = curve.points[29] - 1;
+    curve.points_mut()[30] = curve.points()[29] - 1;
 
     let response = client
         .request(Request::ApplyProgram {
             program: CoolingProgram::Curve {
-                pump: curve.clone(),
+                pump: curve,
                 fan: curve,
             },
         })
@@ -1300,7 +1306,7 @@ fn a_curve_stops_at_the_last_point_the_kernel_abi_defines() {
     apply(
         &mut client,
         CoolingProgram::Curve {
-            pump: curve.clone(),
+            pump: curve,
             fan: curve,
         },
     );
@@ -1782,11 +1788,11 @@ fn the_last_picture_committed_survives_a_daemon_restart() {
 fn the_last_curve_committed_survives_a_daemon_restart_and_is_reported() {
     let harness = Harness::start("curve-restart");
     let mut drawn = TemperatureCurve::flat(140);
-    for (index, point) in drawn.points.iter_mut().enumerate() {
+    for (index, point) in drawn.points_mut().iter_mut().enumerate() {
         *point = 140 + index as u8;
     }
     let program = CoolingProgram::Curve {
-        pump: drawn.clone(),
+        pump: drawn,
         fan: drawn,
     };
 
