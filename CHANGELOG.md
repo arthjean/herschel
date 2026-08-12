@@ -13,7 +13,7 @@ disagree, because each file is valid on its own while the set is wrong.
 Protocol and schema versions have their own record, with the condition each
 deprecated field is still waiting on: [`docs/schema-history.md`](./docs/schema-history.md).
 
-## 0.1.0 - 2026-08-12
+## 0.1.0 - 2026-08-13
 
 First release.
 
