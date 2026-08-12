@@ -98,16 +98,81 @@ fn a_committed_curve_survives_a_reload_without_a_profile() {
     };
 
     let mut config = Configuration::load(temp.file());
-    assert_eq!(config.session_program(), None);
+    assert_eq!(config.program_to_restore(), None);
     config.record_program(&program).unwrap();
 
     let reloaded = Configuration::load(temp.file());
     assert_eq!(reloaded.state(), &ConfigState::Loaded);
-    assert_eq!(reloaded.session_program(), Some(&program));
+    let restored = reloaded
+        .program_to_restore()
+        .expect("the committed shape is replayed");
+    assert_eq!(restored.program, program);
+    assert_eq!(
+        restored.profile, None,
+        "the shape was never saved under a name, so no profile is named"
+    );
     assert!(
         reloaded.active_profile().is_safe_builtin(),
         "the shape was never saved under a name, and did not need to be"
     );
+}
+
+/// The session outranks the profile outright, and says so by naming nobody.
+///
+/// A program is one fact, unlike a set of lighting channels: there is no
+/// half of it the profile could still own. The name travels with the answer
+/// because it is what decides whether a start reports a profile activation
+/// or only a program, and deciding that at the caller is what previously put
+/// this rule in two places.
+#[test]
+fn the_session_program_outranks_the_profiles_and_names_no_profile() {
+    let temp = TempConfig::new("session-program-precedence");
+    let mut config = Configuration::load(temp.file());
+    config.save_profile(named("Loud")).unwrap();
+    config.activate("Loud").unwrap();
+
+    let from_profile = config
+        .program_to_restore()
+        .expect("the profile is replayed");
+    assert_eq!(
+        from_profile.program,
+        CoolingProgram::Fixed { pump: 128, fan: 90 }
+    );
+    assert_eq!(from_profile.profile.as_deref(), Some("Loud"));
+
+    let edited = CoolingProgram::Fixed {
+        pump: 200,
+        fan: 150,
+    };
+    config.record_program(&edited).unwrap();
+
+    let from_session = config
+        .program_to_restore()
+        .expect("the session is replayed");
+    assert_eq!(from_session.program, edited);
+    assert_eq!(
+        from_session.profile, None,
+        "an edit that was never saved under a name must not report one"
+    );
+}
+
+/// A program that writes nothing is not one a start has to put back.
+#[test]
+fn an_onboard_program_leaves_nothing_to_replay_whichever_source_holds_it() {
+    let temp = TempConfig::new("onboard-nothing-to-replay");
+    let mut config = Configuration::load(temp.file());
+    assert!(
+        config.active_profile().is_safe_builtin(),
+        "the built-in profile is the Onboard one"
+    );
+    assert_eq!(config.program_to_restore(), None);
+
+    // A hand-edited file is the only way the session holds Onboard, since
+    // the daemon records a program only once the device confirmed a write
+    // and Onboard never reaches an attribute. It is filtered on that path
+    // too, so the two sources cannot answer differently.
+    config.record_program(&CoolingProgram::Onboard).unwrap();
+    assert_eq!(config.program_to_restore(), None);
 }
 
 #[test]
@@ -185,7 +250,7 @@ fn a_file_written_before_the_session_existed_still_loads() {
 
     let config = Configuration::load(temp.file());
     assert_eq!(config.state(), &ConfigState::Loaded);
-    assert_eq!(config.session_program(), None);
+    assert_eq!(config.program_to_restore(), None);
     assert_eq!(config.display_to_restore(), None);
     assert!(config.lighting_to_restore().is_empty());
 }

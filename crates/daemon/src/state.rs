@@ -28,7 +28,7 @@ use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 use kori_hardware_linux::SysfsRoot;
 use kori_hardware_linux::probe::probe;
 
-use crate::config::{ConfigError, Configuration};
+use crate::config::{ConfigError, Configuration, ProgramToRestore};
 use crate::cooling::CoolingExecutor;
 use crate::display::DisplayExecutor;
 use crate::lighting::LightingExecutor;
@@ -160,56 +160,73 @@ impl Daemon {
         );
     }
 
-    /// Re-apply the configured profile after a start.
+    /// Re-apply what the operator left running, after a start.
+    ///
+    /// The three writes happen in the order an activation performs them, and
+    /// each goes through the same function that activation uses, so a start and
+    /// an activation cannot drift apart in what they write or in what they
+    /// record. What differs is only where each of the three comes from, and that
+    /// question belongs to [`Configuration`]: what the operator last put on the
+    /// hardware outranks what the profile was saved with, since every Lighting
+    /// edit, every drawn curve and every picked picture writes without being
+    /// saved under a name. The profile still owns anything the session never
+    /// committed, so a machine that comes back cold is the one the operator left
+    /// rather than the one the last Save happened to capture.
     ///
     /// A refusal is recorded and the daemon carries on: an incompatible or
     /// unwritable profile must never keep the service from coming up.
     fn restore_active_profile(&mut self) {
-        // What the operator last put on the hardware outranks what the profile
-        // was saved with, since every Lighting edit writes without being saved
-        // under a name. The profile still owns anything the session never
-        // committed, so a machine that comes back cold is the one the operator
-        // left rather than the one the last Save happened to capture.
         self.apply_lighting(&self.config.lighting_to_restore());
         self.apply_display(self.config.display_to_restore().as_ref());
+        if let Some(held) = self.config.program_to_restore() {
+            self.apply_program(held);
+        }
+    }
 
-        // A curve edited on the Cooling screen writes as it settles and is
-        // never saved under a name either, so the same rule applies to the
-        // thermal program: what the operator left running outranks what the
-        // last Save happened to capture. `execute` records the outcome of a
-        // committed program on its own, so only the profile path names one.
-        if let Some(program) = self.config.session_program().cloned() {
-            if let Err(error) = self.execute(&program) {
-                self.diagnostics.record(
-                    crate::now_unix_ms(),
-                    EventKind::ProgramApplied {
-                        hardware: HardwareState::NotApplied {
-                            reason: error.to_string(),
-                        },
-                        writes: 0,
-                    },
-                );
+    /// Put a replayed program on the thermal path, and report the act that asked
+    /// for it.
+    ///
+    /// [`Self::execute`] already records what every program that reached the
+    /// executor did, so what is left here is the act. A program a profile named
+    /// is reported under that name whatever the outcome, which is what puts a
+    /// refused profile on the operator's timeline as the profile they chose
+    /// rather than as an anonymous program. A program the session holds answers
+    /// to no name, so only a refusal has anything left to say: a refusal never
+    /// reached `execute`, and nothing else would mention it.
+    fn apply_program(&mut self, held: ProgramToRestore) -> ApplyOutcome {
+        let (outcome, unreported) = match self.execute(&held.program) {
+            Ok(outcome) => (outcome, None),
+            Err(error) => {
+                let hardware = HardwareState::NotApplied {
+                    reason: error.to_string(),
+                };
+                (ApplyOutcome::untouched(hardware.clone()), Some(hardware))
             }
-            return;
+        };
+
+        let now = crate::now_unix_ms();
+        match held.profile {
+            Some(name) => self.diagnostics.record(
+                now,
+                EventKind::ProfileActivated {
+                    name,
+                    hardware: outcome.hardware.clone(),
+                },
+            ),
+            None => {
+                if let Some(hardware) = unreported {
+                    self.diagnostics.record(
+                        now,
+                        EventKind::ProgramApplied {
+                            hardware,
+                            writes: 0,
+                        },
+                    );
+                }
+            }
         }
 
-        let profile = self.config.active_profile();
-        if profile.program == CoolingProgram::Onboard {
-            return;
-        }
-        let hardware = match self.execute(&profile.program) {
-            Ok(outcome) => outcome.hardware,
-            Err(error) => HardwareState::NotApplied {
-                reason: error.to_string(),
-            },
-        };
-        self.diagnostics.record(
-            crate::now_unix_ms(),
-            EventKind::ProfileActivated {
-                name: profile.name,
-                hardware,
-            },
-        );
+        outcome
     }
 
     /// Put the panel where a profile wants it, when the profile sets one.
@@ -778,27 +795,20 @@ impl Daemon {
                 // profile wins here rather than the session: a profile that
                 // sets no lighting and no picture leaves both alone, exactly as
                 // it did before the session record existed.
-                self.apply_lighting(&profile.lighting);
-                self.apply_display(profile.display.as_ref());
+                //
                 // The selection is persisted first, then written. A write that
                 // fails leaves the profile selected and its hardware state
                 // reported honestly, rather than silently reverting a choice
                 // the operator made.
-                let applied = match self.execute(&profile.program) {
-                    Ok(outcome) => outcome,
-                    Err(error) => ApplyOutcome::untouched(HardwareState::NotApplied {
-                        reason: error.to_string(),
-                    }),
-                };
-                self.diagnostics.record(
-                    crate::now_unix_ms(),
-                    EventKind::ProfileActivated {
-                        name: profile.name.clone(),
-                        hardware: applied.hardware.clone(),
-                    },
-                );
+                let name = profile.name.clone();
+                self.apply_lighting(&profile.lighting);
+                self.apply_display(profile.display.as_ref());
+                let applied = self.apply_program(ProgramToRestore {
+                    program: profile.program,
+                    profile: Some(name.clone()),
+                });
                 Response::Activated(ActivationOutcome {
-                    name: profile.name,
+                    name,
                     hardware: applied.hardware.clone(),
                     applied: Some(applied),
                 })

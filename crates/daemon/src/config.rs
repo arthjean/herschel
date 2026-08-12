@@ -29,6 +29,19 @@ use kori_core::profile::{
 pub use document::{ConfigDocument, ConfigError, SessionState};
 use document::{preserve, read_document, write_atomically};
 
+/// The thermal program a start replays, and whose name it answers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramToRestore {
+    pub program: CoolingProgram,
+    /// The profile the program came from, or `None` when the session holds it.
+    ///
+    /// A session program was never saved under a name, so a start that replays
+    /// one reports the program alone, while one falling back to the profile
+    /// names it. Carrying the name is the whole reason this is a pair rather
+    /// than a program.
+    pub profile: Option<String>,
+}
+
 /// Configuration in memory, with how it was obtained.
 #[derive(Debug, Clone)]
 pub struct Configuration {
@@ -190,16 +203,36 @@ impl Configuration {
         commands
     }
 
-    /// The thermal program the session holds, with no fallback to the profile.
+    /// The thermal program a start should put back, and the profile to report it
+    /// under.
     ///
-    /// Named for what it is rather than for what a start does with it, because
-    /// unlike [`Self::display_to_restore`] it does *not* fall back: `None` means
-    /// nothing has been committed since the profile was chosen, and the caller
-    /// reports the profile by name in that case. A program is one fact, like a
-    /// preset and unlike a set of lighting channels, so the session wins
-    /// outright when it holds one rather than being merged part by part.
-    pub fn session_program(&self) -> Option<&CoolingProgram> {
-        self.document.session.program.as_ref()
+    /// The session wins outright, exactly as it does for the panel: a program is
+    /// one fact, like a preset and unlike a set of lighting channels, so there is
+    /// no half of it the profile could still own. A curve drawn on the Cooling
+    /// screen writes as it settles and asks to be saved under a name no more
+    /// than a lighting edit does.
+    ///
+    /// `None` means there is nothing to replay. That covers both an empty
+    /// session under the built-in safe profile and any source holding
+    /// [`CoolingProgram::Onboard`], which writes nothing by construction: a
+    /// program that reaches no attribute is not one a start has to put back, and
+    /// filtering it here rather than at the caller is what keeps the two sources
+    /// from answering differently.
+    pub fn program_to_restore(&self) -> Option<ProgramToRestore> {
+        let held = match &self.document.session.program {
+            Some(program) => ProgramToRestore {
+                program: program.clone(),
+                profile: None,
+            },
+            None => {
+                let profile = self.active_profile();
+                ProgramToRestore {
+                    program: profile.program,
+                    profile: Some(profile.name),
+                }
+            }
+        };
+        (held.program != CoolingProgram::Onboard).then_some(held)
     }
 
     /// Record the program the device was just confirmed to be running.
