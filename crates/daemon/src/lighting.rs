@@ -14,6 +14,14 @@
 //! [`kori_core::lighting::MIN_COMMAND_INTERVAL_MS`] after the previous one on
 //! the same channel is refused, because the controller acknowledges nothing and
 //! cadence is the only backpressure there is.
+//!
+//! Both refusals come back as a [`HardwareState`], never as an error, which is
+//! the same contract [`crate::cooling`] answers under. A refusal is a fact about
+//! what the hardware was asked to do and what it did, so it travels where an
+//! operator already reads that fact. The cadence floor used to be the one
+//! exception: it answered with an `Err`, so the same situation reached the screen
+//! as a failed request on this path and as a reported outcome on the thermal one,
+//! and the diagnostics recorded it under two different events.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -98,54 +106,30 @@ impl LightingExecutor {
             .collect()
     }
 
-    /// The program this channel is showing, as far as the daemon knows.
-    pub fn committed(&self, channel: u8) -> Option<&LightingProgram> {
-        self.committed.get(&channel)
-    }
-
     /// Apply one command, refusing everything the hardware must not receive.
     ///
     /// `now` is passed in rather than read here so cadence can be exercised
     /// without a test sleeping through the interval it is checking.
-    pub fn apply(
-        &mut self,
-        now: Instant,
-        command: &LightingCommand,
-    ) -> Result<LightingOutcome, LightingError> {
+    pub fn apply(&mut self, now: Instant, command: &LightingCommand) -> LightingOutcome {
         // A repeat of the committed state is answered from the record. This
         // runs before the cadence check on purpose: a request that sends
         // nothing cannot overrun a controller.
         if self.committed.get(&command.channel) == Some(&command.program) {
-            return Ok(LightingOutcome {
-                channel: command.channel,
-                program: command.program.clone(),
-                hardware: HardwareState::Confirmed,
-                writes: 0,
-                deduplicated: true,
-            });
+            return answer(command, HardwareState::Confirmed, 0);
         }
 
-        if let Some(previous) = self.last_sent.get(&command.channel) {
-            let elapsed = now.saturating_duration_since(*previous);
-            if elapsed < rgb::minimum_command_interval() {
-                return Err(LightingError::CadenceTooFast {
-                    channel: command.channel,
-                    minimum_interval_ms: MIN_COMMAND_INTERVAL_MS,
-                    elapsed_ms: elapsed.as_millis() as u64,
-                });
-            }
+        if let Some(refusal) = self.refuse_for_cadence(now, command) {
+            return refusal;
         }
 
         let Some(transport) = self.transport.as_mut() else {
-            return Ok(LightingOutcome {
-                channel: command.channel,
-                program: command.program.clone(),
-                hardware: HardwareState::NotApplied {
+            return answer(
+                command,
+                HardwareState::NotApplied {
                     reason: "No lighting controller is connected.".to_string(),
                 },
-                writes: 0,
-                deduplicated: false,
-            });
+                0,
+            );
         };
 
         match rgb::apply(transport.as_mut(), command.channel, &command.program) {
@@ -153,13 +137,7 @@ impl LightingExecutor {
                 self.last_sent.insert(command.channel, now);
                 self.committed
                     .insert(command.channel, command.program.clone());
-                Ok(LightingOutcome {
-                    channel: command.channel,
-                    program: command.program.clone(),
-                    hardware: HardwareState::Confirmed,
-                    writes: 1,
-                    deduplicated: false,
-                })
+                answer(command, HardwareState::Confirmed, 1)
             }
             Err(error) => {
                 // The report may have reached the controller before the failure
@@ -180,17 +158,60 @@ impl LightingExecutor {
                 // the whole of the evidence available.
                 self.last_sent.insert(command.channel, now);
                 self.committed.clear();
-                Ok(LightingOutcome {
-                    channel: command.channel,
-                    program: command.program.clone(),
-                    hardware: HardwareState::Uncertain {
+                answer(
+                    command,
+                    HardwareState::Uncertain {
                         reason: error.to_string(),
                     },
-                    writes: 0,
-                    deduplicated: false,
-                })
+                    0,
+                )
             }
         }
+    }
+
+    /// Refuse a command arriving sooner than the controller is given, or `None`
+    /// when it may be sent.
+    ///
+    /// The wording comes from [`LightingError::CadenceTooFast`] rather than
+    /// being written here, so the sentence an operator reads is the same one the
+    /// validation vocabulary defines.
+    fn refuse_for_cadence(
+        &self,
+        now: Instant,
+        command: &LightingCommand,
+    ) -> Option<LightingOutcome> {
+        let elapsed = now.saturating_duration_since(*self.last_sent.get(&command.channel)?);
+        if elapsed >= rgb::minimum_command_interval() {
+            return None;
+        }
+        let refusal = LightingError::CadenceTooFast {
+            channel: command.channel,
+            minimum_interval_ms: MIN_COMMAND_INTERVAL_MS,
+            elapsed_ms: elapsed.as_millis() as u64,
+        };
+        Some(answer(
+            command,
+            HardwareState::NotApplied {
+                reason: format!("{refusal} Nothing was sent. Try again in a moment."),
+            },
+            0,
+        ))
+    }
+}
+
+/// One answer about one command.
+///
+/// `deduplicated` is derived rather than passed: a command that wrote nothing
+/// and is nonetheless confirmed is exactly a command the record already held.
+/// Restating it at each of the five endings was five chances for the flag and
+/// the state to disagree.
+fn answer(command: &LightingCommand, hardware: HardwareState, writes: u32) -> LightingOutcome {
+    LightingOutcome {
+        channel: command.channel,
+        program: command.program.clone(),
+        deduplicated: writes == 0 && hardware == HardwareState::Confirmed,
+        hardware,
+        writes,
     }
 }
 
@@ -220,6 +241,19 @@ mod tests {
             color: Rgb::parse_hex(hex).unwrap(),
             brightness: Brightness::new(60).unwrap(),
         }
+    }
+
+    /// What a channel is showing, read through the surface the daemon publishes.
+    ///
+    /// The assertions go through [`LightingExecutor::state`] rather than through
+    /// a private field, so what a test proves about the record is what a client
+    /// is actually told about it.
+    fn committed(executor: &LightingExecutor, channel: u8) -> Option<LightingProgram> {
+        executor
+            .state()
+            .into_iter()
+            .find(|entry| entry.channel == channel)
+            .and_then(|entry| entry.committed)
     }
 
     /// An executor over a fake controller, plus a handle to inspect it.
@@ -298,15 +332,13 @@ mod tests {
         let (mut executor, recorder) = executor(3);
         let now = Instant::now();
 
-        let outcome = executor
-            .apply(
-                now,
-                &LightingCommand {
-                    channel: 2,
-                    program: fixed("7C5CFF"),
-                },
-            )
-            .unwrap();
+        let outcome = executor.apply(
+            now,
+            &LightingCommand {
+                channel: 2,
+                program: fixed("7C5CFF"),
+            },
+        );
 
         assert_eq!(outcome.writes, 1);
         assert!(!outcome.deduplicated);
@@ -315,8 +347,12 @@ mod tests {
         // Channel 2 is bit 1, addressed twice in the header.
         let report = recorder.last().unwrap();
         assert_eq!(&report[0..4], &[0x2a, 0x04, 0x02, 0x02]);
-        assert_eq!(executor.committed(2), Some(&fixed("7C5CFF")));
-        assert_eq!(executor.committed(1), None, "only channel 2 was addressed");
+        assert_eq!(committed(&executor, 2), Some(fixed("7C5CFF")));
+        assert_eq!(
+            committed(&executor, 1),
+            None,
+            "only channel 2 was addressed"
+        );
     }
 
     #[test]
@@ -328,60 +364,70 @@ mod tests {
             program: fixed("00FF00"),
         };
 
-        executor.apply(start, &command).unwrap();
+        executor.apply(start, &command);
         assert_eq!(recorder.count(), 1);
 
         // Immediately, so the deduplication cannot be mistaken for the cadence
         // refusal that would otherwise apply at this instant.
-        let repeat = executor.apply(start, &command).unwrap();
+        let repeat = executor.apply(start, &command);
         assert!(repeat.deduplicated);
         assert_eq!(repeat.writes, 0);
         assert_eq!(repeat.hardware, HardwareState::Confirmed);
         assert_eq!(recorder.count(), 1, "no additional report was sent");
     }
 
+    /// The cadence floor refuses as a reported outcome, not as an error.
+    ///
+    /// This is the contract [`crate::cooling`] answers under for the same
+    /// situation, and the two used to differ: the same operator action reached
+    /// the screen as a failed request here and as a reported refusal there. What
+    /// the refusal has to carry is what the hardware did, which is nothing, and
+    /// why.
     #[test]
     fn a_command_faster_than_the_floor_is_refused_before_the_write() {
         let (mut executor, recorder) = executor(3);
         let start = Instant::now();
 
-        executor
-            .apply(
-                start,
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("FF0000"),
-                },
-            )
-            .unwrap();
+        executor.apply(
+            start,
+            &LightingCommand {
+                channel: 1,
+                program: fixed("FF0000"),
+            },
+        );
 
-        let error = executor
-            .apply(
-                start + Duration::from_millis(MIN_COMMAND_INTERVAL_MS - 1),
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("00FF00"),
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(error, LightingError::CadenceTooFast { .. }));
+        let refused = executor.apply(
+            start + Duration::from_millis(MIN_COMMAND_INTERVAL_MS - 1),
+            &LightingCommand {
+                channel: 1,
+                program: fixed("00FF00"),
+            },
+        );
+        let HardwareState::NotApplied { reason } = &refused.hardware else {
+            panic!("expected a refusal, got {:?}", refused.hardware);
+        };
+        assert!(reason.contains("one every"), "{reason}");
+        assert!(reason.contains("Nothing was sent"), "{reason}");
+        assert_eq!(refused.writes, 0);
+        assert!(
+            !refused.deduplicated,
+            "a refusal is not a command the record already held"
+        );
         assert_eq!(recorder.count(), 1, "the refused command reached no device");
         assert_eq!(
-            executor.committed(1),
-            Some(&fixed("FF0000")),
+            committed(&executor, 1),
+            Some(fixed("FF0000")),
             "a refused command must not disturb the committed state"
         );
 
         // At the floor exactly, it lands.
-        executor
-            .apply(
-                start + Duration::from_millis(MIN_COMMAND_INTERVAL_MS),
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("00FF00"),
-                },
-            )
-            .unwrap();
+        executor.apply(
+            start + Duration::from_millis(MIN_COMMAND_INTERVAL_MS),
+            &LightingCommand {
+                channel: 1,
+                program: fixed("00FF00"),
+            },
+        );
         assert_eq!(recorder.count(), 2);
     }
 
@@ -391,15 +437,13 @@ mod tests {
         let start = Instant::now();
 
         for channel in 1..=3 {
-            executor
-                .apply(
-                    start,
-                    &LightingCommand {
-                        channel,
-                        program: fixed("101010"),
-                    },
-                )
-                .unwrap();
+            executor.apply(
+                start,
+                &LightingCommand {
+                    channel,
+                    program: fixed("101010"),
+                },
+            );
         }
         assert_eq!(recorder.count(), 3, "three channels, three reports");
     }
@@ -412,15 +456,13 @@ mod tests {
             .fail
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let outcome = executor
-            .apply(
-                start,
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("FFFFFF"),
-                },
-            )
-            .unwrap();
+        let outcome = executor.apply(
+            start,
+            &LightingCommand {
+                channel: 1,
+                program: fixed("FFFFFF"),
+            },
+        );
 
         assert_eq!(outcome.writes, 0);
         match &outcome.hardware {
@@ -428,7 +470,7 @@ mod tests {
             other => panic!("expected uncertain, got {other:?}"),
         }
         assert_eq!(
-            executor.committed(1),
+            committed(&executor, 1),
             None,
             "a channel that may or may not have taken the report is not claimed"
         );
@@ -448,17 +490,15 @@ mod tests {
         let start = Instant::now();
 
         for channel in 1..=3 {
-            executor
-                .apply(
-                    start,
-                    &LightingCommand {
-                        channel,
-                        program: fixed("FF0000"),
-                    },
-                )
-                .unwrap();
+            executor.apply(
+                start,
+                &LightingCommand {
+                    channel,
+                    program: fixed("FF0000"),
+                },
+            );
         }
-        assert!((1..=3).all(|channel| executor.committed(channel).is_some()));
+        assert!((1..=3).all(|channel| committed(&executor, channel).is_some()));
 
         // The controller goes away. The next write is the only way this process
         // can find out, because nothing here acknowledges anything.
@@ -466,19 +506,17 @@ mod tests {
             .fail
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let elapsed = start + Duration::from_millis(MIN_COMMAND_INTERVAL_MS);
-        executor
-            .apply(
-                elapsed,
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("00FF00"),
-                },
-            )
-            .unwrap();
+        executor.apply(
+            elapsed,
+            &LightingCommand {
+                channel: 1,
+                program: fixed("00FF00"),
+            },
+        );
 
         for channel in 1..=3 {
             assert_eq!(
-                executor.committed(channel),
+                committed(&executor, channel),
                 None,
                 "channel {channel} must not stay claimed after the link refused"
             );
@@ -492,15 +530,13 @@ mod tests {
         let sent = recorder.count();
         let back = elapsed + Duration::from_millis(MIN_COMMAND_INTERVAL_MS);
         for channel in 1..=3 {
-            let outcome = executor
-                .apply(
-                    back,
-                    &LightingCommand {
-                        channel,
-                        program: fixed("FF0000"),
-                    },
-                )
-                .unwrap();
+            let outcome = executor.apply(
+                back,
+                &LightingCommand {
+                    channel,
+                    program: fixed("FF0000"),
+                },
+            );
             assert!(!outcome.deduplicated, "channel {channel} was deduplicated");
         }
         assert_eq!(recorder.count(), sent + 3);
@@ -512,32 +548,28 @@ mod tests {
         assert_eq!(executor.channel_count(), 0);
         assert!(executor.state().is_empty());
 
-        let outcome = executor
-            .apply(
-                Instant::now(),
-                &LightingCommand {
-                    channel: 1,
-                    program: LightingProgram::Off,
-                },
-            )
-            .unwrap();
+        let outcome = executor.apply(
+            Instant::now(),
+            &LightingCommand {
+                channel: 1,
+                program: LightingProgram::Off,
+            },
+        );
         assert_eq!(outcome.writes, 0);
         assert!(matches!(outcome.hardware, HardwareState::NotApplied { .. }));
-        assert_eq!(executor.committed(1), None);
+        assert_eq!(committed(&executor, 1), None);
     }
 
     #[test]
     fn the_reported_state_carries_the_accessories_the_controller_named() {
         let (mut executor, _recorder) = executor(2);
-        executor
-            .apply(
-                Instant::now(),
-                &LightingCommand {
-                    channel: 1,
-                    program: fixed("ABCDEF"),
-                },
-            )
-            .unwrap();
+        executor.apply(
+            Instant::now(),
+            &LightingCommand {
+                channel: 1,
+                program: fixed("ABCDEF"),
+            },
+        );
 
         let state = executor.state();
         assert_eq!(state.len(), 2);

@@ -577,7 +577,7 @@ impl Daemon {
 
         self.require_write_access()?;
 
-        let outcome = self.lighting.apply(Instant::now(), command)?;
+        let outcome = self.lighting.apply(Instant::now(), command);
         self.diagnostics.record(
             crate::now_unix_ms(),
             EventKind::LightingApplied {

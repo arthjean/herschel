@@ -190,13 +190,29 @@ fn the_write_path_opens_only_for_a_firmware_the_probe_validated() {
             assert!(repeat.deduplicated);
             assert_eq!(repeat.writes, 0);
 
-            // A different color inside the cadence floor is refused outright.
-            match client.apply_lighting(lighting(2, "00FF00")) {
-                Err(kori_core::client::ClientError::Refused(IpcError::Lighting(error))) => {
-                    assert!(error.to_string().contains("one every"), "{error}");
-                }
-                other => panic!("expected a cadence rejection, got {other:?}"),
-            }
+            // A different color inside the cadence floor is refused, and the
+            // refusal comes back as a reported outcome rather than as a failed
+            // request: nothing was sent, and that is a fact about the hardware.
+            // The thermal path answers the same situation the same way, which it
+            // did not while this one used the error channel.
+            let refused = client.apply_lighting(lighting(2, "00FF00")).unwrap();
+            let HardwareState::NotApplied { reason } = &refused.hardware else {
+                panic!("expected a cadence refusal, got {:?}", refused.hardware);
+            };
+            assert!(reason.contains("one every"), "{reason}");
+            assert!(reason.contains("Nothing was sent"), "{reason}");
+            assert_eq!(refused.writes, 0);
+            assert!(!refused.deduplicated);
+
+            // And it left the committed state alone, so the screen still shows
+            // what the channel is actually holding.
+            let status = client.status().unwrap();
+            let channel = status
+                .lighting
+                .iter()
+                .find(|channel| channel.channel == 2)
+                .unwrap();
+            assert_eq!(channel.committed, Some(lighting(2, "7C5CFF").program));
 
             // Off is a different program, so it is a real write once the floor
             // has passed.

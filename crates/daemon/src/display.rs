@@ -28,6 +28,13 @@
 //! queueing behind it: a panel showing a temperature from four seconds ago
 //! because three frames are waiting is worse than a panel that skipped them.
 //!
+//! **A refusal the panel imposes is a [`HardwareState`], never an error.** This
+//! is the one of the three executors that still returns a `Result`, and what its
+//! error channel carries is the single thing the other two cannot meet: a preset
+//! that has no bytes to send, because the picture it names could not be
+//! rendered. Nothing about the panel's own behavior travels that way, so a
+//! caller reads "what the hardware did" in one place for all three paths.
+//!
 //! **An animation is decoded once and then only copied.** A GIF the operator
 //! picks is compiled to a table of finished framebuffers when it is applied, so
 //! what the tick loop does per frame is a copy and a transfer. It plays on its
