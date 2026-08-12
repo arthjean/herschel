@@ -103,7 +103,7 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # --locked, so a release cannot quietly resolve a dependency to something
       # Cargo.lock does not name.
