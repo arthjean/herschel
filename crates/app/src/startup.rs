@@ -83,10 +83,14 @@ pub fn detect_backend_from_env() -> Result<Backend, BackendUnavailable> {
 }
 
 /// Measures time from process start to first painted frame.
+///
+/// Reporting consumes the trace, so "only the first frame is timed" is a fact
+/// the compiler holds rather than a flag the type checks against itself. The
+/// flag was there for a caller that cannot call twice: the report is handed to
+/// `Window::on_next_frame`, which takes an `FnOnce`.
 pub struct StartupTrace {
     started: Instant,
     enabled: bool,
-    reported: bool,
 }
 
 impl StartupTrace {
@@ -95,20 +99,11 @@ impl StartupTrace {
         Self {
             started: Instant::now(),
             enabled: is_enabled(STARTUP_TRACE_ENV),
-            reported: false,
         }
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Report the first frame. Later calls do nothing.
-    pub fn first_frame(&mut self, backend: Backend) {
-        if self.reported {
-            return;
-        }
-        self.reported = true;
+    /// Report the frame the compositor presented, and end the measurement.
+    pub fn first_frame(self, backend: Backend) {
         if self.enabled {
             println!(
                 "startup: first frame after {:.1} ms on {}",
@@ -116,10 +111,6 @@ impl StartupTrace {
                 backend.name()
             );
         }
-    }
-
-    pub fn has_reported(&self) -> bool {
-        self.reported
     }
 }
 
@@ -162,20 +153,6 @@ mod tests {
     fn empty_variables_count_as_absent() {
         assert!(detect_backend(Some(""), Some("")).is_err());
         assert!(detect_backend(Some(""), None).is_err());
-    }
-
-    #[test]
-    fn the_first_frame_is_reported_once() {
-        let mut trace = StartupTrace {
-            started: Instant::now(),
-            enabled: false,
-            reported: false,
-        };
-        assert!(!trace.has_reported());
-        trace.first_frame(Backend::Wayland);
-        assert!(trace.has_reported());
-        trace.first_frame(Backend::X11);
-        assert!(trace.has_reported());
     }
 
     #[test]
