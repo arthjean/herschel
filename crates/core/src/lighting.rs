@@ -97,6 +97,28 @@ impl Rgb {
             b: scale(self.b),
         }
     }
+
+    /// This color moved `amount` of the way toward `toward`, from 0 to 1.
+    ///
+    /// The one interpolation the product performs on a color. The renderer
+    /// shades a band along its sweep with it, dims a resting track with it, and
+    /// mixes coverage into a pixel with it; three copies of the same rounding
+    /// are three places for a gradient and an antialiased edge to disagree
+    /// about the same pair of colors.
+    ///
+    /// `amount` is expected inside `0.0..=1.0`. Beyond that the arithmetic
+    /// extrapolates and the cast saturates, which is why every caller clamps
+    /// before it asks.
+    pub fn mixed(self, toward: Self, amount: f32) -> Self {
+        let channel = |from: u8, to: u8| {
+            (f32::from(from) + (f32::from(to) - f32::from(from)) * amount).round() as u8
+        };
+        Self {
+            r: channel(self.r, toward.r),
+            g: channel(self.g, toward.g),
+            b: channel(self.b, toward.b),
+        }
+    }
 }
 
 /// A brightness percentage that cannot hold an out-of-range value.
@@ -520,6 +542,18 @@ mod tests {
             Rgb::new(255, 255, 255).scaled(Brightness::FULL),
             Rgb::new(255, 255, 255)
         );
+    }
+
+    #[test]
+    fn mixing_lands_on_the_ends_it_was_given_and_is_symmetric_between_them() {
+        let from = Rgb::new(0x00, 0x20, 0xff);
+        let to = Rgb::new(0xff, 0xa0, 0x00);
+        assert_eq!(from.mixed(to, 0.0), from, "nothing of the way is the start");
+        assert_eq!(from.mixed(to, 1.0), to, "all of the way is the end");
+        // The same point, approached from either end, rounds to the same color.
+        assert_eq!(from.mixed(to, 0.25), to.mixed(from, 0.75));
+        // And it is a straight line between them, channel by channel.
+        assert_eq!(from.mixed(to, 0.5), Rgb::new(0x80, 0x60, 0x80));
     }
 
     #[test]
