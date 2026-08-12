@@ -28,6 +28,14 @@ pub const DEFAULT_CAPACITY: usize = 512;
 /// Text substituted for anything the redactor recognizes as sensitive.
 pub const REDACTION_PLACEHOLDER: &str = "[redacted]";
 
+/// Shortest value that may be registered as a secret.
+///
+/// A two or three character string occurs inside ordinary words, so replacing
+/// it everywhere would corrupt unrelated text while protecting nothing. Named
+/// rather than written inline because the number decides what a redactor
+/// declines to protect, which is a question worth being able to find.
+const MIN_SECRET_LEN: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
@@ -241,7 +249,7 @@ impl Redactor {
     /// text without protecting anything.
     pub fn add_secret(&mut self, secret: impl Into<String>) {
         let secret = secret.into();
-        if secret.len() >= 4 && !self.secrets.contains(&secret) {
+        if secret.len() >= MIN_SECRET_LEN && !self.secrets.contains(&secret) {
             self.secrets.push(secret);
         }
     }
