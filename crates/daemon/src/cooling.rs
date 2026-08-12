@@ -208,30 +208,28 @@ impl CoolingExecutor {
             ],
         };
 
-        if self.resolve().is_none() {
+        // Resolved once, for the whole transaction, and cloned so the helpers
+        // below can hold it while the record is being updated. A
+        // `CoolingControl` is a path, so the clone costs one allocation and
+        // buys an invariant: every step from here on is reached with a control
+        // that exists. The alternative was three `None` arms no execution can
+        // reach, each inventing what an absent control would have reported.
+        let Some(control) = self.resolve().cloned() else {
             return ApplyOutcome::untouched(HardwareState::NotApplied {
                 reason: "No kraken2023 hwmon instance is bound to an allowlisted device, so \
                          nothing was written."
                     .to_string(),
             });
-        }
+        };
 
         // Captured before the first write, with this process's own record of
         // the curve folded in, because the device cannot hand one back.
         let snapshots: Vec<ChannelSnapshot> = targets
             .iter()
             .map(|(channel, _)| {
-                let committed = self.committed_curve(*channel);
-                let control = self.control.as_ref();
-                match control {
-                    Some(control) => control.snapshot(*channel).with_curve(committed),
-                    None => ChannelSnapshot {
-                        channel: *channel,
-                        mode: None,
-                        duty: None,
-                        curve: committed,
-                    },
-                }
+                control
+                    .snapshot(*channel)
+                    .with_curve(self.committed_curve(*channel))
             })
             .collect();
 
@@ -240,27 +238,11 @@ impl CoolingExecutor {
         // transaction that would actually reach the device.
         let settled: Vec<Option<ChannelReadback>> = targets
             .iter()
-            .map(|(channel, target)| self.already_applied(*channel, target))
+            .map(|(channel, target)| self.already_applied(&control, *channel, target))
             .collect();
 
-        // A request that sends nothing cannot overrun the firmware, so a
-        // fully deduplicated Apply is never refused. Same ordering as
-        // `LightingExecutor::apply`, for the same reason.
-        if settled.iter().any(Option::is_none)
-            && let Some(previous) = self.last_write
-        {
-            let elapsed = now.saturating_duration_since(previous);
-            let minimum = Duration::from_millis(MIN_PROGRAM_INTERVAL_MS);
-            if elapsed < minimum {
-                return ApplyOutcome::untouched(HardwareState::NotApplied {
-                    reason: format!(
-                        "Refused: {} ms since the last write to the cooler, and the firmware is \
-                         given at least {MIN_PROGRAM_INTERVAL_MS} ms between programs. Nothing \
-                         was written. Try again in a moment.",
-                        elapsed.as_millis()
-                    ),
-                });
-            }
+        if let Some(refusal) = self.refuse_for_cadence(now, &settled) {
+            return refusal;
         }
 
         let mut readback = Vec::with_capacity(targets.len());
@@ -275,18 +257,60 @@ impl CoolingExecutor {
             // Stamped before the result is known: a write that failed still
             // reached the device, and the restoration in `abort` writes again.
             self.last_write = Some(now);
-            match self.write(*channel, target) {
+            match write(&control, *channel, target) {
                 Ok(applied) => {
                     writes += applied.writes;
                     self.commit(*channel, target.clone());
                     readback.push(applied.readback);
                 }
                 Err(failure) => {
-                    return self.abort(&snapshots, &failure, writes, readback);
+                    return self.abort(&control, &snapshots, &failure, writes, readback);
                 }
             }
         }
 
+        self.settle(&targets, writes, readback)
+    }
+
+    /// Refuse a transaction that would reach the device sooner than the
+    /// firmware is given, or `None` when it may proceed.
+    ///
+    /// A request that sends nothing cannot overrun the firmware, so a fully
+    /// deduplicated Apply is never refused. Same ordering as
+    /// [`crate::lighting::LightingExecutor::apply`], for the same reason.
+    fn refuse_for_cadence(
+        &self,
+        now: Instant,
+        settled: &[Option<ChannelReadback>],
+    ) -> Option<ApplyOutcome> {
+        if settled.iter().all(Option::is_some) {
+            return None;
+        }
+        let elapsed = now.saturating_duration_since(self.last_write?);
+        if elapsed >= Duration::from_millis(MIN_PROGRAM_INTERVAL_MS) {
+            return None;
+        }
+        Some(ApplyOutcome::untouched(HardwareState::NotApplied {
+            reason: format!(
+                "Refused: {} ms since the last write to the cooler, and the firmware is \
+                 given at least {MIN_PROGRAM_INTERVAL_MS} ms between programs. Nothing \
+                 was written. Try again in a moment.",
+                elapsed.as_millis()
+            ),
+        }))
+    }
+
+    /// Turn the readbacks of a completed transaction into its outcome.
+    ///
+    /// A channel the device did not read back as written leaves the record: the
+    /// write landed and the device disagrees, so nothing further is written
+    /// until a readback succeeds.
+    fn settle(
+        &mut self,
+        targets: &[(Channel, Target)],
+        writes: u32,
+        readback: Vec<ChannelReadback>,
+    ) -> ApplyOutcome {
         let mismatched: Vec<String> = readback
             .iter()
             .filter_map(|entry| {
@@ -300,9 +324,7 @@ impl CoolingExecutor {
         let hardware = if mismatched.is_empty() {
             HardwareState::Confirmed
         } else {
-            // The write landed but the device disagrees. Nothing further is
-            // written until a readback succeeds.
-            for (channel, _) in &targets {
+            for (channel, _) in targets {
                 self.uncommit(*channel);
             }
             HardwareState::Uncertain {
@@ -389,11 +411,15 @@ impl CoolingExecutor {
     /// Checking only the record would let an external change go unnoticed;
     /// checking only the device cannot see a curve, because curve attributes
     /// are write-only.
-    fn already_applied(&mut self, channel: Channel, target: &Target) -> Option<ChannelReadback> {
+    fn already_applied(
+        &self,
+        control: &CoolingControl,
+        channel: Channel,
+        target: &Target,
+    ) -> Option<ChannelReadback> {
         if self.committed_target(channel) != Some(target) {
             return None;
         }
-        let control = self.control.as_ref()?;
         let mode = control.hwmon().mode(channel).copied()?;
         if mode != target.mode() {
             return None;
@@ -412,22 +438,10 @@ impl CoolingExecutor {
         Some(entry)
     }
 
-    fn write(&self, channel: Channel, target: &Target) -> Result<Applied, WriteFailure> {
-        let Some(control) = self.control.as_ref() else {
-            return Err(WriteFailure {
-                attribute: "hwmon".to_string(),
-                detail: "the device disappeared before the write".to_string(),
-            });
-        };
-        match target {
-            Target::Fixed(duty) => control.apply_fixed(channel, *duty),
-            Target::Curve(curve) => control.apply_curve(channel, curve),
-        }
-    }
-
     /// Undo a failed transaction and report what could be proven afterwards.
     fn abort(
         &mut self,
+        control: &CoolingControl,
         snapshots: &[ChannelSnapshot],
         failure: &WriteFailure,
         writes: u32,
@@ -437,11 +451,7 @@ impl CoolingExecutor {
         let mut details = Vec::new();
 
         for snapshot in snapshots {
-            let outcome = match self.control.as_ref() {
-                Some(control) => control.restore(snapshot),
-                None => Ok(false),
-            };
-            match outcome {
+            match control.restore(snapshot) {
                 Ok(true) => {
                     // Put the record back to what the channel is running now.
                     match (snapshot.mode, &snapshot.curve, snapshot.duty) {
@@ -493,6 +503,22 @@ impl CoolingExecutor {
             deduplicated: false,
             readback,
         }
+    }
+}
+
+/// Put one channel on one target.
+///
+/// Takes the control rather than reaching for the executor's own, which is what
+/// makes "the device is bound" a fact established once by the caller instead of
+/// a question every step has to invent an answer to.
+fn write(
+    control: &CoolingControl,
+    channel: Channel,
+    target: &Target,
+) -> Result<Applied, WriteFailure> {
+    match target {
+        Target::Fixed(duty) => control.apply_fixed(channel, *duty),
+        Target::Curve(curve) => control.apply_curve(channel, curve),
     }
 }
 
