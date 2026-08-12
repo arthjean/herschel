@@ -60,6 +60,39 @@ fn the_declared_icon_is_a_file_that_ships() {
     );
 }
 
+/// gdk-pixbuf decides a stream's format before it parses it, by matching the
+/// head of the file against each loader's signature. The librsvg loader claims
+/// a stream whose `<svg` falls inside the first 256 bytes and no further, so an
+/// icon carrying its license header above the root element is not an SVG as far
+/// as every GTK icon lookup is concerned: `Icon=kori` fails with "couldn't
+/// recognize the image file format" and the window shows nothing, while the
+/// entry, the app_id and the theme cache are all still correct. Measured on
+/// gdk-pixbuf 2.42 with a padded probe: byte 256 loads, byte 257 does not.
+const SVG_SIGNATURE_WINDOW: usize = 256;
+
+#[test]
+fn the_icon_is_a_format_a_theme_lookup_can_recognize() {
+    let root = repo_root();
+    let entry = std::fs::read_to_string(root.join("packaging/desktop/kori.desktop"))
+        .expect("packaging/desktop/kori.desktop is committed");
+
+    let icon = entry_value(&entry, "Icon").expect("the entry names an icon");
+    let artwork = std::fs::read(root.join(format!("packaging/icons/{icon}.svg")))
+        .expect("the icon the entry names is committed");
+
+    let offset = artwork
+        .windows(4)
+        .position(|bytes| bytes == b"<svg")
+        .expect("the artwork has a root svg element");
+
+    assert!(
+        offset <= SVG_SIGNATURE_WINDOW,
+        "<svg starts at byte {offset} of packaging/icons/{icon}.svg, past the \
+         {SVG_SIGNATURE_WINDOW}-byte window gdk-pixbuf sniffs; move the header \
+         comment inside the root element so the element opens the file"
+    );
+}
+
 #[test]
 fn the_appstream_component_launches_the_entry_that_ships() {
     let root = repo_root();

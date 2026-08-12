@@ -1,25 +1,35 @@
-<!--
-  SPDX-FileCopyrightText: 2026 Arthur Jean
-  SPDX-License-Identifier: GPL-3.0-or-later
-
-  Kori application icon, scalable form. Installed as
-  hicolor/scalable/apps/kori.svg, which is the name `Icon=kori` in
-  packaging/desktop/kori.desktop resolves to.
-
-  Geometry follows the portable canvas Paneflow's scripts/build-icons.sh
-  establishes: a 1024 master square with the body inset to 83.33% and centered,
-  which is what leaves KDE's 4 px-per-side reservation on a 48 px grid free and
-  still lands inside GNOME's 128 px app canvas. Body = 853.33, margin = 85.33.
-
-  The mark is the kanji the product is named after, drawn as five strokes of one
-  constant width with round caps. Stroke coordinates stay in the 1232 space of
-  the source artwork and the group transform maps that space onto the body, so
-  the glyph keeps the same size relative to its plate as the original.
-
-  No vendor logo, asset or wordmark: the plate is the accent from
-  crates/app/src/theme.rs and the glyph is this project's own drawing.
--->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    SPDX-FileCopyrightText: 2026 Arthur Jean
+    SPDX-License-Identifier: GPL-3.0-or-later
+
+    The root element opens the file, and this header sits inside it. That order
+    is what makes the icon loadable: gdk-pixbuf sniffs the format before it
+    parses anything, and its librsvg loader only claims a stream whose `<svg`
+    lands within the first 256 bytes. With the header above the element, `<svg`
+    started at byte 1025, every lookup of `Icon=kori` failed with "couldn't
+    recognize the image file format", and the window ran with no icon at all
+    while the desktop entry, the app_id and the theme cache were each correct.
+    crates/app/tests/desktop_entry.rs holds the offset.
+
+    Kori application icon, scalable form. Installed as
+    hicolor/scalable/apps/kori.svg, which is the name `Icon=kori` in
+    packaging/desktop/kori.desktop resolves to.
+
+    Geometry follows the portable canvas Paneflow's scripts/build-icons.sh
+    establishes: a 1024 master square with the body inset to 83.33% and
+    centered, which is what leaves KDE's 4 px-per-side reservation on a 48 px
+    grid free and still lands inside GNOME's 128 px app canvas. Body = 853.33,
+    margin = 85.33.
+
+    The mark is the kanji the product is named after, drawn as five strokes of
+    one constant width with round caps. Stroke coordinates stay in the 1232
+    space of the source artwork and the group transform maps that space onto the
+    body, so the glyph keeps the same size relative to its plate as the original.
+
+    No vendor logo, asset or wordmark: the plate is the accent from
+    crates/app/src/theme.rs and the glyph is this project's own drawing.
+  -->
   <defs>
     <radialGradient id="kori-glow-a" cx="0.02" cy="0.02" r="0.62">
       <stop offset="0" stop-color="#7a5af0" stop-opacity="0.85" />
