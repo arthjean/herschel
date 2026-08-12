@@ -644,12 +644,22 @@ mod tests {
         );
     }
 
+    /// The refusal has to be about the unknown field. The fixture used to carry
+    /// an empty `readings` array as well, which a preset rejects on its own, so
+    /// the test passed whether or not `deny_unknown_fields` was doing anything.
     #[test]
     fn an_unknown_preset_field_is_rejected_rather_than_ignored() {
-        let json = r#"{"mode":"solid","readings":[],"background":{"r":0,"g":0,"b":0},
-            "logo":{"r":0,"g":0,"b":0},"orientation":"deg0","brightness":100,
-            "image":null,"force":true}"#;
-        assert!(serde_json::from_str::<DisplayPreset>(json).is_err());
+        let accepted = serde_json::to_string(&DisplayPreset::solid(Rgb::BLACK)).unwrap();
+        assert!(
+            serde_json::from_str::<DisplayPreset>(&accepted).is_ok(),
+            "the fixture has to be a preset that otherwise loads: {accepted}"
+        );
+
+        let with_unknown = format!("{},\"force\":true}}", accepted.trim_end_matches('}'));
+        assert!(
+            serde_json::from_str::<DisplayPreset>(&with_unknown).is_err(),
+            "{with_unknown}"
+        );
     }
 
     #[test]
