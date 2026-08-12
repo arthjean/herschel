@@ -48,6 +48,23 @@ impl FakeSysfs {
         Self { base }
     }
 
+    /// The development machine as a whole: both allowlisted devices, the
+    /// Kraken's `hwmon` instance, and the unrelated device and driver that must
+    /// never be attributed to either.
+    ///
+    /// The record assembler and the write gates both need exactly this tree,
+    /// and a second hand-rolled copy of it in one of their test modules is how
+    /// the two would start proving things about different machines.
+    pub fn development_machine(name: &str) -> Self {
+        let fake = Self::new(name);
+        fake.add_kraken();
+        fake.add_kraken_hwmon();
+        fake.add_rgb_controller();
+        fake.add_unrelated_device();
+        fake.add_unrelated_hwmon();
+        fake
+    }
+
     pub fn root(&self) -> SysfsRoot {
         SysfsRoot::new(self.base.join("sys"))
     }

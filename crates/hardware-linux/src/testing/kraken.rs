@@ -79,11 +79,6 @@ impl FakeKraken {
         let bulk = RecordingBulk(Arc::clone(&self.bulk));
         LcdLink::new(Box::new(self), Box::new(bulk))
     }
-
-    /// Reports received whose identifier matches `identifier`.
-    pub fn reports_matching(&self, identifier: [u8; 2]) -> Vec<[u8; REPORT_BYTES]> {
-        self.reports.matching(identifier)
-    }
 }
 
 impl HidTransport for FakeKraken {
