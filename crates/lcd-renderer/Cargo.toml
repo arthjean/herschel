@@ -13,7 +13,6 @@ testing = []
 
 [dependencies]
 kori-core.workspace = true
-thiserror.workspace = true
 
 # Decodes the picture an operator picks. Default features are off so
 # the graph carries three decoders rather than the twenty the crate can build;

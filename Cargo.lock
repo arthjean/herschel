@@ -2991,7 +2991,6 @@ dependencies = [
  "ab_glyph",
  "image",
  "kori-core",
- "thiserror 2.0.19",
 ]
 
 [[package]]
