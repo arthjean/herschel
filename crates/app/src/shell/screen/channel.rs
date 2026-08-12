@@ -373,7 +373,7 @@ impl Shell {
         let nodes = *self.cooling.curve(channel);
         let node = self.cooling.node(channel);
         let editable = state.is_enabled();
-        let refusal = state.message().map(str::to_string);
+        let refusal = state.message().cloned();
         // Published per render and read back by this window's press handler,
         // exactly as the two sliders publish theirs. Withheld when the plot
         // cannot be edited, which is what keeps a press from grabbing a curve

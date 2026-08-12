@@ -92,12 +92,10 @@ impl Shell {
             return card.child(
                 Note::new(
                     NoteLevel::Warning,
-                    fixed
-                        .message()
-                        .unwrap_or(
-                            "No lighting controller answered. Lighting is read-only until it does.",
-                        )
-                        .to_string(),
+                    fixed.message().cloned().unwrap_or_else(|| {
+                        "No lighting controller answered. Lighting is read-only until it does."
+                            .into()
+                    }),
                 )
                 .render(),
             );

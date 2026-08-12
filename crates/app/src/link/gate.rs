@@ -210,7 +210,7 @@ mod tests {
         );
 
         let state = link.control_state(KRAKEN_BASE, CapabilityId::RgbFixedColor);
-        let message = state.message().unwrap_or_default();
+        let message = state.message().cloned().unwrap_or_default();
         assert!(state.is_disabled());
         assert!(message.contains("/dev/hidraw12"), "{message}");
         assert!(!message.contains("hwmon"), "{message}");
@@ -237,6 +237,7 @@ mod tests {
         assert!(
             state
                 .message()
+                .cloned()
                 .unwrap_or_default()
                 .contains("Another process"),
             "{:?}",
@@ -259,6 +260,7 @@ mod tests {
         assert!(
             state
                 .message()
+                .cloned()
                 .unwrap_or_default()
                 .contains("not connected"),
             "{:?}",

@@ -235,7 +235,7 @@ impl Select {
     pub fn render(self) -> Stateful<Div> {
         let value = self.display_value();
         let label = self.show_label.then(|| self.label.clone());
-        let message = self.state.message().map(str::to_string);
+        let message = self.state.message().cloned();
         let state = self.state.clone();
         let field_id = SharedString::from(format!("{}-field", self.key));
 
@@ -368,7 +368,7 @@ impl Slider {
             color::TEXT_DISABLED.hsla()
         };
         let state = self.state.clone();
-        let message = state.message().map(str::to_string);
+        let message = state.message().cloned();
         // The value rides on the label rather than beside the track. A readout
         // in the row costs the track a third of its width, and a track too
         // short to aim at is what pushed the last arrangement back to buttons.
@@ -536,7 +536,7 @@ impl ColorField {
             (_, Err(error)) => ControlState::error(error.clone()),
         };
         let swatch = parsed.unwrap_or(Color::rgb(0x000000));
-        let message = state.message().map(str::to_string);
+        let message = state.message().cloned();
         let field_id = SharedString::from(format!("{}-field", self.key));
 
         field(

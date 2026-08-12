@@ -35,27 +35,32 @@ pub use curve::{CurveEditor, node_at};
 pub use readout::{DeviceHealth, DeviceRow, Metric};
 
 /// What a control is allowed to do right now.
+///
+/// The reason is a [`SharedString`] rather than an owned `String`: one gate
+/// answer is handed to every control on a screen, and the panel's open row
+/// alone clones it ten times per repaint. A refusal sentence copied ten times a
+/// frame is an allocation per control for a value none of them mutate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlState {
     Enabled,
     /// Interaction is refused, and `reason` says why in operator language.
     Disabled {
-        reason: String,
+        reason: SharedString,
     },
     /// The current value is invalid, and `message` names the accepted input.
     Error {
-        message: String,
+        message: SharedString,
     },
 }
 
 impl ControlState {
-    pub fn disabled(reason: impl Into<String>) -> Self {
+    pub fn disabled(reason: impl Into<SharedString>) -> Self {
         Self::Disabled {
             reason: reason.into(),
         }
     }
 
-    pub fn error(message: impl Into<String>) -> Self {
+    pub fn error(message: impl Into<SharedString>) -> Self {
         Self::Error {
             message: message.into(),
         }
@@ -70,7 +75,7 @@ impl ControlState {
     }
 
     /// The sentence shown next to the control, when there is one.
-    pub fn message(&self) -> Option<&str> {
+    pub fn message(&self) -> Option<&SharedString> {
         match self {
             Self::Enabled => None,
             Self::Disabled { reason } => Some(reason),
@@ -400,7 +405,7 @@ impl Note {
 fn field(
     id: impl Into<ElementId>,
     label: Option<SharedString>,
-    message: Option<String>,
+    message: Option<SharedString>,
     state: ControlState,
     control: impl IntoElement,
 ) -> Stateful<Div> {
@@ -450,7 +455,25 @@ mod tests {
         let state = ControlState::disabled("Another process owns this device.");
         assert!(state.is_disabled());
         assert!(!state.is_enabled());
-        assert_eq!(state.message(), Some("Another process owns this device."));
+        assert_eq!(
+            state.message().map(SharedString::as_ref),
+            Some("Another process owns this device.")
+        );
+    }
+
+    /// The gate answer is fanned out to every control on a screen, so cloning
+    /// it must not copy the sentence it carries.
+    #[test]
+    fn cloning_a_refusal_shares_its_sentence_rather_than_copying_it() {
+        let state = ControlState::disabled("The background service is not running.");
+        let copy = state.clone();
+        let (Some(first), Some(second)) = (state.message(), copy.message()) else {
+            panic!("a disabled control carries a reason");
+        };
+        assert!(
+            std::ptr::eq(first.as_ref() as *const str, second.as_ref() as *const str),
+            "the clone allocated a second copy of the sentence"
+        );
     }
 
     #[test]
