@@ -71,6 +71,34 @@ The thermal path goes entirely through the `kraken2023` driver: no kernel driver
 
 The daemon stays independent from the window in order to serialize commands, detect concurrent writers and restore a compatible profile after reconnection or resume from sleep.
 
+## Install
+
+Each release publishes x86_64 packages built against glibc 2.35, which covers Ubuntu 22.04, Debian 12, Fedora 37 and anything newer. Download them from [the releases page](https://github.com/arthjean/kori/releases).
+
+| Distribution | Command |
+|---|---|
+| Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./kori_<version>-1_amd64.deb` |
+| Fedora, RHEL, openSUSE, Mageia | `sudo dnf install ./kori-<version>-1.x86_64.rpm` |
+| Arch, Manjaro, EndeavourOS | `kori-bin` on the AUR |
+| Anything else | unpack `kori-<version>-x86_64-linux.tar.gz`, run `./install.sh` |
+
+The tarball route needs no root and installs under `~/.local`; its installer then prints the one step that does need root, which is the udev rule below. The packages install that rule themselves.
+
+Every artifact is signed through Sigstore, with a build provenance statement naming the workflow and commit it came from. This project distributes no key and holds none:
+
+```bash
+gh attestation verify kori_0.1.0-1_amd64.deb --repo arthjean/kori
+```
+
+Two steps stay yours whichever route you take, because a package cannot make an account decision and cannot reach a session that does not exist yet:
+
+```bash
+sudo usermod --append --groups kori "$USER"   # then log out and back in
+systemctl --user enable --now korid.service
+```
+
+There is no Flatpak and no Snap. The daemon writes to `hwmon` attributes under `/sys`, which a Flatpak sandbox mounts read-only with no permission that lifts it, so a sandboxed build would install, show telemetry and silently fail every cooling write. [`docs/releasing.md`](./docs/releasing.md) records that and the rest of what a release does.
+
 ## Access
 
 Neither binary ever runs as root, so writing needs the kernel files to be reachable as your own user. `packaging/udev/70-kori.rules` grants exactly that, on the two allowlisted devices and nothing else:
@@ -190,4 +218,4 @@ The [initial exploration of the NZXT GitHub organization and the Linux ecosystem
 
 [GPL-3.0-or-later](./LICENSE). No external code is imported before its license and its compatibility have been verified.
 
-The dependency inventory and the compatibility audit are still due before any package distribution.
+That verification is mechanical rather than remembered: [`deny.toml`](./deny.toml) lists the licenses a GPL-3.0-or-later work may absorb, `cargo deny check` fails on anything else reaching the shipped graph, and CI runs it on every change. Every file carries its own copyright and license, checked by `reuse lint` in the same job.

@@ -65,9 +65,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+- `.github/workflows/ci.yml` runs those four on every push, and three more a
+  distribution would reject a package over: `cargo deny check` for a licence in
+  the graph a GPL-3.0-or-later work cannot absorb, `reuse lint` for a file with
+  no copyright, and `desktop-file-validate` plus `appstreamcli validate` for
+  metadata a software centre reads.
 - The toolchain is pinned to 1.97.1 in `rust-toolchain.toml`. The declared MSRV
-  is 1.90 in `[workspace.package]`. Changing either is a deliberate decision,
-  not a side effect.
+  is 1.90 in `[workspace.package]`, and CI checks the claim with
+  `cargo +1.90 check`. Changing either is a deliberate decision, not a side
+  effect.
 - `[workspace.lints.clippy]` denies `panic`, `unimplemented` and `dbg_macro`,
   and warns on `unwrap_used`, `expect_used` and `unwrap_in_result`. Tests are
   exempt through `clippy.toml` plus the crate-root line
@@ -162,7 +168,20 @@ the glass rather than asserted to. Neither extracts pixels from the other.
   only the files that cannot carry a comment.
 - Verify a dependency's license against GPL-3.0-or-later before importing it,
   and record the finding next to the dependency (see the `nvml-wrapper` note in
-  `crates/hardware-linux/Cargo.toml`).
+  `crates/hardware-linux/Cargo.toml`). `deny.toml` holds the same rule in the
+  form a machine re-runs: it allows the licences that graph actually carries and
+  nothing kept in reserve, so a new one stops the build and gets read.
+- A release is one tag. `.github/workflows/release.yml` builds it on
+  `ubuntu-22.04` for the glibc floor, `packaging/stage.sh` lays out what ships
+  and asserts the version in `Cargo.toml`, the AppStream component and the tag
+  agree, `packaging/nfpm.yaml` turns that layout into the `.deb` and the `.rpm`,
+  and `actions/attest` signs the lot through Sigstore. `docs/releasing.md` is
+  the procedure and records what is deliberately not packaged.
+- A shared library the binaries link against belongs in
+  `packaging/linked-libraries.txt` and in the dependencies
+  `packaging/nfpm.yaml` declares. `packaging/check-linked-libraries.sh` fails
+  the release otherwise, because that combination is a package which installs
+  cleanly and then does not start.
 - Commit with conventional messages scoped by crate: `feat(daemon):`,
   `fix(core):`, `docs:`.
 - `.claude/` and `.codex/` are gitignored. Shared agent guidance belongs in this
@@ -170,6 +189,8 @@ the glass rather than asserted to. Neither extracts pixels from the other.
 
 ## Reference
 
+- How a release is cut, verified and published, and why Flatpak, Snap, arm64 and
+  a signed repository are not part of it: `docs/releasing.md`
 - Why each schema and protocol version was bumped, and which deprecated field
   is still waiting on which condition: `docs/schema-history.md`
 - Observed device capabilities: `docs/capability-record.json`
