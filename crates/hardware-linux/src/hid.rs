@@ -19,6 +19,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use kori_core::capability::Evidenced;
+
 /// Every report on both devices carries 63 payload bytes behind its identifier.
 pub const REPORT_BYTES: usize = 64;
 
@@ -94,6 +96,20 @@ pub fn silence(what: &str) -> String {
         waited_ms: ANSWER_TIMEOUT.as_millis() as u64,
     }
     .to_string()
+}
+
+/// One field of a capability record, from an answer that may not have come.
+///
+/// Both devices are interrogated the same way and record what came back the
+/// same way, so the shape lives here rather than once per device module. The
+/// source is named once for both outcomes on purpose: it was written twice per
+/// field, once in each arm of a `match`, which is one edit away from a record
+/// that cites a different origin depending on whether the device answered.
+pub fn answered<T>(value: Option<T>, subject: &str, source: impl Into<String>) -> Evidenced<T> {
+    match value {
+        Some(value) => Evidenced::known(value, source),
+        None => Evidenced::unknown(silence(subject), source),
+    }
 }
 
 /// Moving 64-byte reports to and from a device.
@@ -327,6 +343,26 @@ mod tests {
         assert_eq!(firmware_major("1.5.0"), Some(1));
         assert_eq!(firmware_major("unknown"), None);
         assert_eq!(firmware_major(""), None);
+    }
+
+    #[test]
+    fn a_field_names_the_same_source_whether_or_not_it_was_answered() {
+        // The one property this constructor exists for. Each record field used
+        // to write its source in both arms of a `match`, so the two could drift
+        // and an operator would be pointed at a different report depending on
+        // whether the device happened to answer.
+        let source = "/dev/hidraw12 report 0x11 0x01";
+        let known = answered(Some("1.5.0".to_string()), "firmware", source);
+        let missing: Evidenced<String> = answered(None, "firmware", source);
+
+        assert_eq!(known.value().map(String::as_str), Some("1.5.0"));
+        assert!(!missing.is_known());
+        assert_eq!(missing.reason(), Some(silence("firmware").as_str()));
+        assert_eq!(
+            serde_json::to_value(&known).unwrap()["source"],
+            serde_json::to_value(&missing).unwrap()["source"],
+            "the two outcomes must cite one origin"
+        );
     }
 
     /// A device that answers with a fixed script, in a fixed order.

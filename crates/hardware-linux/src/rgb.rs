@@ -36,7 +36,7 @@ use kori_core::lighting::{
     Brightness, EffectDirection, LightingEffect, LightingProgram, MIN_COMMAND_INTERVAL_MS, Rgb,
 };
 
-use crate::hid::{self, HidError, HidTransport, Hidraw, REPORT_BYTES, silence};
+use crate::hid::{self, HidError, HidTransport, Hidraw, REPORT_BYTES};
 
 /// Why a lighting command could not be sent.
 ///
@@ -427,17 +427,16 @@ pub fn inspect<T: HidTransport + ?Sized>(transport: &mut T) -> RgbTopology {
 
     RgbTopology {
         node: Evidenced::known(source.clone(), "sysfs"),
-        firmware: match inventory.firmware {
-            Some(firmware) => Evidenced::known(firmware, format!("{source} report 0x11 0x01")),
-            None => Evidenced::unknown(silence("firmware"), format!("{source} report 0x11 0x01")),
-        },
-        channels: match inventory.channels {
-            Some(channels) => Evidenced::known(channels, format!("{source} report 0x21 0x03")),
-            None => Evidenced::unknown(
-                silence("lighting topology"),
-                format!("{source} report 0x21 0x03"),
-            ),
-        },
+        firmware: hid::answered(
+            inventory.firmware,
+            "firmware",
+            format!("{source} report 0x11 0x01"),
+        ),
+        channels: hid::answered(
+            inventory.channels,
+            "lighting topology",
+            format!("{source} report 0x21 0x03"),
+        ),
     }
 }
 
