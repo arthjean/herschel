@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Every shared library the released binaries name in their ELF NEEDED list, and
+# the whole set the packages in packaging/nfpm.yaml declare a dependency on.
+# packaging/check-linked-libraries.sh compares this file against the binaries
+# before a release is packaged, so a new dependency arriving through the crate
+# graph stops the release instead of producing a package that installs cleanly
+# and then fails to start on a machine that lacks the library.
+#
+# Recorded on 2026-08-12 from a release build of the workspace. A library loaded
+# with dlopen is absent by construction: libwayland, libfontconfig and the
+# Vulkan loader are resolved at runtime, and no ELF header names them.
+#
+# One line per <binary> <soname> pair.
+
+kori ld-linux-x86-64.so.2
+kori libc.so.6
+kori libgcc_s.so.1
+kori libm.so.6
+kori libxcb.so.1
+kori libxkbcommon-x11.so.0
+kori libxkbcommon.so.0
+
+korid libc.so.6
+korid libgcc_s.so.1
+korid libm.so.6

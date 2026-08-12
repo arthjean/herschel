@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Only the group is created here. Reloading udev, the desktop database and the
+# icon cache is what pacman's own hooks already do for a package that installs
+# into /usr/lib/udev/rules.d, /usr/share/applications and hicolor, so repeating
+# them would be a second mechanism doing the same work.
+#
+# A sysusers.d file would be the Arch-idiomatic way to declare the group. It is
+# not used, because the .deb and the .rpm create it from their postinstall and
+# one mechanism that behaves the same everywhere is worth more here than a
+# second one that only Arch reads.
+
+post_install() {
+    if ! getent group kori >/dev/null 2>&1; then
+        groupadd --system kori
+    fi
+
+    cat <<'EOF'
+Two steps are left, and both belong to you rather than to this package:
+
+    sudo usermod --append --groups kori "$USER"
+    systemctl --user enable --now korid.service
+
+Log out and back in after the group change: group membership is read when the
+session starts. Until then the daemon runs read-only and says so.
+EOF
+}
+
+post_upgrade() {
+    post_install
+}

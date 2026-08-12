@@ -1,6 +1,9 @@
 # Rust build artifacts
 /target/
 
+# What packaging/stage.sh lays out and nfpm packages
+/dist/
+
 # Agent tooling, local to this machine
 .claude/
 .codex/

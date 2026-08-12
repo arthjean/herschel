@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The .deb and .rpm both come from this one file, built by nfpm. What lands in
+# them is what `packaging/stage.sh` put under `dist/root`, so the layout a user
+# installs is the layout that script wrote and nothing else.
+#
+# Two things are deliberately absent. There is no Flatpak or Snap manifest: the
+# daemon writes to `hwmon` attributes under /sys, and a Flatpak sandbox mounts
+# /sys read-only with no permission that lifts it
+# (https://github.com/flatpak/flatpak/issues/3291), so a sandboxed build would
+# ship a product that silently cannot cool. And there is no Arch output here
+# even though nfpm can write one, because Arch is served by the PKGBUILD in
+# packaging/aur/, which is the channel Arch users actually look in.
+
+name: kori
+arch: amd64
+platform: linux
+
+# Set by packaging/stage.sh from the tag being released.
+version: ${KORI_VERSION}
+version_schema: semver
+release: "1"
+
+section: utils
+priority: optional
+maintainer: arthjean <128491831+arthjean@users.noreply.github.com>
+vendor: Arthur Jean
+homepage: https://github.com/arthjean/kori
+license: GPL-3.0-or-later
+
+description: |
+  Cooling, lighting and LCD control for supported NZXT hardware
+  Kori drives an NZXT Kraken from Linux without a vendor agent: pump and fan
+  curves, the RGB controller, and the picture on the LCD panel. Nothing is
+  written to hardware that the device has not first proven it can do, and
+  neither the interface nor the daemon runs as root.
+
+# Every entry here is a soname the built binaries actually name in their ELF
+# NEEDED list, recorded in packaging/linked-libraries.txt and re-checked against
+# the binaries at release time. Nothing is declared on a guess: libwayland and
+# the Vulkan ICDs are loaded with dlopen rather than linked, which is why they
+# sit in `recommends` instead.
+overrides:
+  deb:
+    depends:
+      # Built on Ubuntu 22.04, so this is the glibc floor the binaries carry.
+      - libc6 (>= 2.35)
+      - libgcc-s1
+      - libxcb1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      # Loaded by dlopen through font-kit, but the interface cannot resolve a
+      # single font without it, so it is a hard dependency rather than a hint.
+      - libfontconfig1
+      # Same: the Vulkan loader is dlopened by the renderer, and no window opens
+      # without it.
+      - libvulkan1
+    recommends:
+      # An ICD has to come from somewhere. Mesa covers AMD and Intel; an NVIDIA
+      # machine gets its own from the proprietary driver, which is why this is a
+      # recommendation and not a dependency.
+      - mesa-vulkan-drivers
+      # Wayland is preferred when present and X11 is the fallback, so neither is
+      # required for the application to start.
+      - libwayland-client0
+  rpm:
+    # Soname requires rather than package names: `libxkbcommon` on Fedora is
+    # `libxkbcommon0` on openSUSE, while both distributions auto-provide the
+    # soname. Depending on the soname is what makes one .rpm install on both.
+    depends:
+      - libxcb.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libfontconfig.so.1()(64bit)
+      - libvulkan.so.1()(64bit)
+    recommends:
+      - mesa-vulkan-drivers
+
+contents:
+  - src: ./dist/root/usr/bin/kori
+    dst: /usr/bin/kori
+    file_info:
+      mode: 0755
+  - src: ./dist/root/usr/bin/korid
+    dst: /usr/bin/korid
+    file_info:
+      mode: 0755
+
+  # The unit staged for a package install, whose ExecStart names /usr/bin/korid
+  # rather than the home directory the repository's copy points at.
+  - src: ./dist/root/usr/lib/systemd/user/korid.service
+    dst: /usr/lib/systemd/user/korid.service
+
+  # /usr/lib rather than /etc: this rule is what the package ships, and
+  # /etc/udev/rules.d stays free for the administrator to override it.
+  - src: ./dist/root/usr/lib/udev/rules.d/70-kori.rules
+    dst: /usr/lib/udev/rules.d/70-kori.rules
+
+  - src: ./dist/root/usr/share/applications/kori.desktop
+    dst: /usr/share/applications/kori.desktop
+  - src: ./dist/root/usr/share/icons/hicolor/scalable/apps/kori.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/kori.svg
+  - src: ./dist/root/usr/share/metainfo/io.github.arthjean.kori.metainfo.xml
+    dst: /usr/share/metainfo/io.github.arthjean.kori.metainfo.xml
+
+  - src: ./LICENSE
+    dst: /usr/share/licenses/kori/LICENSE
+    packager: rpm
+  # Debian policy reads the license from this exact path.
+  - src: ./LICENSE
+    dst: /usr/share/doc/kori/copyright
+    packager: deb
+
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  postremove: ./packaging/scripts/postremove.sh

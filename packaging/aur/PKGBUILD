@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Maintainer: arthjean <128491831+arthjean@users.noreply.github.com>
+#
+# The AUR package, built from the release tarball rather than from source: the
+# binaries the release publishes are the ones this project tested, and a source
+# build here would compile gpui on every user's machine to arrive at the same
+# thing.
+#
+# This file is the source of truth; the AUR repository is a copy of it plus the
+# .SRCINFO generated from it. docs/releasing.md holds the two commands that
+# update both.
+
+pkgname=kori-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Cooling, lighting and LCD control for supported NZXT hardware'
+arch=('x86_64')
+url='https://github.com/arthjean/kori'
+license=('GPL-3.0-or-later')
+# The sonames the binaries name in their ELF NEEDED list. libwayland and the
+# Vulkan ICDs are dlopened rather than linked, which is why they are optional.
+depends=('fontconfig' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'vulkan-icd-loader')
+optdepends=(
+    'wayland: run on a Wayland compositor rather than through XWayland'
+    'vulkan-radeon: Vulkan driver for AMD graphics'
+    'vulkan-intel: Vulkan driver for Intel graphics'
+    'nvidia-utils: Vulkan driver and GPU telemetry on NVIDIA graphics'
+)
+provides=('kori')
+conflicts=('kori')
+install='kori.install'
+# Prebuilt: there is nothing to strip that the release profile did not already
+# strip, and no source to attach a debug package to.
+options=('!strip' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/kori-$pkgver-x86_64-linux.tar.gz")
+# Filled by `updpkgsums` at each release, which downloads the published tarball
+# and writes its digest here. The placeholder is deliberately wrong so a release
+# that forgets the step fails to build instead of shipping unverified.
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+package() {
+    cd "kori-$pkgver-x86_64-linux"
+
+    install -Dm0755 bin/kori "$pkgdir/usr/bin/kori"
+    install -Dm0755 bin/korid "$pkgdir/usr/bin/korid"
+
+    # The tarball's unit starts the daemon from the home directory, which is
+    # where its own installer puts it. A packaged unit names /usr/bin, and
+    # systemd takes an absolute path there.
+    sed 's|^ExecStart=.*|ExecStart=/usr/bin/korid|' lib/systemd/user/korid.service |
+        install -Dm0644 /dev/stdin "$pkgdir/usr/lib/systemd/user/korid.service"
+
+    install -Dm0644 lib/udev/rules.d/70-kori.rules \
+        "$pkgdir/usr/lib/udev/rules.d/70-kori.rules"
+
+    install -Dm0644 share/applications/kori.desktop \
+        "$pkgdir/usr/share/applications/kori.desktop"
+    install -Dm0644 share/icons/hicolor/scalable/apps/kori.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/kori.svg"
+    install -Dm0644 share/metainfo/io.github.arthjean.kori.metainfo.xml \
+        "$pkgdir/usr/share/metainfo/io.github.arthjean.kori.metainfo.xml"
+
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
