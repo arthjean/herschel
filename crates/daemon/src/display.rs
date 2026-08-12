@@ -303,13 +303,13 @@ impl DisplayExecutor {
     /// preset that does not read telemetry, an animation running on its own
     /// clock, or a stream that has faulted.
     pub fn refresh(&mut self, samples: &[MetricSample; 2]) -> Option<DisplayOutcome> {
+        // With no animation installed, [`Self::is_streaming`] is exactly "the
+        // active preset reads telemetry", so the preset is not asked the same
+        // question again below.
         if !self.is_streaming() || self.animation.is_some() {
             return None;
         }
         let preset = self.active.clone()?;
-        if !preset.mode.uses_readings() {
-            return None;
-        }
         match self.send(&preset, samples) {
             Ok(outcome) => {
                 if let HardwareState::Uncertain { reason } = &outcome.hardware {
