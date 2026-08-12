@@ -24,7 +24,7 @@ use crate::assets::Icon;
 use crate::components::{ICON_SIZE, Note, NoteLevel, focus_visible, icon, set_focus_visible};
 use crate::cooling::CoolingEditor;
 use crate::display::DisplayScreen;
-use crate::feed::{CommandOutcome, Feed, OutcomeSeverity, now_unix_ms};
+use crate::feed::{CommandOutcome, CommandSubject, Feed, OutcomeSeverity, now_unix_ms};
 use crate::lighting::LightingEditor;
 use crate::link::LinkState;
 use crate::metrics::MetricBook;
@@ -280,22 +280,7 @@ impl Shell {
             self.lighting.sync(&channels);
         }
 
-        if let Some(outcome) = self.feed.outcome()
-            && self.outcome.as_ref() != Some(&outcome)
-        {
-            // A confirmed write is what turns a pending curve into the
-            // client's record of what the hardware is running. Curve points
-            // cannot be read back, so this record is the only evidence there
-            // is, and it is only ever set from a confirmation.
-            if outcome.severity == OutcomeSeverity::Confirmed
-                && let Some(program) = self.sent.take()
-            {
-                self.cooling.record_applied(program);
-            } else if outcome.severity != OutcomeSeverity::Confirmed {
-                self.sent = None;
-            }
-            self.outcome = Some(outcome);
-        }
+        self.adopt_outcome();
 
         // The timers are what make an edit land promptly. This is what makes
         // sure it lands at all: a write held back because another was in
@@ -305,6 +290,41 @@ impl Shell {
         self.flush_writes(cx);
 
         cx.notify();
+    }
+
+    /// Take the worker's latest outcome, and resolve what it settles.
+    ///
+    /// Told apart from the last one by its sequence rather than by comparing
+    /// the whole value: two refusals of the same edit for the same reason are
+    /// equal, and treating the second as already seen would leave [`Self::sent`]
+    /// set on a write that will never be answered again.
+    fn adopt_outcome(&mut self) {
+        let Some(outcome) = self.feed.outcome() else {
+            return;
+        };
+        if self.outcome.as_ref().map(|seen| seen.sequence) == Some(outcome.sequence) {
+            return;
+        }
+
+        // Only a cooling write's own outcome resolves the cooling write in
+        // flight. A refused lighting command used to clear it, which released
+        // the guard that keeps two cooling writes from overlapping and left a
+        // confirmed curve unrecorded.
+        if outcome.subject == CommandSubject::Cooling {
+            match outcome.severity {
+                // A confirmed write is what turns a pending curve into the
+                // client's record of what the hardware is running. Curve points
+                // cannot be read back, so this record is the only evidence
+                // there is, and it is only ever set from a confirmation.
+                OutcomeSeverity::Confirmed => {
+                    if let Some(program) = self.sent.take() {
+                        self.cooling.record_applied(program);
+                    }
+                }
+                OutcomeSeverity::Unconfirmed | OutcomeSeverity::Refused => self.sent = None,
+            }
+        }
+        self.outcome = Some(outcome);
     }
 
     fn kraken(&self) -> Option<&KrakenTelemetry> {

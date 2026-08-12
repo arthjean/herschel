@@ -19,7 +19,7 @@ use crate::components::{
     Button, ButtonVariant, ControlState, Note, NoteLevel, SelectOption, panel_surface, row_panel,
 };
 use crate::cooling::CoolingMode;
-use crate::feed::{Command, OutcomeSeverity};
+use crate::feed::{Command, CommandSubject, OutcomeSeverity};
 use crate::shell::Shell;
 use gpui::Context;
 use std::time::Instant;
@@ -307,7 +307,7 @@ impl Shell {
                     .message()
                     .map(|reason| Note::new(NoteLevel::Warning, reason.to_string()).render()),
             )
-            .children(self.outcome_note())
+            .children(self.outcome_note(CommandSubject::is_cooling))
     }
 
     /// Delete the active profile, in two deliberate activations.
@@ -439,17 +439,24 @@ impl Shell {
     /// which is the one place a refusal or an unconfirmed write has to be
     /// noticed.
     ///
-    /// One note for a screen whose rows all write on their own, so the message
-    /// has to name its device. `Channel 2: ...` and `Panel: ...` are what keep
-    /// it from being read against whichever row the operator is looking at.
-    pub(crate) fn outcome_note(&self) -> Option<Div> {
-        let outcome = self.outcome.as_ref()?;
+    /// One note per screen, and only for the commands that screen issued.
+    /// `belongs_here` is the filter: a refused lighting command used to be
+    /// painted at the foot of the Cooling screen, and a refused cooling program
+    /// at the foot of Lighting, because one slot published every outcome and
+    /// nothing said which screen it came from.
+    ///
+    /// The Lighting screen carries four rows that all write on their own, so
+    /// the message names its device there. It is
+    /// [`crate::feed::CommandOutcome::sentence`] that puts it in front, from
+    /// the subject, rather than three executors spelling it into the sentence.
+    pub(crate) fn outcome_note(&self, belongs_here: fn(CommandSubject) -> bool) -> Option<Div> {
+        let outcome = self.outcome.as_ref().filter(|o| belongs_here(o.subject))?;
         let level = match outcome.severity {
             OutcomeSeverity::Confirmed => return None,
             OutcomeSeverity::Unconfirmed => NoteLevel::Critical,
             OutcomeSeverity::Refused => NoteLevel::Warning,
         };
-        Some(Note::new(level, outcome.message.clone()).render())
+        Some(Note::new(level, outcome.sentence()).render())
     }
 }
 

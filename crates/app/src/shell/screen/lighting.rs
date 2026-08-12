@@ -17,7 +17,7 @@ use kori_core::{DeviceId, KRAKEN_BASE, RGB_CONTROLLER};
 
 use crate::assets::Icon;
 use crate::components::{ControlState, Note, NoteLevel, SelectOption, row_panel};
-use crate::feed::Command;
+use crate::feed::{Command, CommandSubject};
 use crate::lighting::LightingMode;
 use crate::shell::Shell;
 use crate::theme::{color, space};
@@ -75,7 +75,7 @@ impl Shell {
         )
         .child(self.controller_card(&channels, cx))
         .child(self.panel_card(channels.len(), cx))
-        .children(self.outcome_note())
+        .children(self.outcome_note(CommandSubject::is_appearance))
     }
 
     /// The controller and one row per channel it reported.

@@ -65,6 +65,64 @@ impl Command {
             Self::SaveProfile(_) | Self::ActivateProfile(_) | Self::DeleteProfile(_)
         )
     }
+
+    /// What this command is addressed to.
+    fn subject(&self) -> CommandSubject {
+        match self {
+            Self::Apply(_) => CommandSubject::Cooling,
+            Self::ApplyLighting(command) => CommandSubject::Lighting(command.channel),
+            Self::ApplyDisplay(_) => CommandSubject::Panel,
+            Self::SaveProfile(_) | Self::ActivateProfile(_) | Self::DeleteProfile(_) => {
+                CommandSubject::Profiles
+            }
+        }
+    }
+}
+
+/// What a command was addressed to.
+///
+/// One slot publishes every outcome, and without this the window had no way to
+/// tell a refused lighting command from a refused cooling one. Two defects came
+/// out of that: the Cooling screen showed the Lighting screen's refusals and
+/// the other way round, and a lighting outcome cleared `sent`, the guard that
+/// keeps two cooling writes from being in flight at once, so the next cooling
+/// outcome could land against the wrong program.
+///
+/// It also carries the device's name. Three message builders used to prepend it
+/// by hand, in four different shapes, because the type had lost the fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandSubject {
+    Cooling,
+    Lighting(u8),
+    Panel,
+    /// A stored profile: saved, activated or deleted.
+    Profiles,
+}
+
+impl CommandSubject {
+    /// What names the device in front of the message.
+    ///
+    /// `None` where the screen showing the note has one device and the message
+    /// is already about it: the Cooling screen writes to one cooler, and a
+    /// profile names itself in the sentence the daemon answered with.
+    pub fn device(self) -> Option<String> {
+        match self {
+            Self::Cooling | Self::Profiles => None,
+            Self::Lighting(channel) => Some(format!("Channel {channel}")),
+            Self::Panel => Some("Panel".to_string()),
+        }
+    }
+
+    /// Whether the Cooling screen is where this outcome belongs.
+    pub fn is_cooling(self) -> bool {
+        matches!(self, Self::Cooling | Self::Profiles)
+    }
+
+    /// Whether the Lighting screen is, which carries the controller's channels
+    /// and the panel.
+    pub fn is_appearance(self) -> bool {
+        matches!(self, Self::Lighting(_) | Self::Panel)
+    }
 }
 
 /// How a command ended.
@@ -97,34 +155,32 @@ impl From<&HardwareState> for OutcomeSeverity {
     }
 }
 
-/// The result of the last command, shown next to the control that issued it.
+/// How one command ended, before it is told apart from any other.
+///
+/// No device name and no identity: the sentence says what happened, the
+/// [`CommandSubject`] says to what, and the worker stamps the sequence. The
+/// three executors used to fold all three into the message, which is why two of
+/// them prepended `"Panel: "` and `"Channel 2: "` by hand on the failure paths
+/// and inside the sentence on the success ones.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CommandOutcome {
-    pub at_unix_ms: u64,
-    pub message: String,
-    pub severity: OutcomeSeverity,
-    /// Present when the command reached the cooling executor.
-    pub hardware: Option<HardwareState>,
+struct Report {
+    message: String,
+    severity: OutcomeSeverity,
 }
 
-impl CommandOutcome {
-    /// An outcome the hardware had no part in: a stored profile, or a request
-    /// that never reached a device.
-    fn reported(severity: OutcomeSeverity, message: impl Into<String>) -> Self {
+impl Report {
+    fn refused(message: impl Into<String>) -> Self {
         Self {
-            at_unix_ms: now_unix_ms(),
             message: message.into(),
-            severity,
-            hardware: None,
+            severity: OutcomeSeverity::Refused,
         }
     }
 
-    fn refused(message: impl Into<String>) -> Self {
-        Self::reported(OutcomeSeverity::Refused, message)
-    }
-
     fn confirmed(message: impl Into<String>) -> Self {
-        Self::reported(OutcomeSeverity::Confirmed, message)
+        Self {
+            message: message.into(),
+            severity: OutcomeSeverity::Confirmed,
+        }
     }
 
     /// One sentence about a state the hardware reported, at that state's own
@@ -134,10 +190,8 @@ impl CommandOutcome {
     /// [`OutcomeSeverity::from`] is the one place it is decided.
     fn from_hardware(hardware: &HardwareState, message: impl Into<String>) -> Self {
         Self {
-            at_unix_ms: now_unix_ms(),
             message: message.into(),
             severity: OutcomeSeverity::from(hardware),
-            hardware: Some(hardware.clone()),
         }
     }
 
@@ -154,46 +208,37 @@ impl CommandOutcome {
     fn from_display(outcome: &kori_core::ipc::DisplayOutcome) -> Self {
         let message = match &outcome.hardware {
             HardwareState::Confirmed if outcome.deduplicated && outcome.brightness_sent => format!(
-                "Panel brightness set to {}%. The picture was already correct, so no frame was \
-                 sent.",
+                "Brightness set to {}%. The picture was already correct, so no frame was sent.",
                 outcome.preset.brightness.percent()
             ),
             HardwareState::Confirmed if outcome.deduplicated => {
-                "The panel already shows this. Nothing was sent.".to_string()
+                "Already showing this. Nothing was sent.".to_string()
             }
             HardwareState::Confirmed => format!(
-                "Panel set to {}. The transfer completed; the panel reports no picture to read \
-                 back.",
+                "Set to {}. The transfer completed; the panel reports no picture to read back.",
                 outcome.preset.mode.label()
             ),
-            HardwareState::Onboard => {
-                "The panel keeps its own picture. Nothing was sent.".to_string()
-            }
+            HardwareState::Onboard => "Keeping its own picture. Nothing was sent.".to_string(),
             HardwareState::NotApplied { reason } => reason.clone(),
-            HardwareState::Uncertain { reason } => format!("The panel is uncertain: {reason}"),
+            HardwareState::Uncertain { reason } => format!("Uncertain: {reason}"),
         };
         Self::from_hardware(&outcome.hardware, message)
     }
 
     fn from_lighting(outcome: &LightingOutcome) -> Self {
         let message = match &outcome.hardware {
-            HardwareState::Confirmed if outcome.deduplicated => format!(
-                "Channel {} already shows this. Nothing was sent.",
-                outcome.channel
-            ),
+            HardwareState::Confirmed if outcome.deduplicated => {
+                "Already showing this. Nothing was sent.".to_string()
+            }
             HardwareState::Confirmed => format!(
-                "Channel {} set to {}. The controller accepted the command; it reports no state \
-                 to read back.",
-                outcome.channel,
+                "Set to {}. The controller accepted the command; it reports no state to read back.",
                 outcome.program.summary()
             ),
             HardwareState::Onboard => {
                 "The controller keeps its own program. Nothing was sent.".to_string()
             }
             HardwareState::NotApplied { reason } => reason.clone(),
-            HardwareState::Uncertain { reason } => {
-                format!("Channel {} is uncertain: {reason}", outcome.channel)
-            }
+            HardwareState::Uncertain { reason } => format!("Uncertain: {reason}"),
         };
         Self::from_hardware(&outcome.hardware, message)
     }
@@ -216,6 +261,32 @@ impl CommandOutcome {
             }
         };
         Self::from_hardware(&outcome.hardware, message)
+    }
+}
+
+/// The result of the last command, shown on the screen the command came from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandOutcome {
+    /// Which command produced this, counted by the worker.
+    ///
+    /// What tells one outcome from the next. Comparing the whole value would
+    /// hide a repeat: two refusals of the same edit for the same reason are
+    /// equal, and treating the second as "already seen" leaves the in-flight
+    /// guard set on a write that will never be answered again.
+    pub sequence: u64,
+    pub subject: CommandSubject,
+    pub message: String,
+    pub severity: OutcomeSeverity,
+}
+
+impl CommandOutcome {
+    /// The message with the device it is about in front of it, when the screen
+    /// showing it carries more than one.
+    pub fn sentence(&self) -> String {
+        match self.subject.device() {
+            Some(device) => format!("{device}: {}", self.message),
+            None => self.message.clone(),
+        }
     }
 }
 
@@ -310,6 +381,10 @@ fn run(
     let mut session: Option<Session> = None;
     // The command that ended the previous wait, held until the cycle it opens.
     let mut pending: Option<Command> = None;
+    // What tells one published outcome from the next. A wall clock was the
+    // previous answer and nothing ever read it: it only worked because two
+    // outcomes a millisecond apart compared unequal.
+    let mut sequence: u64 = 0;
 
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
@@ -329,9 +404,16 @@ fn run(
             // both mean there is nothing more to run this cycle.
             while let Some(command) = pending.take().or_else(|| inbox.try_recv().ok()) {
                 refresh_profiles |= command.touches_profiles();
-                let outcome = execute(active, command);
+                let subject = command.subject();
+                let report = execute(active, command);
+                sequence += 1;
                 if let Ok(mut shared) = shared.lock() {
-                    shared.outcome = Some(outcome);
+                    shared.outcome = Some(CommandOutcome {
+                        sequence,
+                        subject,
+                        message: report.message,
+                        severity: report.severity,
+                    });
                 }
             }
 
@@ -428,26 +510,24 @@ fn publish_unavailable(shared: &Arc<Mutex<Shared>>, error: &ClientError) {
 }
 
 /// Run one command and report how it ended.
-fn execute(session: &mut Session, command: Command) -> CommandOutcome {
+///
+/// Nothing here names the device. That is what [`Command::subject`] already
+/// answered, and the window prints it in front of the sentence: two of these
+/// arms used to prepend it by hand on the failure path only, so the same fact
+/// was stated in four shapes and missing from three.
+fn execute(session: &mut Session, command: Command) -> Report {
     match command {
         Command::Apply(program) => match session.client.apply(program) {
-            Ok(outcome) => CommandOutcome::from_apply(&outcome),
-            Err(error) => CommandOutcome::refused(error.to_string()),
+            Ok(outcome) => Report::from_apply(&outcome),
+            Err(error) => Report::refused(error.to_string()),
         },
-        Command::ApplyLighting(command) => {
-            let channel = command.channel;
-            match session.client.apply_lighting(command) {
-                Ok(outcome) => CommandOutcome::from_lighting(&outcome),
-                Err(error) => CommandOutcome::refused(format!("Channel {channel}: {error}")),
-            }
-        }
+        Command::ApplyLighting(command) => match session.client.apply_lighting(command) {
+            Ok(outcome) => Report::from_lighting(&outcome),
+            Err(error) => Report::refused(error.to_string()),
+        },
         Command::ApplyDisplay(preset) => match session.client.apply_display(preset) {
-            Ok(outcome) => CommandOutcome::from_display(&outcome),
-            // Named, like a channel refusal is. The Lighting screen shows one
-            // note for four rows that all write on their own, so a sentence
-            // that does not say which device it is about would be read against
-            // whichever row the operator is looking at.
-            Err(error) => CommandOutcome::refused(format!("Panel: {error}")),
+            Ok(outcome) => Report::from_display(&outcome),
+            Err(error) => Report::refused(error.to_string()),
         },
         Command::SaveProfile(profile) => {
             let name = profile.name.clone();
@@ -455,7 +535,7 @@ fn execute(session: &mut Session, command: Command) -> CommandOutcome {
                 let Response::Saved { .. } = response else {
                     return None;
                 };
-                Some(CommandOutcome::confirmed(format!("Profile {name} saved.")))
+                Some(Report::confirmed(format!("Profile {name} saved.")))
             })
         }
         Command::ActivateProfile(name) => {
@@ -463,15 +543,18 @@ fn execute(session: &mut Session, command: Command) -> CommandOutcome {
                 let Response::Activated(activation) = response else {
                     return None;
                 };
-                let mut outcome = match &activation.applied {
-                    Some(applied) => CommandOutcome::from_apply(applied),
-                    None => CommandOutcome::from_hardware(
+                let mut report = match &activation.applied {
+                    Some(applied) => Report::from_apply(applied),
+                    None => Report::from_hardware(
                         &activation.hardware,
                         "Profile activated.".to_string(),
                     ),
                 };
-                outcome.message = format!("{}: {}", activation.name, outcome.message);
-                Some(outcome)
+                // The profile is named in the sentence rather than by the
+                // subject: which of several stored arrangements ran is the
+                // whole content of the message, not the device it reached.
+                report.message = format!("{}: {}", activation.name, report.message);
+                Some(report)
             })
         }
         Command::DeleteProfile(name) => {
@@ -483,7 +566,7 @@ fn execute(session: &mut Session, command: Command) -> CommandOutcome {
                 else {
                     return None;
                 };
-                Some(CommandOutcome::confirmed(match activated_instead {
+                Some(Report::confirmed(match activated_instead {
                     Some(safe) => format!("{safe} activated before {name} was deleted."),
                     None => format!("Profile {name} deleted."),
                 }))
@@ -502,16 +585,16 @@ fn execute(session: &mut Session, command: Command) -> CommandOutcome {
 fn request(
     session: &mut Session,
     request: Request,
-    describe: impl FnOnce(Response) -> Option<CommandOutcome>,
-) -> CommandOutcome {
+    describe: impl FnOnce(Response) -> Option<Report>,
+) -> Report {
     match session.client.request(request) {
-        Ok(Response::Error(error)) => CommandOutcome::refused(error.to_string()),
+        Ok(Response::Error(error)) => Report::refused(error.to_string()),
         Ok(response) => describe(response).unwrap_or_else(|| {
-            CommandOutcome::refused(
+            Report::refused(
                 "The background service answered something this build does not understand.",
             )
         }),
-        Err(error) => CommandOutcome::refused(error.to_string()),
+        Err(error) => Report::refused(error.to_string()),
     }
 }
 
@@ -583,6 +666,93 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(100));
     }
 
+    /// Every command says what it was addressed to, which is what routes its
+    /// outcome to a screen and keeps it away from another screen's in-flight
+    /// guard.
+    #[test]
+    fn every_command_names_the_screen_its_outcome_belongs_to() {
+        let cooling = Command::Apply(CoolingProgram::Onboard);
+        assert_eq!(cooling.subject(), CommandSubject::Cooling);
+        assert!(cooling.subject().is_cooling());
+        assert!(!cooling.subject().is_appearance());
+
+        let lighting = Command::ApplyLighting(LightingCommand {
+            channel: 2,
+            program: kori_core::lighting::LightingProgram::Off,
+        });
+        assert_eq!(lighting.subject(), CommandSubject::Lighting(2));
+        assert!(lighting.subject().is_appearance());
+        assert!(!lighting.subject().is_cooling());
+
+        let panel = Command::ApplyDisplay(kori_core::display::DisplayPreset::default_infographic());
+        assert_eq!(panel.subject(), CommandSubject::Panel);
+        assert!(panel.subject().is_appearance());
+
+        // A profile writes cooling among other things, so its outcome belongs
+        // on the Cooling screen; it is still not the cooling write whose reply
+        // the shell is holding a program for.
+        let profile = Command::ActivateProfile("Silent".to_string());
+        assert_eq!(profile.subject(), CommandSubject::Profiles);
+        assert!(profile.subject().is_cooling());
+        assert!(!profile.subject().is_appearance());
+    }
+
+    /// The Lighting screen shows one note for four rows that all write on their
+    /// own, so a sentence that does not say which device it is about would be
+    /// read against whichever row the operator is looking at.
+    #[test]
+    fn a_note_names_its_device_exactly_once() {
+        let outcome = |subject, message: &str| CommandOutcome {
+            sequence: 1,
+            subject,
+            message: message.to_string(),
+            severity: OutcomeSeverity::Refused,
+        };
+
+        assert_eq!(
+            outcome(CommandSubject::Lighting(2), "Already showing this.").sentence(),
+            "Channel 2: Already showing this."
+        );
+        assert_eq!(
+            outcome(CommandSubject::Panel, "Keeping its own picture.").sentence(),
+            "Panel: Keeping its own picture."
+        );
+        // The Cooling screen writes to one cooler, so nothing is prepended.
+        assert_eq!(
+            outcome(CommandSubject::Cooling, "Applied.").sentence(),
+            "Applied."
+        );
+        assert_eq!(
+            outcome(CommandSubject::Profiles, "Profile Silent saved.").sentence(),
+            "Profile Silent saved."
+        );
+
+        // And the executors leave the naming to the subject: no message may
+        // carry the device itself, or the note would say it twice.
+        for report in [
+            Report::from_lighting(&LightingOutcome {
+                channel: 2,
+                program: kori_core::lighting::LightingProgram::Off,
+                hardware: HardwareState::Confirmed,
+                writes: 1,
+                deduplicated: true,
+            }),
+            Report::from_display(&DisplayOutcome {
+                preset: kori_core::display::DisplayPreset::default_infographic(),
+                hardware: HardwareState::Confirmed,
+                frames: 1,
+                deduplicated: false,
+                brightness_sent: false,
+            }),
+        ] {
+            assert!(
+                !report.message.starts_with("Channel ") && !report.message.starts_with("Panel"),
+                "the message names its own device: {}",
+                report.message
+            );
+        }
+    }
+
     #[test]
     fn a_brightness_only_change_is_reported_as_applied_rather_than_as_nothing() {
         let preset = kori_core::display::DisplayPreset {
@@ -597,7 +767,7 @@ mod tests {
             brightness_sent: true,
         };
 
-        let reported = CommandOutcome::from_display(&dimmed);
+        let reported = Report::from_display(&dimmed);
         assert_eq!(reported.severity, OutcomeSeverity::Confirmed);
         assert!(reported.message.contains("20%"), "{}", reported.message);
         assert!(
@@ -613,14 +783,14 @@ mod tests {
             ..dimmed
         };
         assert!(
-            CommandOutcome::from_display(&untouched)
+            Report::from_display(&untouched)
                 .message
                 .contains("Nothing was sent")
         );
     }
 
-    fn outcome(hardware: HardwareState, writes: u32, deduplicated: bool) -> CommandOutcome {
-        CommandOutcome::from_apply(&ApplyOutcome {
+    fn report(hardware: HardwareState, writes: u32, deduplicated: bool) -> Report {
+        Report::from_apply(&ApplyOutcome {
             hardware,
             writes,
             deduplicated,
@@ -630,14 +800,14 @@ mod tests {
 
     #[test]
     fn a_confirmed_write_reports_how_many_attributes_it_touched() {
-        let reported = outcome(HardwareState::Confirmed, 4, false);
+        let reported = report(HardwareState::Confirmed, 4, false);
         assert_eq!(reported.severity, OutcomeSeverity::Confirmed);
         assert!(reported.message.contains('4'), "{}", reported.message);
     }
 
     #[test]
     fn a_deduplicated_write_says_nothing_was_written() {
-        let reported = outcome(HardwareState::Confirmed, 0, true);
+        let reported = report(HardwareState::Confirmed, 0, true);
         assert_eq!(reported.severity, OutcomeSeverity::Confirmed);
         assert!(
             reported.message.contains("nothing was written"),
@@ -648,7 +818,7 @@ mod tests {
 
     #[test]
     fn an_uncertain_state_is_neither_a_success_nor_a_plain_refusal() {
-        let reported = outcome(
+        let reported = report(
             HardwareState::Uncertain {
                 reason: "pwm2 could not be read back".into(),
             },
@@ -657,15 +827,11 @@ mod tests {
         );
         assert_eq!(reported.severity, OutcomeSeverity::Unconfirmed);
         assert!(reported.message.contains("read back"));
-        assert!(matches!(
-            reported.hardware,
-            Some(HardwareState::Uncertain { .. })
-        ));
     }
 
     #[test]
     fn a_refusal_carries_the_reason_the_daemon_gave() {
-        let reported = outcome(
+        let reported = report(
             HardwareState::NotApplied {
                 reason: "Pump duty 3 is outside the accepted range 51-255.".into(),
             },
@@ -678,7 +844,7 @@ mod tests {
 
     #[test]
     fn the_onboard_program_is_reported_as_untouched_hardware() {
-        let reported = outcome(HardwareState::Onboard, 0, false);
+        let reported = report(HardwareState::Onboard, 0, false);
         assert_eq!(reported.severity, OutcomeSeverity::Confirmed);
         assert!(reported.message.contains("Nothing was written"));
     }
