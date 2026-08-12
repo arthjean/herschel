@@ -22,8 +22,9 @@ use super::{metric_row, screen};
 ///
 /// A ready device has nothing left to say there: everything it can do is
 /// already offered, and everything it cannot is refused at the control that
-/// tried, by [`LinkState::control_state`]. A device in any other state is the
-/// case the strip exists for, so the filter is written once and tested, rather
+/// tried, by [`crate::link::LinkState::control_state`]. A device in any other
+/// state is the case the strip exists for, so the filter is written once and
+/// tested, rather
 /// than being an inline predicate that could quietly widen to `true` and take
 /// the screen back to a permanent block, or narrow and hide a device that is
 /// not answering.
@@ -222,7 +223,8 @@ impl Shell {
     /// prose to say "both devices are ready". Every fact on it was already
     /// carried better somewhere else:
     ///
-    /// - The state word duplicates [`Link::control_state`], which is the single
+    /// - The state word duplicates [`crate::link::LinkState::control_state`],
+    ///   which is the single
     ///   gate every write passes through and which names the refusal on the
     ///   control the operator just tried to use, in language about that control.
     /// - The Kraken's presence is proven by its own readings further down this

@@ -18,6 +18,7 @@ use crate::theme::{Color, SWATCH_RADIUS, SWATCH_SIZE, color, space};
 use gpui::Context;
 
 use super::row::LightingRow;
+use super::tab::MENU_TAB_BASE;
 use super::write::WriteTarget;
 use super::{Popover, menu_surface, popover_surface};
 
@@ -113,7 +114,7 @@ fn swatch_grid(mut swatches: Vec<AnyElement>) -> Div {
 }
 /// A list of swatches: the same skin, sized to the grid inside it.
 ///
-/// The clamp of [`option_menu`] would leave the menu wider than its own
+/// The clamp of [`super::option_menu`] would leave the menu wider than its own
 /// content, which is empty surface beside the colors. Paneflow makes the same
 /// split, for the same reason: a menu that must size to its content takes the
 /// skin without the container.
@@ -146,7 +147,7 @@ impl Shell {
         // still fires, so withholding it is what makes the refusal real rather
         // than a matter of styling.
         let enabled = state.is_enabled();
-        let open = enabled && self.popover == Some(Popover::Swatches { picker });
+        let open = enabled && self.interaction.showing(&Popover::Swatches { picker });
         let id = picker.id();
 
         // `ColorField` renders its own error state, so a stored color that
@@ -169,11 +170,21 @@ impl Shell {
                     .into_iter()
                     .enumerate()
                     .map(|(index, swatch)| {
-                        swatch_cell(format!("{id}-swatch-{index}"), swatch, tab_index)
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                        // Its own stop in the reserved menu range, as an option
+                        // row takes: six swatches sharing the field's index is
+                        // the invariant `tab.rs` asserts, broken where its tests
+                        // do not look.
+                        swatch_cell(
+                            format!("{id}-swatch-{index}"),
+                            swatch,
+                            MENU_TAB_BASE + index as isize,
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 this.choose_color(picker, swatch, cx)
-                            }))
-                            .into_any_element()
+                            }),
+                        )
+                        .into_any_element()
                     })
                     .collect(),
             )))
@@ -209,7 +220,7 @@ impl Shell {
                 editor.color = digits;
             }
         }
-        self.popover = None;
+        self.interaction.dismiss();
         self.schedule_write(WriteTarget::Lighting(picker.row()), cx);
     }
 }

@@ -31,7 +31,7 @@ use super::tab::{
     COOLING_TAB_DELETE, COOLING_TAB_MODE, COOLING_TAB_PROFILE, COOLING_TAB_REVERT, COOLING_TAB_SAVE,
 };
 use super::write::{COOLING_QUIET, WriteTarget};
-use super::{Caption, screen};
+use super::{SelectField, SelectId, screen};
 
 /// Width of the two selects that sit in the Cooling header.
 ///
@@ -79,9 +79,9 @@ fn write_status() -> Div {
 }
 /// The committed program a fresh status should put in the editor, if any.
 ///
-/// Free and pure, for the same reason [`write_is_held_back`] is. `seen` is
-/// what the last adoption took, so a status repeating itself adopts nothing and
-/// a screen the operator is reading does not twitch once a second.
+/// Free and pure, for the same reason [`super::write::write_is_held_back`] is.
+/// `seen` is what the last adoption took, so a status repeating itself adopts
+/// nothing and a screen the operator is reading does not twitch once a second.
 ///
 /// Nothing is adopted while an edit is in flight: a write waiting out its quiet
 /// period, a gesture still running, or a command whose outcome has not come back
@@ -202,17 +202,17 @@ impl Shell {
                     .w_full()
                     .min_w_0()
                     .child(div().flex_none().w(COOLING_SELECT_WIDTH).child(self.select(
-                        "cooling-mode",
-                        "Mode",
-                        Caption::Shown,
-                        mode_options,
-                        self.cooling.mode.value().to_string(),
-                        // Choosing a mode is an edit like any other now, so
-                        // it carries the same per-capability gate the
-                        // profile selector beside it does, and for the same
-                        // reason.
-                        self.link.write_state(),
-                        COOLING_TAB_MODE,
+                        SelectField {
+                            id: SelectId::CoolingMode,
+                            options: mode_options,
+                            selected: self.cooling.mode.value().to_string(),
+                            // Choosing a mode is an edit like any other now, so
+                            // it carries the same per-capability gate the
+                            // profile selector beside it does, and for the same
+                            // reason.
+                            state: self.link.write_state(),
+                            tab_index: COOLING_TAB_MODE,
+                        },
                         cx,
                         |shell, value, cx| {
                             if let Some(mode) = CoolingMode::from_value(value) {
@@ -222,15 +222,15 @@ impl Shell {
                         },
                     )))
                     .child(div().flex_none().w(COOLING_SELECT_WIDTH).child(self.select(
-                        "profile",
-                        "Active profile",
-                        Caption::Shown,
-                        profiles,
-                        active,
-                        // Activating a profile is a write. It is disabled
-                        // for the same reasons every other write control is.
-                        self.link.write_state(),
-                        COOLING_TAB_PROFILE,
+                        SelectField {
+                            id: SelectId::Profile,
+                            options: profiles,
+                            selected: active,
+                            // Activating a profile is a write. It is disabled
+                            // for the same reasons every other write control is.
+                            state: self.link.write_state(),
+                            tab_index: COOLING_TAB_PROFILE,
+                        },
                         cx,
                         |shell, value, _| {
                             shell.feed.send(Command::ActivateProfile(value.to_string()));
@@ -348,7 +348,7 @@ impl Shell {
     /// profile the operator just activated: an activation is the daemon
     /// committing a program like any other, so one rule covers both.
     pub(crate) fn adopt_committed_program(&mut self) {
-        let editing = self.drag.is_some_and(Drag::is_cooling)
+        let editing = self.interaction.drag().is_some_and(Drag::is_cooling)
             || self.due.is_pending(WriteTarget::Cooling)
             || self.sent.is_some();
         let Some(program) = program_to_adopt(

@@ -9,15 +9,21 @@
 //!
 //! The window holds no hardware handle. It repaints when the worker publishes a
 //! new snapshot, and every write control is gated on what the daemon reported.
+//!
+//! What the shell owns is deliberately grouped rather than spread flat. Every
+//! screen module writes into this one value, so a field it can reach is a field
+//! any of them can put in a state the others do not expect: the open popover
+//! was closed by hand in eleven places across seven files before it had an
+//! owner. What is left is the frame, the three editors, and the bookkeeping of
+//! edits leaving the process.
 
-use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
     App, Context, Div, FocusHandle, Focusable, KeyBinding, MouseButton, Pixels, SharedString,
     Stateful, Window, actions, div, prelude::*,
 };
-use kori_core::profile::{Channel, CoolingProgram};
+use kori_core::profile::CoolingProgram;
 use kori_core::telemetry::KrakenTelemetry;
 
 use crate::assets::Icon;
@@ -30,10 +36,10 @@ use crate::feed::{CommandOutcome, CommandSubject, Feed, OutcomeSeverity, now_uni
 use crate::lighting::LightingEditor;
 use crate::link::LinkState;
 use crate::metrics::MetricBook;
-use crate::shell::screen::Popover;
-use crate::shell::screen::drag::{Drag, TrackMap};
+use crate::shell::screen::drag::{Drag, Interaction};
 use crate::shell::screen::row::LightingRow;
 use crate::shell::screen::write::{WriteSchedule, WriteTarget, write_is_held_back};
+use crate::shell::screen::{Disclosure, Popover};
 use crate::theme::{CARD_INSET, CARD_RADIUS, RADIUS, RAIL_WIDTH, TARGET_MIN, color, space};
 use crate::window_chrome::{self, DragLatch};
 
@@ -124,44 +130,27 @@ pub struct Shell {
     link: LinkState,
     metrics: MetricBook,
     cooling: CoolingEditor,
-    /// What the pointer is moving right now, if anything.
-    drag: Option<Drag>,
+    lighting: LightingEditor,
+    /// The LCD editor and the last preset that rendered, held together so an
+    /// unfinished field keeps the previous picture on screen instead of
+    /// blanking it, and so no control can move one without the other.
+    lcd: DisplayScreen,
+    /// What the pointer is doing, and where this frame painted what it can grab.
+    interaction: Interaction,
+    /// Which rows each screen has open, and where the keyboard sits on a plot.
+    rows: Disclosure,
+    destination: Destination,
+    /// When each edited target should be written, once it settles.
+    due: WriteSchedule,
     /// The program the last cooling write sent, held until its outcome arrives.
     sent: Option<CoolingProgram>,
+    /// How the last command ended, on whichever screen issued it.
     outcome: Option<CommandOutcome>,
     /// Set once the operator has armed the profile deletion.
     ///
     /// Deleting a profile is the one destructive action this screen offers, so
     /// it takes two deliberate activations rather than one stray click.
     confirm_delete: bool,
-    destination: Destination,
-    popover: Option<Popover>,
-    /// The LCD editor and the last preset that rendered, held together so an
-    /// unfinished field keeps the previous picture on screen instead of
-    /// blanking it, and so no control can move one without the other.
-    lcd: DisplayScreen,
-    lighting: LightingEditor,
-    /// The one row of the Lighting screen whose controls are revealed.
-    ///
-    /// One at a time, as on Cooling: an open row's controls sit above the next
-    /// row, and two open at once would put the panel's editor an arm's length
-    /// below the line it belongs to.
-    lighting_open: Vec<LightingRow>,
-    /// When each edited target should be written, once it settles.
-    due: WriteSchedule,
-    /// Where this frame painted each operable brightness track.
-    brightness_tracks: Rc<TrackMap<LightingRow>>,
-    /// Where this frame painted each operable fixed-duty track.
-    duty_tracks: Rc<TrackMap<Channel>>,
-    /// Where this frame painted each editable curve plot.
-    ///
-    /// The same book as the two above rather than a pair of cells of its own.
-    /// A cell keeps its last rectangle after the plot stops being drawn, which
-    /// is why deciding what a press had landed on used to re-check the current
-    /// screen, the open rows and the capability by hand. A book that is emptied
-    /// every frame and only ever records an editable plot answers all three by
-    /// construction.
-    curve_plots: Rc<TrackMap<Channel>>,
     /// Set while the pointer holds the title bar, before a move begins.
     window_drag: DragLatch,
     /// Set once a daemon status has seeded the panel editor.
@@ -207,28 +196,27 @@ impl Shell {
         })
         .detach();
 
+        let mut rows = Disclosure::default();
+        // The panel opens first: it is the row with something to look at, and a
+        // screen where every row is shut hides the editor the last arrangement
+        // put on its own destination.
+        rows.lighting.insert(LightingRow::Lcd);
+
         Self {
             focus,
             feed,
             link: LinkState::connecting(),
             metrics: MetricBook::new(),
             cooling: CoolingEditor::new(),
-            drag: None,
+            lighting: LightingEditor::default(),
+            lcd: DisplayScreen::default(),
+            interaction: Interaction::default(),
+            rows,
+            destination: Destination::Monitoring,
+            due: WriteSchedule::default(),
             sent: None,
             outcome: None,
             confirm_delete: false,
-            destination: Destination::Monitoring,
-            popover: None,
-            lcd: DisplayScreen::default(),
-            lighting: LightingEditor::default(),
-            // The panel opens first: it is the row with something to look at,
-            // and a screen where every row is shut hides the editor the last
-            // arrangement put on its own destination.
-            lighting_open: vec![LightingRow::Lcd],
-            due: WriteSchedule::default(),
-            brightness_tracks: Rc::new(TrackMap::default()),
-            duty_tracks: Rc::new(TrackMap::default()),
-            curve_plots: Rc::new(TrackMap::default()),
             window_drag: DragLatch::default(),
             lcd_seeded: false,
             committed: None,
@@ -328,7 +316,7 @@ impl Shell {
 
     fn go(&mut self, destination: Destination, cx: &mut Context<Self>) {
         self.destination = destination;
-        self.popover = None;
+        self.interaction.dismiss();
         // An armed deletion does not survive leaving the screen: coming back to
         // a button that already says "Confirm" would delete on one press.
         self.confirm_delete = false;
@@ -337,24 +325,14 @@ impl Shell {
 
     /// Open one row of the Lighting screen, or close it if it is open.
     ///
-    /// Rows open independently: a controller with three channels and a panel is
-    /// four appearances of one machine, and comparing two of them means having
-    /// both on screen. Nothing in a lighting detail is shared between rows, so
-    /// there is nothing for a second open row to make ambiguous.
-    ///
     /// Every control the detail renders is built for the channel whose line it
     /// sits under and carries that channel with it, so opening a row reveals
     /// controls rather than selecting anything.
     fn toggle_lighting_row(&mut self, row: LightingRow, cx: &mut Context<Self>) {
-        match self.lighting_open.iter().position(|open| *open == row) {
-            Some(index) => {
-                self.lighting_open.remove(index);
-            }
-            None => self.lighting_open.push(row),
-        }
+        self.rows.lighting.toggle(row);
         // A popover anchored to a control that just moved would be left
         // pointing at nothing.
-        self.popover = None;
+        self.interaction.dismiss();
         // An animation only runs while it is on screen. A closed row repaints
         // nothing, so a timer firing into it would be ten wake-ups a second
         // spent moving a cursor nobody can see.
@@ -365,11 +343,7 @@ impl Shell {
     }
 
     fn toggle_popover(&mut self, popover: Popover, cx: &mut Context<Self>) {
-        self.popover = if self.popover.as_ref() == Some(&popover) {
-            None
-        } else {
-            Some(popover)
-        };
+        self.interaction.toggle(popover);
         cx.notify();
     }
 
@@ -391,7 +365,7 @@ impl Shell {
     }
 
     fn on_close_popover(&mut self, _: &ClosePopover, _: &mut Window, cx: &mut Context<Self>) {
-        if self.popover.take().is_some() {
+        if self.interaction.dismiss() {
             cx.notify();
         }
     }
@@ -515,11 +489,11 @@ impl Shell {
                 .text_color(ink),
             true,
         )
-            .bg(resting)
-            .hover(|this| this.bg(hovered))
-            .child(icon(destination.icon(), ICON_SIZE, ink))
-            .child(destination.label())
-            .on_click(cx.listener(move |this, _, _, cx| this.go(destination, cx)))
+        .bg(resting)
+        .hover(|this| this.bg(hovered))
+        .child(icon(destination.icon(), ICON_SIZE, ink))
+        .child(destination.label())
+        .on_click(cx.listener(move |this, _, _, cx| this.go(destination, cx)))
     }
 
     fn banner(&self) -> Option<Div> {
@@ -564,7 +538,7 @@ impl Shell {
     /// again.
     fn flush_writes(&mut self, cx: &mut Context<Self>) {
         for target in self.due.take_due(Instant::now()) {
-            if write_is_held_back(target, self.drag, self.sent.is_some()) {
+            if write_is_held_back(target, self.interaction.drag(), self.sent.is_some()) {
                 self.due.touch(target, Instant::now() + target.quiet());
                 continue;
             }
@@ -589,9 +563,7 @@ impl Render for Shell {
         // Each frame republishes the tracks it paints. Clearing here is what
         // keeps a row that has gone away, or a screen that no longer shows one,
         // from leaving a rectangle behind that a press could still grab.
-        self.brightness_tracks.clear();
-        self.duty_tracks.clear();
-        self.curve_plots.clear();
+        self.interaction.clear_tracks();
 
         let content = match self.destination {
             Destination::Monitoring => self.monitoring(),
@@ -622,8 +594,9 @@ impl Render for Shell {
                 }
                 // An open popover owns the press: it is being dismissed, and a
                 // press that lands over a slider or a curve on the way out must
-                // not also move a value the operator was not aiming at.
-                if this.popover.is_some() {
+                // not also move a value the operator was not aiming at. This is
+                // also why `begin_drag` never has a list to close.
+                if this.interaction.showing_any() {
                     return;
                 }
                 // A press starts at most one gesture, decided here from where
@@ -650,7 +623,7 @@ impl Render for Shell {
                     // is worth a command. Releasing ends the gesture wherever
                     // the pointer is, including outside the control that
                     // started it.
-                    match this.drag.take() {
+                    match this.interaction.end_drag() {
                         Some(Drag::Brightness { row, .. }) => {
                             this.schedule_write(WriteTarget::Lighting(row), cx)
                         }
@@ -739,7 +712,7 @@ impl Render for Shell {
                 // control underneath is not also operated by the press that
                 // dismissed the list, which is how a menu behaves everywhere
                 // else on the desktop. Escape does the same from the keyboard.
-                .children(self.popover.is_some().then(|| {
+                .children(self.interaction.showing_any().then(|| {
                     div()
                         .id("popover-dismiss")
                         // Takes the press rather than letting it through, so
@@ -754,7 +727,7 @@ impl Render for Shell {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.popover = None;
+                                this.interaction.dismiss();
                                 cx.notify();
                             }),
                         )
@@ -770,6 +743,7 @@ impl Render for Shell {
 mod tests {
     use super::*;
     use crate::theme::{WINDOW_HEIGHT, WINDOW_WIDTH};
+    use kori_core::profile::Channel;
     use std::time::Duration;
 
     /// Lay the shell out and paint it at the size the layout is designed for.
@@ -785,6 +759,17 @@ mod tests {
         );
     }
 
+    /// A shell with no daemon behind it, which is the state every write control
+    /// is disabled in and every readout has to describe without inventing one.
+    fn shell(cx: &mut gpui::TestAppContext) -> (gpui::Entity<Shell>, &mut gpui::VisualTestContext) {
+        cx.update(|cx| cx.bind_keys(key_bindings()));
+        let (feed, notifications) = Feed::spawn(
+            std::path::PathBuf::from("/nonexistent/kori/absent.sock"),
+            Duration::from_secs(3_600),
+        );
+        cx.add_window_view(|window, cx| Shell::new(feed, notifications, window, cx))
+    }
+
     /// Every destination builds its whole element tree.
     ///
     /// The unit tests around this one exercise the rules a screen applies; none
@@ -794,20 +779,9 @@ mod tests {
     /// holding it is actually rendered. Splitting this module into one file per
     /// screen would otherwise have been checked by the compiler and by nothing
     /// else.
-    ///
-    /// The link is deliberately unavailable: no daemon answers a socket path
-    /// that does not exist, so this walks the state where every write control
-    /// is disabled and every readout has to say so without fabricating a value.
     #[gpui::test]
     fn every_destination_renders_without_a_daemon(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.bind_keys(key_bindings()));
-        let (feed, notifications) = Feed::spawn(
-            std::path::PathBuf::from("/nonexistent/kori/absent.sock"),
-            Duration::from_secs(3_600),
-        );
-
-        let (shell, cx) =
-            cx.add_window_view(|window, cx| Shell::new(feed, notifications, window, cx));
+        let (shell, cx) = shell(cx);
 
         for destination in Destination::PRIMARY
             .into_iter()
@@ -823,29 +797,21 @@ mod tests {
     }
 
     /// The open rows are where the screens carry most of their controls, and a
-    /// closed row renders none of them. This walks the same four destinations
-    /// with every row of the two openable screens revealed.
+    /// closed row renders none of them. This walks the two openable screens
+    /// with every row revealed.
     #[gpui::test]
     fn every_open_row_renders_its_controls(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.bind_keys(key_bindings()));
-        let (feed, notifications) = Feed::spawn(
-            std::path::PathBuf::from("/nonexistent/kori/absent.sock"),
-            Duration::from_secs(3_600),
-        );
-        let (shell, cx) =
-            cx.add_window_view(|window, cx| Shell::new(feed, notifications, window, cx));
+        let (shell, cx) = shell(cx);
 
         shell.update(cx, |shell, cx| {
-            shell.cooling.toggle(Channel::Pump);
-            shell.cooling.toggle(Channel::Fan);
+            shell.rows.toggle_cooling(Channel::Pump);
+            shell.rows.toggle_cooling(Channel::Fan);
             for row in [
                 LightingRow::Channel(1),
                 LightingRow::Channel(2),
                 LightingRow::Channel(3),
             ] {
-                if !shell.is_open(row) {
-                    shell.lighting_open.push(row);
-                }
+                shell.rows.lighting.insert(row);
             }
             cx.notify();
         });
@@ -857,10 +823,39 @@ mod tests {
         }
 
         shell.read_with(cx, |shell, _| {
-            assert!(shell.cooling.is_expanded(Channel::Pump));
+            assert!(shell.rows.cooling.contains(Channel::Pump));
             assert!(
                 shell.is_open(LightingRow::Lcd),
                 "the panel opens by default"
+            );
+        });
+    }
+
+    /// Leaving a screen closes whatever list was open on it: a menu anchored to
+    /// a control that is no longer drawn would be left pointing at nothing.
+    #[gpui::test]
+    fn navigating_away_closes_the_open_list_and_disarms_the_deletion(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (shell, cx) = shell(cx);
+
+        shell.update(cx, |shell, cx| {
+            shell.toggle_popover(
+                Popover::Options {
+                    select: screen::SelectId::CoolingMode,
+                },
+                cx,
+            );
+            shell.confirm_delete = true;
+        });
+        shell.read_with(cx, |shell, _| assert!(shell.interaction.showing_any()));
+
+        shell.update(cx, |shell, cx| shell.go(Destination::Lighting, cx));
+        shell.read_with(cx, |shell, _| {
+            assert!(!shell.interaction.showing_any());
+            assert!(
+                !shell.confirm_delete,
+                "a primed delete must not survive the trip back"
             );
         });
     }

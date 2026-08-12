@@ -12,23 +12,24 @@
 //! pending edit. A row that still names the previous program after a mode
 //! change is a write that has not landed, and that is exactly what this line
 //! has to be able to say.
+//!
+//! The row itself is built from the pieces in [`super::row`], which the
+//! Lighting screen assembles too. This module wrote its own copy of them until
+//! three of its comments were identical, character for character, to the ones
+//! next door.
 
-use std::rc::Rc;
-
-use gpui::{Bounds, Context, Div, Pixels, SharedString, div, prelude::*, px};
+use gpui::{Context, Div, Pixels, SharedString, div, prelude::*, px};
 
 use kori_core::KRAKEN_BASE;
 use kori_core::profile::{Channel, MAX_DUTY, MAX_DUTY_PERCENT, duty_to_percent};
 use kori_core::telemetry::{MetricView, PwmMode, SafetyAlert};
 
-use crate::components::{ControlState, CurveEditor, Slider, chevron, focus_visible};
+use crate::components::{ControlState, CurveEditor, Slider, chevron};
 use crate::cooling::CoolingMode;
 use crate::shell::Shell;
-use crate::theme::{
-    FOCUS_RING, META_SEPARATOR, RADIUS, ROW_RADIUS, TARGET_MIN, color, numeric_font, space,
-};
+use crate::theme::{META_SEPARATOR, color, numeric_font, space};
 
-use super::row::ROW_DETAIL_INDENT;
+use super::row::{ROW_DETAIL_INDENT, row_hover_fill, row_shell, row_target};
 use super::tab::{COOLING_OFFSET_CURVE, COOLING_OFFSET_DUTY, cooling_row_tab};
 use super::write::WriteTarget;
 
@@ -96,11 +97,6 @@ fn reported_program(mode: Option<PwmMode>, percent: Option<f32>) -> String {
 }
 impl Shell {
     /// One channel as a single line, with its controls one activation away.
-    ///
-    /// Collapsed, the line is readback only: what the channel is doing, from
-    /// which temperature source, in what mode. Opening it reveals the controls
-    /// for that channel alone, so the curve editor never has to ask which
-    /// channel it is editing.
     pub(crate) fn channel_row(
         &self,
         channel: Channel,
@@ -121,122 +117,94 @@ impl Shell {
             .into_iter()
             .cloned()
             .collect();
-        let open = self.cooling.is_expanded(channel);
+        let open = self.rows.cooling.contains(channel);
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .p(space::XS)
-            // Between the line and what it opened. Only ever applies when a
-            // detail is there, since a closed row has a single child.
-            .gap(space::SM)
-            .rounded(ROW_RADIUS)
-            // The same open state the Lighting rows carry: one fill under the
-            // line and the curve it revealed, so the two read as one channel.
-            .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
+        row_shell(open)
             .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "cooling-row-{}",
-                        channel.label().to_lowercase()
-                    )))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(space::MD)
-                    .w_full()
-                    .min_w_0()
-                    .min_h(TARGET_MIN)
-                    .px(space::SM)
-                    // The head carries two lines, so it needs air of its own: at
-                    // the pointer-target floor alone the pair would sit flush
-                    // against the top and bottom of the row.
-                    .py(space::XS)
-                    .rounded(RADIUS)
-                    // The ring is reserved rather than added on focus, so
-                    // focusing a row does not move the line it sits on.
-                    .border(FOCUS_RING)
-                    .border_color(color::PANEL.alpha(0.0))
-                    .cursor_pointer()
-                    .tab_index(cooling_row_tab(channel))
-                    .tab_stop(true)
-                    .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
-                    // Shown to a keyboard user, who has no other way to know
-                    // which row Enter would open, and withheld from a pointer
-                    // user, who just aimed at it.
-                    .when(focus_visible(), |this| {
-                        this.focus(|this| this.border_color(color::FOCUS.hsla()))
-                    })
-                    .child(chevron(open, color::TEXT_MUTED.hsla()))
-                    .child(
-                        // Two lines where there was one: what the channel is,
-                        // and what it has been told to do. The second line is
-                        // the reported mode, not the pending edit, so a row that
-                        // still says "Onboard" after a mode change is a write
-                        // that has not landed rather than a stale label.
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_none()
-                            .gap(px(1.0))
-                            .child(
-                                div()
-                                    .text_color(color::TEXT.hsla())
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(channel.label()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(color::TEXT_MUTED.hsla())
-                                    .child(reported_program(mode, confirmed_percent)),
-                            ),
-                    )
-                    .child(div().flex_1().min_w_0())
-                    .child(
-                        div()
-                            .flex_none()
-                            .min_w(COOLING_READBACK_WIDTH)
-                            .child(readback("RPM", &rpm, |value| format!("{value:.0}"))),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .min_w(COOLING_READBACK_WIDTH)
-                            .child(readback(
-                                "PWM",
-                                &duty.map(|value| f32::from(*value)),
-                                move |value| {
-                                    // The percentage comes from the reported duty,
-                                    // not from the pending edit: this line is
-                                    // readback, not intent.
-                                    match confirmed_percent {
-                                        Some(percent) => format!("{value:.0} ({percent:.0}%)"),
-                                        None => format!("{value:.0}"),
-                                    }
-                                },
-                            )),
-                    )
-                    .children(alerts.into_iter().map(|alert| {
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(color::DANGER.hsla())
-                            .child(match alert {
-                                SafetyAlert::ChannelStalled { .. } => "Critical: not turning",
-                                SafetyAlert::LiquidCritical { .. } => "Critical: coolant",
-                            })
-                    }))
-                    .on_click(cx.listener(move |shell, _, _, cx| {
-                        shell.cooling.toggle(channel);
-                        // A popover anchored to the row that just moved would
-                        // be left pointing at nothing.
-                        shell.popover = None;
-                        cx.notify();
-                    })),
+                row_target(
+                    SharedString::from(format!("cooling-row-{}", channel.label().to_lowercase())),
+                    cooling_row_tab(channel),
+                )
+                .flex_wrap()
+                .gap(space::MD)
+                .w_full()
+                .min_w_0()
+                // The head carries two lines, so it needs air of its own: at
+                // the pointer-target floor alone the pair would sit flush
+                // against the top and bottom of the row.
+                .py(space::XS)
+                // The whole line is the target, unlike a lighting row: nothing
+                // sits on it but readouts, so there is no control a press could
+                // have been aimed at instead.
+                .hover(|this| this.bg(row_hover_fill()))
+                .child(chevron(open, color::TEXT_MUTED.hsla()))
+                .child(
+                    // Two lines where there was one: what the channel is,
+                    // and what it has been told to do. The second line is
+                    // the reported mode, not the pending edit, so a row that
+                    // still says "Onboard" after a mode change is a write
+                    // that has not landed rather than a stale label.
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .gap(px(1.0))
+                        .child(
+                            div()
+                                .text_color(color::TEXT.hsla())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(channel.label()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(color::TEXT_MUTED.hsla())
+                                .child(reported_program(mode, confirmed_percent)),
+                        ),
+                )
+                .child(div().flex_1().min_w_0())
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w(COOLING_READBACK_WIDTH)
+                        .child(readback("RPM", &rpm, |value| format!("{value:.0}"))),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w(COOLING_READBACK_WIDTH)
+                        .child(readback(
+                            "PWM",
+                            &duty.map(|value| f32::from(*value)),
+                            move |value| {
+                                // The percentage comes from the reported duty,
+                                // not from the pending edit: this line is
+                                // readback, not intent.
+                                match confirmed_percent {
+                                    Some(percent) => format!("{value:.0} ({percent:.0}%)"),
+                                    None => format!("{value:.0}"),
+                                }
+                            },
+                        )),
+                )
+                .children(alerts.into_iter().map(|alert| {
+                    div()
+                        .flex_none()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(color::DANGER.hsla())
+                        .child(match alert {
+                            SafetyAlert::ChannelStalled { .. } => "Critical: not turning",
+                            SafetyAlert::LiquidCritical { .. } => "Critical: coolant",
+                        })
+                }))
+                .on_click(cx.listener(move |shell, _, _, cx| {
+                    shell.rows.toggle_cooling(channel);
+                    // A popover anchored to the row that just moved would
+                    // be left pointing at nothing.
+                    shell.interaction.dismiss();
+                    cx.notify();
+                })),
             )
             .when(open, |this| {
                 this.child(self.channel_detail(channel, write, cx))
@@ -298,15 +266,6 @@ impl Shell {
         let floor = duty_to_percent(channel.min_duty());
         let enabled = write.is_enabled();
 
-        // Published per render and captured by this render's listeners, exactly
-        // as the brightness tracks are, so a press converts against the
-        // rectangle the track was just painted at. Only an operable track is
-        // recorded, so a press cannot grab a channel the hardware refused.
-        let sink: Option<Rc<dyn Fn(Bounds<Pixels>)>> = enabled.then(|| {
-            let tracks = Rc::clone(&self.duty_tracks);
-            Rc::new(move |bounds| tracks.record(channel, bounds)) as Rc<dyn Fn(Bounds<Pixels>)>
-        });
-
         let mut slider = Slider::new(
             SharedString::from(format!("{}-duty", channel.label().to_lowercase())),
             "Fixed duty",
@@ -319,7 +278,7 @@ impl Shell {
         .unit("%")
         .state(write.clone())
         .tab_index(tab_index);
-        if let Some(sink) = sink {
+        if let Some(sink) = self.interaction.duty_sink(channel, enabled) {
             slider = slider.bounds_sink(sink);
         }
 
@@ -371,22 +330,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let nodes = *self.cooling.curve(channel);
-        let node = self.cooling.node(channel);
+        let node = self.rows.node(channel);
         let editable = state.is_enabled();
         let refusal = state.message().cloned();
-        // Published per render and read back by this window's press handler,
-        // exactly as the two sliders publish theirs. Withheld when the plot
-        // cannot be edited, which is what keeps a press from grabbing a curve
-        // the hardware refused.
-        let sink: Option<Rc<dyn Fn(Bounds<Pixels>)>> = editable.then(|| {
-            let plots = Rc::clone(&self.curve_plots);
-            Rc::new(move |bounds| plots.record(channel, bounds)) as Rc<dyn Fn(Bounds<Pixels>)>
-        });
         let mut curve_editor = CurveEditor::new(nodes)
             .selected(node)
-            .state(state.clone())
+            .state(state)
             .tab_index(tab_index);
-        if let Some(sink) = sink {
+        if let Some(sink) = self.interaction.curve_sink(channel, editable) {
             curve_editor = curve_editor.bounds_sink(sink);
         }
         let liquid_c = self
@@ -418,32 +369,18 @@ impl Shell {
                     .when(editable, |plot| {
                         plot.on_key_down(cx.listener(
                             move |shell, event: &gpui::KeyDownEvent, _, cx| {
-                                let mut edited = false;
-                                let handled = match event.keystroke.key.as_str() {
+                                match event.keystroke.key.as_str() {
                                     "left" => {
-                                        shell.cooling.step_node(channel, -1);
-                                        true
+                                        shell.rows.step_node(channel, -1);
+                                        cx.notify();
                                     }
                                     "right" => {
-                                        shell.cooling.step_node(channel, 1);
-                                        true
+                                        shell.rows.step_node(channel, 1);
+                                        cx.notify();
                                     }
-                                    "up" => {
-                                        shell.cooling.adjust_node(channel, 1);
-                                        edited = true;
-                                        true
-                                    }
-                                    "down" => {
-                                        shell.cooling.adjust_node(channel, -1);
-                                        edited = true;
-                                        true
-                                    }
-                                    _ => false,
-                                };
-                                if edited {
-                                    shell.schedule_write(WriteTarget::Cooling, cx);
-                                } else if handled {
-                                    cx.notify();
+                                    "up" => shell.adjust_curve_node(channel, 1, cx),
+                                    "down" => shell.adjust_curve_node(channel, -1, cx),
+                                    _ => {}
                                 }
                             },
                         ))
@@ -451,12 +388,19 @@ impl Shell {
                     .into_any_element(),
             )
     }
+
+    /// Move the node the keyboard is on, and arrange for the write it implies.
+    fn adjust_curve_node(&mut self, channel: Channel, steps: i16, cx: &mut Context<Self>) {
+        self.cooling
+            .adjust_node(channel, self.rows.node(channel), steps);
+        self.schedule_write(WriteTarget::Cooling, cx);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::Point;
+    use gpui::{Bounds, Point};
     use kori_core::profile::duty_from_percent;
 
     #[test]

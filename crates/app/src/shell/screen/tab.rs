@@ -20,6 +20,14 @@ use crate::display::DisplayColorField;
 
 /// First tab index available to a screen's own controls.
 pub const SCREEN_TAB_BASE: isize = 10;
+/// First tab stop of the rows of an open menu.
+///
+/// A reserved range far above every screen stop rather than the trigger's own
+/// index, which every option row and every swatch used to take. This module
+/// asserts that no two controls share a stop, and a list of six options sharing
+/// one was that invariant broken in the one place the tests did not look. One
+/// range serves every menu because one popover is open at a time.
+pub const MENU_TAB_BASE: isize = 1_000;
 /// Tab stops of the Cooling screen, in traversal order.
 ///
 /// Each channel row reserves a whole block: the row header itself, then every
@@ -81,7 +89,6 @@ pub const CHANNEL_OFFSET_DIRECTION: isize = 5;
 /// rendered control, so a mode that hides two of them does not renumber the
 /// rest.
 pub const LCD_OFFSET_METRIC_ONE: isize = 3;
-pub const LCD_OFFSET_METRIC_TWO: isize = 4;
 pub const LCD_OFFSET_COLOR_BASE: isize = 5;
 /// The file picker, which only image mode renders.
 pub const LCD_OFFSET_IMAGE: isize = LCD_OFFSET_COLOR_BASE + DisplayColorField::ALL.len() as isize;
@@ -129,13 +136,11 @@ mod tests {
 
     /// Every stop the panel row emits, in the order it draws them.
     fn lcd_row_stops(base: isize) -> Vec<isize> {
-        let mut stops = vec![
-            base,
-            base + ROW_OFFSET_BRIGHTNESS,
-            base + ROW_OFFSET_MODE,
-            base + LCD_OFFSET_METRIC_ONE,
-            base + LCD_OFFSET_METRIC_TWO,
-        ];
+        // The reading slots are offset from the first exactly as the screen
+        // offsets them, rather than restated as a second named constant that
+        // could drift from the arithmetic the panel row actually performs.
+        let mut stops = vec![base, base + ROW_OFFSET_BRIGHTNESS, base + ROW_OFFSET_MODE];
+        stops.extend((0..2).map(|slot| base + LCD_OFFSET_METRIC_ONE + slot));
         stops.extend(
             (0..DisplayColorField::ALL.len() as isize)
                 .map(|index| base + LCD_OFFSET_COLOR_BASE + index),
@@ -231,6 +236,23 @@ mod tests {
         assert!(
             fan + COOLING_ROW_STRIDE - 1 < COOLING_TAB_REVERT,
             "the last row's detail must not reach the action buttons"
+        );
+    }
+
+    /// A menu's rows take stops of their own, clear of every screen control.
+    ///
+    /// They used to take the trigger's index, so six options and the select
+    /// that opened them all answered to one stop.
+    #[test]
+    fn an_open_menu_reaches_past_every_stop_a_screen_can_emit() {
+        let widest = lcd_row_stops(lcd_row_tab(16))
+            .into_iter()
+            .chain([COOLING_TAB_DELETE])
+            .max()
+            .expect("a screen emits stops");
+        assert!(
+            widest < MENU_TAB_BASE,
+            "a controller with sixteen channels reaches {widest}, into the menu range"
         );
     }
 

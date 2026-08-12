@@ -228,10 +228,10 @@ fn pill(
     // control holding a value that cannot be parsed. Nothing else on the pill
     // says so, and the message under it is not where the eye is. Set after the
     // ring, because at rest the last color wins while focus keeps its own.
-    let base = focus_ring(base, enabled).when(
-        matches!(state, ControlState::Error { .. }),
-        |this| this.border_color(color::DANGER.hsla()),
-    );
+    let base = focus_ring(base, enabled)
+        .when(matches!(state, ControlState::Error { .. }), |this| {
+            this.border_color(color::DANGER.hsla())
+        });
 
     if enabled {
         base.tab_index(tab_index)

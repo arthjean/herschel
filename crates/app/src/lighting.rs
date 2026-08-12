@@ -21,9 +21,6 @@ use kori_core::lighting::{
     Brightness, EffectDirection, EffectSpeed, LightingEffect, LightingError, LightingProgram, Rgb,
 };
 
-/// Percentage a single press moves the brightness.
-pub const BRIGHTNESS_STEP: u8 = 5;
-
 /// Color a channel starts on, before the operator picks one.
 ///
 /// The project's own accent, so an untouched screen shows the product's palette
@@ -170,16 +167,11 @@ impl ChannelEditor {
         }
     }
 
-    /// Move the brightness by whole steps, staying inside 0-100.
-    pub fn adjust_brightness(&mut self, steps: i16) {
-        let next = self.brightness as i16 + steps * BRIGHTNESS_STEP as i16;
-        self.brightness = next.clamp(0, kori_core::lighting::MAX_BRIGHTNESS as i16) as u8;
-    }
-
-    /// Set the brightness outright, staying inside the same range.
+    /// Set the brightness, staying inside the range the daemon accepts.
     ///
-    /// This is what a slider needs: a drag names a value rather than a number
-    /// of steps, and the range is enforced here so no caller has to know it.
+    /// The one setter. A drag names a value rather than a number of steps, and
+    /// the keyboard turns its step into a value before it arrives, so the range
+    /// is enforced once here and no caller has to know it.
     pub fn set_brightness(&mut self, percent: u8) {
         self.brightness = percent.min(kori_core::lighting::MAX_BRIGHTNESS);
     }
@@ -277,22 +269,12 @@ mod tests {
     }
 
     #[test]
-    fn brightness_never_leaves_its_range_however_many_presses_arrive() {
-        let mut editor = ChannelEditor::new(1);
-        editor.adjust_brightness(100);
-        assert_eq!(editor.brightness, 100);
-        editor.adjust_brightness(-1000);
-        assert_eq!(editor.brightness, 0);
-        editor.adjust_brightness(1);
-        assert_eq!(editor.brightness, BRIGHTNESS_STEP);
-        assert!(editor.program().is_ok());
-    }
-
-    #[test]
-    fn a_dragged_brightness_lands_inside_the_range_the_daemon_accepts() {
+    fn brightness_never_leaves_the_range_the_daemon_accepts() {
         let mut editor = ChannelEditor::new(1);
         editor.set_brightness(37);
         assert_eq!(editor.brightness, 37);
+        editor.set_brightness(0);
+        assert_eq!(editor.brightness, 0);
         // A slider can only produce a value it was given, but the range is
         // enforced here rather than trusted from the caller, which is the same
         // rule the daemon applies to this client.

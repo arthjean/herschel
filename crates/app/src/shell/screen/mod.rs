@@ -9,14 +9,14 @@
 //! screen queues into.
 //!
 //! What lives here is what more than one screen needs: the surfaces a screen is
-//! laid out on, the menu skin every popover wears, and the select that is the
-//! only control all four use.
+//! laid out on, the menu skin every popover wears, which rows each screen has
+//! open, and the select that is the only control all four use.
 
 use std::rc::Rc;
 
 use gpui::{Div, Pixels, SharedString, Stateful, div, prelude::*, px};
 
-use kori_core::display::DisplayMode;
+use kori_core::profile::{CURVE_NODE_COUNT, Channel};
 
 use crate::components::{ControlState, Select, SelectOption, focus_visible};
 use crate::shell::Shell;
@@ -25,7 +25,10 @@ use crate::theme::{
     MENU_ROW_GAP, MENU_ROW_HEIGHT, RADIUS, color, space,
 };
 use gpui::Context;
+use keyed::{Keyed, Set};
+use row::LightingRow;
 use swatch::ColorPicker;
+use tab::MENU_TAB_BASE;
 
 pub mod channel;
 pub mod cooling;
@@ -41,27 +44,149 @@ pub mod tab;
 pub mod write;
 
 /// Which popover, if any, is open.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Popover {
     /// A color swatch list anchored to one color field.
     Swatches { picker: ColorPicker },
     /// An option list anchored to one select.
-    Options { select: SharedString },
+    Options { select: SelectId },
 }
-/// Whether a control shows the caption naming it.
+
+/// Which select a control and the list it opens are.
 ///
-/// A control in an open detail carries its own name, because nothing else
-/// around it does. A control on a device row does not: the row already names
-/// the device and the control is one of two on the line, so a caption over each
-/// one is a second line of text that says what the first line said.
+/// Typed rather than a string built at each call site. The popover is keyed on
+/// this, and the swatch popover next door was already typed on [`ColorPicker`]
+/// while this one compared a `SharedString` the caller spelled by hand: a
+/// mismatch between the id given to the control and the id compared against the
+/// open popover is invisible, because the list simply never opens.
+///
+/// It carries the caption rule too. Whether a select shows its name is a
+/// property of which select it is rather than a flag threaded through the
+/// builder: the two that sit on a device row are named by the row they are on,
+/// and every other one names itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Caption {
-    Shown,
-    Hidden,
+pub enum SelectId {
+    CoolingMode,
+    Profile,
+    ChannelMode(u8),
+    ChannelSpeed(u8),
+    ChannelDirection(u8),
+    LcdMode,
+    /// One of the panel's reading slots, by index.
+    LcdMetric(usize),
 }
+
+impl SelectId {
+    /// Stable fragment for the element ids this control and its rows carry.
+    pub fn key(self) -> SharedString {
+        match self {
+            Self::CoolingMode => "cooling-mode".into(),
+            Self::Profile => "profile".into(),
+            Self::ChannelMode(channel) => format!("lighting-mode-{channel}").into(),
+            Self::ChannelSpeed(channel) => format!("lighting-speed-{channel}").into(),
+            Self::ChannelDirection(channel) => format!("lighting-direction-{channel}").into(),
+            Self::LcdMode => "lcd-mode".into(),
+            Self::LcdMetric(slot) => format!("lcd-metric-{}", slot + 1).into(),
+        }
+    }
+
+    /// The caption above the control, which an error message also names.
+    pub fn label(self) -> SharedString {
+        match self {
+            Self::CoolingMode | Self::ChannelMode(_) => "Mode".into(),
+            Self::Profile => "Active profile".into(),
+            Self::ChannelSpeed(_) => "Speed".into(),
+            Self::ChannelDirection(_) => "Direction".into(),
+            Self::LcdMode => "Display mode".into(),
+            Self::LcdMetric(slot) => format!("Reading {}", slot + 1).into(),
+        }
+    }
+
+    /// Whether the caption is drawn above the control.
+    ///
+    /// A control in an open detail carries its own name, because nothing else
+    /// around it does. A control on a device row does not: the row already
+    /// names the device and the control is one of two on the line, so a caption
+    /// over each one is a second line of text saying what the first line said.
+    fn shows_label(self) -> bool {
+        !matches!(self, Self::ChannelMode(_) | Self::LcdMode)
+    }
+}
+
+/// Everything one select needs beyond what its [`SelectId`] already says.
+///
+/// One value rather than six more positional arguments. Four of them were a
+/// `Vec`, a `String`, a state and a number, which is exactly the set a call site
+/// can reorder without the compiler noticing, and naming them is also what took
+/// the builder back inside the argument budget: it carried a
+/// `#[allow(clippy::too_many_arguments)]` for nine.
+pub(crate) struct SelectField {
+    pub(crate) id: SelectId,
+    pub(crate) options: Vec<SelectOption>,
+    pub(crate) selected: String,
+    pub(crate) state: ControlState,
+    pub(crate) tab_index: isize,
+}
+
+/// Which rows each screen has open, and where the keyboard sits on each plot.
+///
+/// View state, held by the shell rather than by the editors. It used to be
+/// split: the Lighting screen's open rows were a field of `Shell` and the
+/// Cooling screen's were inside `CoolingEditor`, alongside the duties that
+/// editor writes to hardware and the curve node the keyboard is on. Neither is
+/// an edit and neither is ever sent, so the same category of state lived in two
+/// layers and one of the editors could not be read as "what this screen would
+/// send".
+#[derive(Debug, Default)]
+pub struct Disclosure {
+    /// Cooling channels whose rows are open, each editable on its own.
+    ///
+    /// Rows open independently: each plot publishes its own rectangle and
+    /// carries its own selected node, so two open at once edit two curves
+    /// rather than one meaning two things.
+    pub cooling: Set<Channel>,
+    /// Lighting rows whose controls are revealed, on the same terms.
+    ///
+    /// A controller with three channels and a panel is four appearances of one
+    /// machine, and comparing two of them means having both on screen.
+    pub lighting: Set<LightingRow>,
+    node: Keyed<Channel, usize>,
+}
+
+impl Disclosure {
+    /// The curve node the keyboard is on for `channel`.
+    ///
+    /// One per channel rather than one for the screen: with both rows open, a
+    /// shared index would move a node on whichever plot was focused last.
+    pub fn node(&self, channel: Channel) -> usize {
+        self.node.get(channel).copied().unwrap_or(0)
+    }
+
+    pub fn select_node(&mut self, channel: Channel, index: usize) {
+        self.node.set(channel, index.min(CURVE_NODE_COUNT - 1));
+    }
+
+    /// Move the selection along the curve, staying on the plot.
+    pub fn step_node(&mut self, channel: Channel, delta: isize) {
+        let next = self.node(channel) as isize + delta;
+        self.select_node(
+            channel,
+            next.clamp(0, CURVE_NODE_COUNT as isize - 1) as usize,
+        );
+    }
+
+    /// Open a cooling row, or close it, putting the keyboard back on the first
+    /// node of the plot it reveals.
+    pub fn toggle_cooling(&mut self, channel: Channel) {
+        self.cooling.toggle(channel);
+        self.select_node(channel, 0);
+    }
+}
+
 /// Width of one field in an open row's detail, two of which fit side by side
 /// in the column left of the preview.
 pub const FIELD_WIDTH: Pixels = px(168.0);
+
 /// The standard heading and column of a destination.
 fn screen(title: &'static str, subtitle: &'static str) -> Div {
     div().flex().flex_col().gap(space::LG).w_full().child(
@@ -177,47 +302,31 @@ fn popover_surface(menu: Stateful<Div>) -> impl IntoElement {
     .with_priority(1)
 }
 
-/// Modes the screen can configure completely.
-///
-/// [`DisplayMode::Image`] was absent while the screen had no control that could
-/// name a file: a mode the daemon could only ever refuse is an entry that says
-/// the feature is here and then does nothing. What was missing was never a text
-/// input, which this codebase still has none of, but a file picker, and the
-/// toolkit publishes the platform's own through `prompt_for_paths`.
-pub const SCREEN_MODES: [DisplayMode; 4] = [
-    DisplayMode::DualInfographic,
-    DisplayMode::SingleReading,
-    DisplayMode::Solid,
-    DisplayMode::Image,
-];
-
 impl Shell {
     /// A select plus its popover, placed so it stays inside the window.
-    #[allow(clippy::too_many_arguments)]
     fn select(
         &self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        caption: Caption,
-        options: Vec<SelectOption>,
-        selected: String,
-        state: ControlState,
-        tab_index: isize,
+        field: SelectField,
         cx: &mut Context<Self>,
         on_select: impl Fn(&mut Self, &str, &mut Context<Self>) + 'static,
     ) -> Div {
-        // The identifier is owned rather than borrowed: a screen with one
-        // select per channel has to name them apart, and the number of channels
-        // is whatever the controller reported.
-        let id: SharedString = id.into();
+        let SelectField {
+            id,
+            options,
+            selected,
+            state,
+            tab_index,
+        } = field;
+        let key = id.key();
         // GPUI has no disabled semantics of its own: a handler left attached
         // still fires. Withholding it is what makes the refusal real rather
         // than a matter of styling.
         let enabled = state.is_enabled();
-        let open = enabled && self.popover == Some(Popover::Options { select: id.clone() });
+        let open = enabled && self.interaction.showing(&Popover::Options { select: id });
         let current = selected.clone();
-        let mut built = Select::new(id.clone(), label);
-        if caption == Caption::Hidden {
+
+        let mut built = Select::new(key.clone(), id.label());
+        if !id.shows_label() {
             built = built.label_hidden();
         }
         let control = built
@@ -227,9 +336,8 @@ impl Shell {
             .tab_index(tab_index)
             .render()
             .when(enabled, |this| {
-                let id = id.clone();
                 this.on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_popover(Popover::Options { select: id.clone() }, cx)
+                    this.toggle_popover(Popover::Options { select: id }, cx)
                 }))
             });
 
@@ -237,11 +345,8 @@ impl Shell {
 
         div().relative().child(control).when(open, |this| {
             this.child(option_menu(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(MENU_ROW_GAP)
-                    .children(options.into_iter().map(|option| {
+                div().flex().flex_col().gap(MENU_ROW_GAP).children(
+                    options.into_iter().enumerate().map(|(index, option)| {
                         let value = option.value.clone();
                         let chosen = option.value == current;
                         let on_select = Rc::clone(&on_select);
@@ -260,8 +365,12 @@ impl Shell {
                             color::TEXT.alpha(0.05)
                         };
                         div()
-                            .id(SharedString::from(format!("{id}-{}", option.value)))
-                            .tab_index(tab_index)
+                            .id(SharedString::from(format!("{key}-{}", option.value)))
+                            // Its own stop in the reserved menu range. Every row
+                            // used to take the trigger's index, which is the
+                            // invariant `tab.rs` asserts broken in the one place
+                            // its tests do not reach.
+                            .tab_index(MENU_TAB_BASE + index as isize)
                             .tab_stop(true)
                             .flex_none()
                             .w_full()
@@ -284,11 +393,126 @@ impl Shell {
                             .child(div().flex_1().min_w_0().truncate().child(option.label))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 on_select(this, &value, cx);
-                                this.popover = None;
+                                this.interaction.dismiss();
                                 cx.notify();
                             }))
-                    })),
+                    }),
+                ),
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The id is the popover key, so two selects that could ever be on screen
+    /// together must not answer to the same one: a collision opens the wrong
+    /// list, or the right one under the wrong control.
+    #[test]
+    fn every_select_on_a_screen_carries_its_own_identity() {
+        let ids = [
+            SelectId::CoolingMode,
+            SelectId::Profile,
+            SelectId::ChannelMode(1),
+            SelectId::ChannelMode(2),
+            SelectId::ChannelSpeed(1),
+            SelectId::ChannelDirection(1),
+            SelectId::LcdMode,
+            SelectId::LcdMetric(0),
+            SelectId::LcdMetric(1),
+        ];
+
+        let mut keys: Vec<String> = ids.iter().map(|id| id.key().to_string()).collect();
+        let spelled = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), spelled, "two selects share an element id");
+
+        for id in ids {
+            assert!(!id.label().is_empty(), "{id:?} has no caption to show");
+        }
+    }
+
+    /// The caption is a property of where the control sits. The two selects on
+    /// a device row are named by the row; every other one names itself.
+    #[test]
+    fn only_the_selects_a_row_already_names_hide_their_caption() {
+        assert!(!SelectId::ChannelMode(1).shows_label());
+        assert!(!SelectId::LcdMode.shows_label());
+        for id in [
+            SelectId::CoolingMode,
+            SelectId::Profile,
+            SelectId::ChannelSpeed(1),
+            SelectId::ChannelDirection(1),
+            SelectId::LcdMetric(0),
+        ] {
+            assert!(id.shows_label(), "{id:?} has nothing else naming it");
+        }
+    }
+
+    #[test]
+    fn a_reading_slot_is_numbered_from_one_wherever_it_is_named() {
+        assert_eq!(SelectId::LcdMetric(0).label(), "Reading 1");
+        assert_eq!(SelectId::LcdMetric(1).label(), "Reading 2");
+        assert_eq!(SelectId::LcdMetric(0).key(), "lcd-metric-1");
+        assert_eq!(SelectId::LcdMetric(1).key(), "lcd-metric-2");
+    }
+
+    #[test]
+    fn opening_a_cooling_row_puts_the_keyboard_on_its_first_node() {
+        let mut rows = Disclosure::default();
+        assert!(!rows.cooling.contains(Channel::Pump), "rows start closed");
+
+        rows.step_node(Channel::Pump, 4);
+        assert_eq!(rows.node(Channel::Pump), 4);
+
+        rows.toggle_cooling(Channel::Pump);
+        assert!(rows.cooling.contains(Channel::Pump));
+        assert_eq!(
+            rows.node(Channel::Pump),
+            0,
+            "the plot opens on its first node"
+        );
+
+        // Each channel keeps its own selection: with both rows open, walking
+        // the nodes of one plot must not move the point selected on the other.
+        rows.step_node(Channel::Pump, 3);
+        assert_eq!(rows.node(Channel::Fan), 0, "the fan kept its own node");
+
+        rows.toggle_cooling(Channel::Pump);
+        assert!(
+            !rows.cooling.contains(Channel::Pump),
+            "a second press closes it"
+        );
+    }
+
+    #[test]
+    fn node_selection_stays_inside_the_curve() {
+        let mut rows = Disclosure::default();
+        rows.step_node(Channel::Pump, -5);
+        assert_eq!(rows.node(Channel::Pump), 0);
+        rows.step_node(Channel::Pump, 100);
+        assert_eq!(rows.node(Channel::Pump), CURVE_NODE_COUNT - 1);
+        rows.select_node(Channel::Pump, 999);
+        assert_eq!(rows.node(Channel::Pump), CURVE_NODE_COUNT - 1);
+    }
+
+    #[test]
+    fn lighting_rows_open_independently_of_each_other() {
+        let mut rows = Disclosure::default();
+        rows.lighting.insert(LightingRow::Lcd);
+
+        rows.lighting.toggle(LightingRow::Channel(1));
+        assert!(rows.lighting.contains(LightingRow::Channel(1)));
+        assert!(
+            rows.lighting.contains(LightingRow::Lcd),
+            "opening one row does not close another"
+        );
+
+        rows.lighting.toggle(LightingRow::Lcd);
+        assert!(!rows.lighting.contains(LightingRow::Lcd));
+        assert!(rows.lighting.contains(LightingRow::Channel(1)));
     }
 }

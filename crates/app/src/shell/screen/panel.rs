@@ -31,7 +31,7 @@ use super::tab::{
     ROW_OFFSET_MODE,
 };
 use super::write::WriteTarget;
-use super::{Caption, SCREEN_MODES, field_line};
+use super::{SelectField, SelectId, field_line};
 
 /// Width of the preview column, wide enough for the panel plus its padding.
 pub const PREVIEW_COLUMN_WIDTH: Pixels = px(276.0);
@@ -87,16 +87,22 @@ impl Shell {
                 // of a panel nothing can be written to.
                 write: frame.clone(),
                 mode: self.select(
-                    "lcd-mode",
-                    "Display mode",
-                    Caption::Hidden,
-                    SCREEN_MODES
-                        .into_iter()
-                        .map(|mode| SelectOption::new(mode.key(), mode.label()))
-                        .collect(),
-                    editor.mode.key().to_string(),
-                    frame.clone(),
-                    base + ROW_OFFSET_MODE,
+                    SelectField {
+                        id: SelectId::LcdMode,
+                        // Every mode the vocabulary carries, in the order it
+                        // declares them. The screen used to keep a list of its
+                        // own, from when image mode had no control that could
+                        // name a file and was left out; it holds the same four
+                        // in the same order now, which is a second copy of a
+                        // fact core already states.
+                        options: DisplayMode::ALL
+                            .into_iter()
+                            .map(|mode| SelectOption::new(mode.key(), mode.label()))
+                            .collect(),
+                        selected: editor.mode.key().to_string(),
+                        state: frame.clone(),
+                        tab_index: base + ROW_OFFSET_MODE,
+                    },
                     cx,
                     |shell, value, cx| {
                         let Some(mode) = DisplayMode::from_key(value) else {
@@ -234,7 +240,7 @@ impl Shell {
                                         // Acting on the panel dismisses any
                                         // open popover, so a swatch list never
                                         // hides the result.
-                                        this.popover = None;
+                                        this.interaction.dismiss();
                                         this.resume_display(cx);
                                     })),
                             )
@@ -258,7 +264,10 @@ impl Shell {
                 // Fixed rather than sized to content, so the two field columns
                 // beside it keep their width: at 920 logical pixels there is
                 // room for both and the disc, and nothing has to be clipped to
-                // decide which.
+                // decide which. One entry point whatever the mode: the branch
+                // that used to sit here was the seam between a picture that was
+                // compiled and one that was rendered inline, and there is no
+                // longer one of each.
                 div()
                     .flex_none()
                     .w(PREVIEW_COLUMN_WIDTH)
@@ -315,7 +324,7 @@ impl Shell {
                     .tab_index(tab_index)
                     .render()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.popover = None;
+                        this.interaction.dismiss();
                         this.choose_image(cx);
                     })),
             )
@@ -339,24 +348,20 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let selected = self.lcd.editor().metrics[slot];
-        // The metric line heads the grid and the colors under it are named by
-        // role, so the slot alone is enough to say what this select chooses.
-        let (id, label) = if slot == 0 {
-            ("lcd-metric-1", "Reading 1")
-        } else {
-            ("lcd-metric-2", "Reading 2")
-        };
         self.select(
-            id,
-            label,
-            Caption::Shown,
-            LcdMetric::ALL
-                .into_iter()
-                .map(|metric| SelectOption::new(metric.key(), metric.label()))
-                .collect(),
-            selected.key().to_string(),
-            state,
-            tab_index,
+            SelectField {
+                // The metric line heads the grid and the colors under it are
+                // named by role, so the slot alone is enough to say what this
+                // select chooses, and it is what names the control too.
+                id: SelectId::LcdMetric(slot),
+                options: LcdMetric::ALL
+                    .into_iter()
+                    .map(|metric| SelectOption::new(metric.key(), metric.label()))
+                    .collect(),
+                selected: selected.key().to_string(),
+                state,
+                tab_index,
+            },
             cx,
             move |shell, value, cx| {
                 let Some(metric) = LcdMetric::from_key(value) else {
@@ -499,20 +504,14 @@ mod tests {
 
     #[test]
     fn the_screen_offers_every_mode_and_a_control_for_each_of_them() {
-        // A mode the daemon could only ever refuse is absent, not disabled,
-        // which is the same rule the Lighting screen applies to an unproven
-        // effect. Every mode the vocabulary carries is now offered, because
-        // every one of them has the control it needs.
-        assert_eq!(SCREEN_MODES.len(), DisplayMode::ALL.len());
-        for mode in DisplayMode::ALL {
-            assert!(SCREEN_MODES.contains(&mode), "{} is absent", mode.label());
-        }
-
         // Every mode but one produces a preset from the defaults alone. Image
         // mode is the exception by construction: it names a file, and the
         // refusal it carries until one is picked is the whole reason the
-        // picker sits in the same detail as the select.
-        for mode in SCREEN_MODES {
+        // picker sits in the same detail as the select. A mode the daemon could
+        // only ever refuse would be absent rather than disabled, which is the
+        // same rule the Lighting screen applies to an unproven effect; none is,
+        // because every one of them now has the control it needs.
+        for mode in DisplayMode::ALL {
             let mut editor = DisplayEditor::default();
             editor.mode = mode;
             assert_eq!(

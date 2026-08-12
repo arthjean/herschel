@@ -32,7 +32,7 @@ use super::tab::{
     lighting_row_tab,
 };
 use super::write::WriteTarget;
-use super::{Caption, FIELD_WIDTH, screen};
+use super::{FIELD_WIDTH, SelectField, SelectId, screen};
 
 /// What the controller's card is headed with.
 ///
@@ -261,16 +261,16 @@ impl Shell {
                 brightness,
                 write: write.clone(),
                 mode: self.select(
-                    format!("lighting-mode-{channel}"),
-                    "Mode",
-                    Caption::Hidden,
-                    LightingMode::all(effects.is_enabled())
-                        .into_iter()
-                        .map(|mode| SelectOption::new(mode.value(), mode.label()))
-                        .collect(),
-                    mode_value,
-                    write.clone(),
-                    base + ROW_OFFSET_MODE,
+                    SelectField {
+                        id: SelectId::ChannelMode(channel),
+                        options: LightingMode::all(effects.is_enabled())
+                            .into_iter()
+                            .map(|mode| SelectOption::new(mode.value(), mode.label()))
+                            .collect(),
+                        selected: mode_value,
+                        state: write.clone(),
+                        tab_index: base + ROW_OFFSET_MODE,
+                    },
                     cx,
                     move |shell, value, cx| {
                         let Some(mode) = LightingMode::from_value(value) else {
@@ -365,16 +365,18 @@ impl Shell {
                         this.child(
                             div().flex_none().w(FIELD_WIDTH).child(
                                 self.select(
-                                    format!("lighting-speed-{channel}"),
-                                    "Speed",
-                                    Caption::Shown,
-                                    EffectSpeed::ALL
-                                        .into_iter()
-                                        .map(|speed| SelectOption::new(speed.key(), speed.label()))
-                                        .collect(),
-                                    editor.speed.key().to_string(),
-                                    write.clone(),
-                                    base + CHANNEL_OFFSET_SPEED,
+                                    SelectField {
+                                        id: SelectId::ChannelSpeed(channel),
+                                        options: EffectSpeed::ALL
+                                            .into_iter()
+                                            .map(|speed| {
+                                                SelectOption::new(speed.key(), speed.label())
+                                            })
+                                            .collect(),
+                                        selected: editor.speed.key().to_string(),
+                                        state: write.clone(),
+                                        tab_index: base + CHANNEL_OFFSET_SPEED,
+                                    },
                                     cx,
                                     move |shell, value, cx| {
                                         let Some(speed) = EffectSpeed::from_key(value) else {
@@ -398,18 +400,21 @@ impl Shell {
                         this.child(
                             div().flex_none().w(FIELD_WIDTH).child(
                                 self.select(
-                                    format!("lighting-direction-{channel}"),
-                                    "Direction",
-                                    Caption::Shown,
-                                    EffectDirection::ALL
-                                        .into_iter()
-                                        .map(|direction| {
-                                            SelectOption::new(direction.key(), direction.label())
-                                        })
-                                        .collect(),
-                                    editor.direction.key().to_string(),
-                                    write.clone(),
-                                    base + CHANNEL_OFFSET_DIRECTION,
+                                    SelectField {
+                                        id: SelectId::ChannelDirection(channel),
+                                        options: EffectDirection::ALL
+                                            .into_iter()
+                                            .map(|direction| {
+                                                SelectOption::new(
+                                                    direction.key(),
+                                                    direction.label(),
+                                                )
+                                            })
+                                            .collect(),
+                                        selected: editor.direction.key().to_string(),
+                                        state: write.clone(),
+                                        tab_index: base + CHANNEL_OFFSET_DIRECTION,
+                                    },
                                     cx,
                                     move |shell, value, cx| {
                                         let Some(direction) = EffectDirection::from_key(value)

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What the pointer is moving, and where each control was painted.
+//! What the pointer is doing, and where this frame painted what it can grab.
 //!
 //! The window decides which control a press landed on, rather than the control
 //! hearing about the press itself. A listener on the control was the first
@@ -9,13 +9,21 @@
 //! whose interactive state, hover styling and focus ring all sit between it and
 //! the handler. The window's own capture handler is the one place an event is
 //! guaranteed to arrive, and the same handler already runs there for focus.
+//!
+//! All of it is one value. The open popover, the running gesture and the three
+//! books of painted rectangles were five fields of the shell that every screen
+//! module could reach into, and closing the popover was written out by hand in
+//! eleven places across seven files. They are one concern: what the pointer is
+//! doing to this window right now.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use gpui::{Bounds, Pixels, Point, px};
 
 use kori_core::profile::{Channel, CurveNodes};
 
+use super::Popover;
 use super::keyed::Keyed;
 use super::row::LightingRow;
 use crate::components::{Slider, node_at};
@@ -48,7 +56,8 @@ pub enum Drag {
     /// rest of the gesture, so a drag moves the point that was grabbed rather
     /// than whichever one the pointer happens to be over. `base` is the whole
     /// curve as it stood at that moment, which is what
-    /// [`CoolingEditor::set_node_from`] replays every move against.
+    /// [`crate::cooling::CoolingEditor::set_node_from`] replays every move
+    /// against.
     Curve {
         channel: Channel,
         node: usize,
@@ -56,6 +65,7 @@ pub enum Drag {
         plot: Bounds<Pixels>,
     },
 }
+
 impl Drag {
     /// Whether this gesture is editing the cooling program.
     ///
@@ -66,14 +76,8 @@ impl Drag {
         matches!(self, Self::Duty { .. } | Self::Curve { .. })
     }
 }
+
 /// Where each operable track was painted, by whatever names the control.
-///
-/// The window decides which slider a press landed on, rather than the slider
-/// hearing about the press itself. A listener on the control was the first
-/// arrangement and it never fired: the press has to travel down an element
-/// whose interactive state, hover styling and focus ring all sit between it and
-/// the handler. The window's own capture handler is the one place an event is
-/// guaranteed to arrive, and the same handler already runs there for focus.
 ///
 /// A disabled slider records nothing, so a track that cannot be moved cannot be
 /// grabbed either.
@@ -116,8 +120,100 @@ impl<K: Copy + PartialEq> TrackMap<K> {
             .map(|(key, track)| (key, *track))
     }
 }
+
 /// How far outside a track a press still counts as landing on it.
 pub const TRACK_GRAB_MARGIN: Pixels = px(6.0);
+
+/// Everything about the pointer's relationship with this window.
+///
+/// The books are cleared and refilled every frame, so a rectangle only exists
+/// while the control that owns it is on screen and operable. That is what
+/// answers three questions at once without asking any of them: which screen is
+/// drawn, which rows are open, and what the hardware accepts.
+#[derive(Debug, Default)]
+pub struct Interaction {
+    popover: Option<Popover>,
+    drag: Option<Drag>,
+    brightness: Rc<TrackMap<LightingRow>>,
+    duty: Rc<TrackMap<Channel>>,
+    curves: Rc<TrackMap<Channel>>,
+}
+
+/// Publish where one control's track is painted, or refuse to.
+///
+/// `None` when the control cannot be operated, which is what keeps a press from
+/// grabbing a slider or a plot the hardware refused: a rectangle that was never
+/// recorded is not in the book the press handler asks.
+fn sink<K: Copy + PartialEq + 'static>(
+    book: &Rc<TrackMap<K>>,
+    key: K,
+    enabled: bool,
+) -> Option<Rc<dyn Fn(Bounds<Pixels>)>> {
+    enabled.then(|| {
+        let book = Rc::clone(book);
+        Rc::new(move |bounds| book.record(key, bounds)) as Rc<dyn Fn(Bounds<Pixels>)>
+    })
+}
+
+impl Interaction {
+    /// Close whatever list is open, and say whether one was.
+    pub fn dismiss(&mut self) -> bool {
+        self.popover.take().is_some()
+    }
+
+    /// Open `popover`, or close it when it is the one already showing.
+    pub fn toggle(&mut self, popover: Popover) {
+        self.popover = (self.popover != Some(popover)).then_some(popover);
+    }
+
+    pub fn showing(&self, popover: &Popover) -> bool {
+        self.popover.as_ref() == Some(popover)
+    }
+
+    pub fn showing_any(&self) -> bool {
+        self.popover.is_some()
+    }
+
+    pub fn drag(&self) -> Option<Drag> {
+        self.drag
+    }
+
+    /// End the gesture, returning what it was moving.
+    pub fn end_drag(&mut self) -> Option<Drag> {
+        self.drag.take()
+    }
+
+    /// Forget every rectangle this frame published.
+    ///
+    /// Called once at the top of the render, which is what keeps a row that has
+    /// gone away, or a screen that no longer shows one, from leaving a
+    /// rectangle behind that a press could still grab.
+    pub fn clear_tracks(&self) {
+        self.brightness.clear();
+        self.duty.clear();
+        self.curves.clear();
+    }
+
+    pub fn brightness_sink(
+        &self,
+        row: LightingRow,
+        enabled: bool,
+    ) -> Option<Rc<dyn Fn(Bounds<Pixels>)>> {
+        sink(&self.brightness, row, enabled)
+    }
+
+    pub fn duty_sink(&self, channel: Channel, enabled: bool) -> Option<Rc<dyn Fn(Bounds<Pixels>)>> {
+        sink(&self.duty, channel, enabled)
+    }
+
+    pub fn curve_sink(
+        &self,
+        channel: Channel,
+        enabled: bool,
+    ) -> Option<Rc<dyn Fn(Bounds<Pixels>)>> {
+        sink(&self.curves, channel, enabled)
+    }
+}
 
 impl Shell {
     /// Begin whatever gesture a press at `position` starts, if it starts one.
@@ -130,27 +226,35 @@ impl Shell {
     /// it here rather than from a listener on each control is what makes it
     /// arrive at all: an event that has to reach a control nested under its own
     /// interactive state never did.
+    ///
+    /// Nothing dismisses a popover here, because nothing can: the window's
+    /// capture handler owns a press while a list is open and returns before
+    /// reaching this. Two of the three branches used to close one anyway, the
+    /// third did not, and none of the three could ever run.
     pub(crate) fn begin_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        if let Some((row, track)) = self.brightness_tracks.at(position) {
-            self.popover = None;
-            self.drag = Some(Drag::Brightness { row, track });
-        } else if let Some((channel, track)) = self.duty_tracks.at(position) {
-            self.popover = None;
-            self.drag = Some(Drag::Duty { channel, track });
-        } else if let Some((channel, plot)) = self.curve_plots.at(position) {
+        debug_assert!(
+            !self.interaction.showing_any(),
+            "a press while a list is open belongs to the list, not to a control under it"
+        );
+
+        if let Some((row, track)) = self.interaction.brightness.at(position) {
+            self.interaction.drag = Some(Drag::Brightness { row, track });
+        } else if let Some((channel, track)) = self.interaction.duty.at(position) {
+            self.interaction.drag = Some(Drag::Duty { channel, track });
+        } else if let Some((channel, plot)) = self.interaction.curves.at(position) {
             // The node is chosen once, here, and held for the rest of the
             // gesture, so a drag that wanders keeps editing the point the
             // operator aimed at. The press is already an edit: it moves that
             // node to where it landed.
             let (node, duty) = node_at(plot, position);
             let base = *self.cooling.curve(channel);
-            self.drag = Some(Drag::Curve {
+            self.interaction.drag = Some(Drag::Curve {
                 channel,
                 node,
                 base,
                 plot,
             });
-            self.cooling.select_node(channel, node);
+            self.rows.select_node(channel, node);
             self.cooling.set_node_from(channel, base, node, duty);
             self.touch_cooling();
         } else {
@@ -165,7 +269,9 @@ impl Shell {
     /// control keeps pinning the end it left by rather than stopping where the
     /// pointer crossed the edge.
     pub(crate) fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(drag) = self.drag else { return };
+        let Some(drag) = self.interaction.drag() else {
+            return;
+        };
         match drag {
             Drag::Brightness { row, track } => {
                 let max = f32::from(kori_core::lighting::MAX_BRIGHTNESS);
@@ -211,6 +317,7 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::screen::SelectId;
 
     #[test]
     fn a_duty_track_and_a_brightness_track_never_answer_for_each_other() {
@@ -311,6 +418,67 @@ mod tests {
                 y: px(410.0)
             }),
             None
+        );
+    }
+
+    #[test]
+    fn a_refused_control_publishes_no_rectangle_to_grab() {
+        let interaction = Interaction::default();
+        assert!(
+            interaction.duty_sink(Channel::Pump, false).is_none(),
+            "a track the hardware refused must not be grabbable"
+        );
+
+        let Some(publish) = interaction.duty_sink(Channel::Pump, true) else {
+            panic!("an operable track publishes where it was painted");
+        };
+        let bounds = Bounds {
+            origin: Point {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            size: gpui::size(px(200.0), px(22.0)),
+        };
+        publish(bounds);
+        assert_eq!(
+            interaction
+                .duty
+                .at(Point {
+                    x: px(100.0),
+                    y: px(10.0)
+                })
+                .map(|(channel, _)| channel),
+            Some(Channel::Pump)
+        );
+    }
+
+    #[test]
+    fn one_list_is_open_at_a_time_and_pressing_its_own_control_closes_it() {
+        let mut interaction = Interaction::default();
+        let mode = Popover::Options {
+            select: SelectId::CoolingMode,
+        };
+        let profile = Popover::Options {
+            select: SelectId::Profile,
+        };
+
+        assert!(!interaction.showing_any());
+        interaction.toggle(mode);
+        assert!(interaction.showing(&mode));
+
+        // Another control takes it over rather than opening a second list.
+        interaction.toggle(profile);
+        assert!(interaction.showing(&profile) && !interaction.showing(&mode));
+
+        // The same control closes it.
+        interaction.toggle(profile);
+        assert!(!interaction.showing_any());
+
+        interaction.toggle(mode);
+        assert!(interaction.dismiss(), "a press outside closes the list");
+        assert!(
+            !interaction.dismiss(),
+            "and dismissing nothing must not repaint the window"
         );
     }
 }

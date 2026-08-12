@@ -1,27 +1,39 @@
 // SPDX-FileCopyrightText: 2026 Arthur Jean
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One device row of the Lighting screen: the line, and what it opens.
+//! One openable row, and what it opens.
 //!
-//! The channels and the panel are the same object with different contents, so
-//! the frame is stated once here. It used to be written twice, down to the same
-//! four comments word for word, and a layout fact restated in two places is one
-//! that only holds until somebody edits one of them.
+//! Every list of rows in this interface is the same object with different
+//! contents: the lighting channels, the panel, and the two cooling channels.
+//! The frame is stated once here.
+//!
+//! It has been restated before. The channels and the panel each wrote their own
+//! scaffold, down to the same four comments word for word, until
+//! `Shell::device_row` was written to say it once; the Cooling screen then
+//! grew a third copy, with three of those comments identical character for
+//! character. So the pieces below are the parts, not the whole: the container a
+//! row carries while open, the band that lights up under the pointer, and the
+//! region that opens it. A screen assembles them with the controls it has.
 
-use std::rc::Rc;
-
-use gpui::{Bounds, Div, Pixels, SharedString, Stateful, div, prelude::*, px};
+use gpui::{Div, Pixels, SharedString, Stateful, div, prelude::*, px};
 
 use crate::assets::Icon;
-use crate::components::{ControlState, Slider, chevron, focus_visible, icon};
+use crate::components::{ControlState, Slider, chevron, focus_ring, icon};
 use crate::shell::Shell;
-use crate::theme::{
-    Color, FOCUS_RING, META_SEPARATOR, RADIUS, ROW_RADIUS, TARGET_MIN, color, space,
-};
-use gpui::Context;
+use crate::theme::{Color, META_SEPARATOR, RADIUS, ROW_RADIUS, TARGET_MIN, color, space};
+use gpui::{Context, Hsla};
 
 use super::tab::ROW_OFFSET_BRIGHTNESS;
 use super::write::WriteTarget;
+
+/// Percentage one press of an arrow key moves a brightness slider.
+///
+/// A property of the control rather than of either editor. Both rows carry the
+/// same slider and the same keyboard, and the constant used to exist twice, once
+/// per editor, with only the lighting copy actually driving anything: the panel
+/// row's keyboard step came from the lighting one too. Two constants where one
+/// is live is two that can drift with nothing to notice.
+pub const BRIGHTNESS_STEP: u8 = 5;
 
 /// One openable row of the Lighting screen.
 ///
@@ -57,7 +69,7 @@ pub(crate) enum RowNote {
 }
 /// Everything one device row's line carries.
 ///
-/// One value rather than seven positional arguments on [`Shell::device_row`].
+/// One value rather than seven positional arguments on `Shell::device_row`.
 /// Four of them are a `Div`, a `String` and two numbers, which is exactly the
 /// set a call site can reorder without the compiler noticing, and naming them
 /// is also what keeps the row builder inside the argument budget.
@@ -93,11 +105,66 @@ pub const ROW_DETAIL_INDENT: Pixels = px(32.0);
 pub const ROW_THUMBNAIL: Pixels = px(34.0);
 /// Side of the glyph drawn inside that thumbnail.
 ///
-/// Larger than [`ICON_SIZE`], which is the size of a glyph sitting beside text.
-/// This one sits inside a filled tile and has to survive the fill around it, so
-/// it takes a little under two thirds of the side, leaving a margin of the
-/// color on every edge.
+/// Larger than [`crate::components::ICON_SIZE`], which is the size of a glyph
+/// sitting beside text. This one sits inside a filled tile and has to survive
+/// the fill around it, so it takes a little under two thirds of the side,
+/// leaving a margin of the color on every edge.
 pub const ROW_THUMBNAIL_GLYPH: Pixels = px(20.0);
+
+/// The fill of the line under the pointer.
+///
+/// A function rather than a constant on each screen: both lists light their
+/// whole line, and they differ in what the line holds rather than in how it
+/// reads under the pointer.
+pub(crate) fn row_hover_fill() -> Hsla {
+    color::CONTROL.alpha(0.5)
+}
+
+/// The container one openable row sits in: its open state, and the gap between
+/// the line and what the line revealed.
+///
+/// Open is a state the whole row carries, not a stack of two elements that
+/// happen to touch: the line and what it revealed sit on one fill, so the
+/// detail is read as the inside of this device rather than as the top of the
+/// next one. Held at every state, so opening a row does not move the line that
+/// opened it.
+pub(crate) fn row_shell(open: bool) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w_0()
+        .p(space::XS)
+        // Between the line and what it opened. Only ever applies when a detail
+        // is there, since a closed row has a single child.
+        .gap(space::SM)
+        .rounded(ROW_RADIUS)
+        .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
+}
+
+/// The region of a row that opens it: a pointer target with a reserved ring.
+///
+/// The caller lays it out and decides how much of the line it covers. A cooling
+/// row carries no controls beside its readouts, so the whole line is the
+/// target; a lighting row has a slider and a select on the same line, so only
+/// the head is, and operating one of them cannot also collapse the row.
+pub(crate) fn row_target(id: SharedString, tab_index: isize) -> Stateful<Div> {
+    focus_ring(
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(space::SM)
+            .min_h(TARGET_MIN)
+            .px(space::SM)
+            .rounded(RADIUS)
+            .cursor_pointer()
+            .tab_index(tab_index)
+            .tab_stop(true),
+        true,
+    )
+}
+
 /// The appearance thumbnail at the head of a device row.
 ///
 /// The fill is still the color, because that is the one thing on the collapsed
@@ -131,27 +198,13 @@ pub(crate) fn row_thumbnail(color_value: Option<Color>, glyph: Icon, round: bool
 }
 
 impl Shell {
-    /// The head of a device row: chevron, thumbnail and two lines of text, as
-    /// one target that opens the row.
-    ///
-    /// Only this part of the line toggles. The brightness and mode controls sit
-    /// beside it rather than inside it, so operating one of them cannot also
-    /// collapse the row it belongs to.
-    ///
-    /// `note` is the second fact the row carries, if it has one. See
-    /// [`RowNote`] for which of the two shapes to give it.
     /// Whether one row of the Lighting screen is open.
     pub(crate) fn is_open(&self, row: LightingRow) -> bool {
-        self.lighting_open.contains(&row)
+        self.rows.lighting.contains(row)
     }
 
-    /// One device row: the line, and whatever it revealed.
-    ///
-    /// Written once for the channels and the panel. The two used to state this
-    /// scaffold separately, down to the same four comments word for word, and
-    /// differed only in the head they carried, the mode select they offered and
-    /// the detail they opened. A layout fact restated in two places is one that
-    /// only holds until somebody edits one of them.
+    /// One device row of the Lighting screen: the line, and whatever it
+    /// revealed.
     pub(crate) fn device_row(
         &self,
         row: LightingRow,
@@ -159,23 +212,7 @@ impl Shell {
         detail: Option<Div>,
         cx: &mut Context<Self>,
     ) -> Div {
-        let open = detail.is_some();
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .p(space::XS)
-            // Between the line and what it opened. Only ever applies when a
-            // detail is there, since a closed row has a single child.
-            .gap(space::SM)
-            .rounded(ROW_RADIUS)
-            // Open is a state the whole row carries, not a stack of two
-            // elements that happen to touch: the line and what it revealed sit
-            // on one fill, so the detail is read as the inside of this device
-            // rather than as the top of the next one. Held at every state, so
-            // opening a row does not move the line that opened it.
-            .when(open, |this| this.bg(color::CONTROL.alpha(0.25)))
+        row_shell(detail.is_some())
             .child(
                 div()
                     .flex()
@@ -199,7 +236,7 @@ impl Shell {
                     // a highlight that stops before them reads as two rows.
                     // What the press does is still decided by what is under
                     // it, which is why only the head carries the handler.
-                    .hover(|this| this.bg(color::CONTROL.alpha(0.5)))
+                    .hover(|this| this.bg(row_hover_fill()))
                     .child(self.row_disclosure(
                         row,
                         line.tab_index,
@@ -220,6 +257,8 @@ impl Shell {
             .children(detail)
     }
 
+    /// The head of a device row: chevron, thumbnail and two lines of text, as
+    /// one target that opens the row.
     fn row_disclosure(
         &self,
         row: LightingRow,
@@ -229,94 +268,71 @@ impl Shell {
         note: Option<RowNote>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let open = self.lighting_open.contains(&row);
-        let id = match row {
-            LightingRow::Channel(channel) => format!("lighting-row-{channel}"),
-            LightingRow::Lcd => "lighting-row-lcd".to_string(),
-        };
+        let open = self.is_open(row);
         let (fragment, sentence) = match note {
             Some(RowNote::Fragment(text)) => (Some(text), None),
             Some(RowNote::Sentence(text)) => (None, Some(text)),
             None => (None, None),
         };
 
-        div()
-            .id(SharedString::from(id))
-            .flex()
-            .flex_1()
-            .items_center()
-            .gap(space::SM)
-            .min_w(ROW_HEAD_MIN_WIDTH)
-            .min_h(TARGET_MIN)
-            .px(space::SM)
-            .rounded(RADIUS)
-            // The ring is reserved rather than added on focus, so focusing a
-            // row does not move the line it sits on.
-            .border(FOCUS_RING)
-            .border_color(color::PANEL.alpha(0.0))
-            .cursor_pointer()
-            .tab_index(tab_index)
-            .tab_stop(true)
-            // Shown to a keyboard user, who has no other way to know which row
-            // Enter would open, and withheld from a pointer user, who just
-            // aimed at it.
-            .when(focus_visible(), |this| {
-                this.focus(|this| this.border_color(color::FOCUS.hsla()))
-            })
-            .child(chevron(open, color::TEXT_MUTED.hsla()))
-            .child(thumbnail)
-            .child(
-                // Truncated rather than wrapped: a long product string is what
-                // the device reported, and letting it wrap makes the line grow
-                // until it no longer reads as one row per device.
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .flex()
-                            .items_baseline()
-                            .gap(space::SM)
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(color::TEXT.hsla())
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(title),
-                            )
-                            // The fragment gives up the width first: the name
-                            // is what the row is, and losing the last word of
-                            // "Channel 1" costs less than losing the last word
-                            // of what is plugged into it.
-                            .children(fragment.map(|fragment| {
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_baseline()
-                                    .gap(space::SM)
-                                    .text_xs()
-                                    .child(
-                                        div()
-                                            .text_color(color::TEXT_DISABLED.hsla())
-                                            .child(META_SEPARATOR),
-                                    )
-                                    .child(
-                                        div().text_color(color::TEXT_MUTED.hsla()).child(fragment),
-                                    )
-                            })),
-                    )
-                    .children(sentence.map(|sentence| {
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .text_color(color::TEXT_MUTED.hsla())
-                            .child(sentence)
-                    })),
-            )
-            .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_lighting_row(row, cx)))
+        row_target(
+            SharedString::from(format!("lighting-row-{}", row.key())),
+            tab_index,
+        )
+        .flex_1()
+        .min_w(ROW_HEAD_MIN_WIDTH)
+        .child(chevron(open, color::TEXT_MUTED.hsla()))
+        .child(thumbnail)
+        .child(
+            // Truncated rather than wrapped: a long product string is what
+            // the device reported, and letting it wrap makes the line grow
+            // until it no longer reads as one row per device.
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(space::SM)
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(color::TEXT.hsla())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        // The fragment gives up the width first: the name
+                        // is what the row is, and losing the last word of
+                        // "Channel 1" costs less than losing the last word
+                        // of what is plugged into it.
+                        .children(fragment.map(|fragment| {
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_baseline()
+                                .gap(space::SM)
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .text_color(color::TEXT_DISABLED.hsla())
+                                        .child(META_SEPARATOR),
+                                )
+                                .child(div().text_color(color::TEXT_MUTED.hsla()).child(fragment))
+                        })),
+                )
+                .children(sentence.map(|sentence| {
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .text_color(color::TEXT_MUTED.hsla())
+                        .child(sentence)
+                })),
+        )
+        .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_lighting_row(row, cx)))
     }
 
     /// The brightness a row carries on its line, as a slider the pointer drags.
@@ -340,14 +356,6 @@ impl Shell {
     ) -> Div {
         let enabled = state.is_enabled();
         let max = f32::from(kori_core::lighting::MAX_BRIGHTNESS);
-        // Created per render and captured by this render's listeners, so the
-        // rectangle a press reads is the one the track was just painted at.
-        // Only an operable track is published, so a press cannot grab a slider
-        // the hardware has refused.
-        let sink: Option<Rc<dyn Fn(Bounds<Pixels>)>> = enabled.then(|| {
-            let tracks = Rc::clone(&self.brightness_tracks);
-            Rc::new(move |bounds| tracks.record(row, bounds)) as Rc<dyn Fn(Bounds<Pixels>)>
-        });
 
         let mut slider = Slider::new(
             SharedString::from(format!("brightness-{}", row.key())),
@@ -362,14 +370,14 @@ impl Shell {
         .label_hidden()
         .state(state)
         .tab_index(tab_index);
-        if let Some(sink) = sink {
+        if let Some(sink) = self.interaction.brightness_sink(row, enabled) {
             slider = slider.bounds_sink(sink);
         }
 
         let control = slider.render().when(enabled, |slider| {
             slider.on_key_down(
                 cx.listener(move |shell, event: &gpui::KeyDownEvent, _, cx| {
-                    let step = i16::from(crate::lighting::BRIGHTNESS_STEP);
+                    let step = i16::from(BRIGHTNESS_STEP);
                     let next = match event.keystroke.key.as_str() {
                         "left" | "down" => i16::from(value) - step,
                         "right" | "up" => i16::from(value) + step,
@@ -377,7 +385,7 @@ impl Shell {
                         "end" => i16::from(kori_core::lighting::MAX_BRIGHTNESS),
                         _ => return,
                     };
-                    shell.popover = None;
+                    shell.interaction.dismiss();
                     shell.set_brightness(row, next);
                     // A held arrow key arrives by the dozen and each press
                     // pushes the deadline out, so the value the operator stops
