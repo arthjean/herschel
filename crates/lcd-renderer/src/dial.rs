@@ -172,16 +172,13 @@ pub(crate) fn infographic(
             frame.top(layout::VALUE_TOP),
             frame.length(layout::VALUE_HEIGHT),
         );
-        // The caption takes the band's color rather than the value's: it is the
-        // band's label, and the color is what ties a reading to the arc that
-        // measures it when two of them share the glass.
-        text::draw_centered(
+        caption(
             canvas,
-            sample.metric.caption(),
+            sample,
+            slot,
             column,
             frame.top(layout::CAPTION_TOP),
             frame.length(layout::CAPTION_HEIGHT),
-            slot.reading,
         );
     }
 }
@@ -204,13 +201,13 @@ pub(crate) fn single(canvas: &mut Canvas, preset: &DisplayPreset, sample: &Metri
         frame.top(layout::SINGLE_VALUE_TOP),
         single_value_height(sample.metric, frame),
     );
-    text::draw_centered(
+    caption(
         canvas,
-        sample.metric.caption(),
+        sample,
+        slot,
         center_x,
         frame.top(layout::SINGLE_CAPTION_TOP),
         frame.length(layout::SINGLE_CAPTION_HEIGHT),
-        slot.text,
     );
 }
 
@@ -402,6 +399,39 @@ fn reading(
     );
 }
 
+/// The metric's name, under the reading it belongs to.
+///
+/// Set in the slot's text color, in both layouts. It used to take the band's
+/// color in the paired one, on the argument that the color ties a reading to
+/// the arc measuring it, and the tie is real: the band is drawn beside the
+/// column it labels. What it cost was legibility, and unevenly. A band color is
+/// chosen to look like a gauge against the background, not to be read as
+/// sixteen pixels of type on it, and the two slots of the shipped default came
+/// out at 2.7:1 and 4.6:1 against black. One caption below the 3:1 floor for
+/// text this size, the other above it, on a panel where both say the same kind
+/// of thing. The color that carries a reading is the reading's own, which is
+/// the rule the single layout already followed.
+fn caption(
+    canvas: &mut Canvas,
+    sample: &MetricSample,
+    slot: &ReadingSlot,
+    center_x: f32,
+    top: f32,
+    cap_height: f32,
+) {
+    text::draw_centered(
+        canvas,
+        sample.metric.caption(),
+        center_x,
+        top,
+        cap_height,
+        // The slot decides it here and nowhere else. Passed in, the two layouts
+        // could drift apart again without either one looking wrong on its own,
+        // which is how they came to differ in the first place.
+        slot.text,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +580,62 @@ mod tests {
             in_ring(&full).any(|(_, pixel)| pixel == preset.readings[0].band_end()),
             "a full gauge never reaches the color its head names"
         );
+    }
+
+    #[test]
+    fn both_layouts_set_a_caption_in_the_color_of_the_reading_it_labels() {
+        // One rule for both layouts. The paired one used to take the band's
+        // color instead, which made the same kind of label legible under one
+        // slot and not under the other: the shipped default measured 2.7:1 for
+        // the first band and 4.6:1 for the second, on a panel where a caption
+        // is sixteen pixels of type.
+        let mut preset = DisplayPreset::default_infographic();
+        preset.background = Rgb::BLACK;
+        // Colors nothing else on the glass uses, so a caption drawn in the
+        // wrong one is not confused with the band beside it.
+        preset.readings[0].text = Rgb::new(0x00, 0xff, 0x00);
+        preset.readings[1].text = Rgb::new(0xff, 0xff, 0x00);
+
+        for (mode, slots, top, height) in [
+            (
+                DisplayMode::DualInfographic,
+                2,
+                layout::CAPTION_TOP,
+                layout::CAPTION_HEIGHT,
+            ),
+            (
+                DisplayMode::SingleReading,
+                1,
+                layout::SINGLE_CAPTION_TOP,
+                layout::SINGLE_CAPTION_HEIGHT,
+            ),
+        ] {
+            let mut preset = preset.clone();
+            preset.mode = mode;
+            let frame = render(&preset, &samples(Some(50.0), Some(50.0)), &panel()).unwrap();
+
+            // The rows this layout's own caption occupies, and nothing above
+            // them: the value sits on its own lines and is set in the same
+            // color, so measuring it too would prove nothing about the caption.
+            // Inside the ring by a two pixel margin, because `scan` measures
+            // from a pixel's corner and the band is drawn from its center.
+            let rows = ((SIDE as f32 * top) as u32)..((SIDE as f32 * (top + height)) as u32 + 1);
+            let inside = RADIUS * layout::TRACK_INNER - 2.0;
+            for slot in 0..slots {
+                assert!(
+                    scan(&frame).any(|(_, y, distance, pixel)| rows.contains(&y)
+                        && distance < inside
+                        && pixel == preset.readings[slot].text),
+                    "{mode:?} drew no caption in slot {slot}'s text color"
+                );
+                assert!(
+                    !scan(&frame).any(|(_, y, distance, pixel)| rows.contains(&y)
+                        && distance < inside
+                        && pixel == preset.readings[slot].reading),
+                    "{mode:?} set slot {slot}'s caption in the band's color"
+                );
+            }
+        }
     }
 
     #[test]
