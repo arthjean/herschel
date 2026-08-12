@@ -18,7 +18,11 @@ use crate::text;
 /// Where each element sits, as a fraction of the panel's smaller side.
 ///
 /// Fractions rather than pixels so the layout survives a panel of another size
-/// without a second set of constants to keep in step.
+/// without a second set of constants to keep in step. Every one of them is
+/// resolved through [`Frame`], which is what makes "the smaller side" true
+/// rather than merely written: the ring is bounded by that side, so anything
+/// measured against the longer one drifts out of it the moment a panel is not
+/// square.
 pub(crate) mod layout {
     /// Outer and inner radius of the gauge bands.
     pub const TRACK_OUTER: f32 = 0.965;
@@ -86,33 +90,87 @@ pub(crate) mod layout {
     pub const TRACK_REST: f32 = 0.130;
 }
 
+/// The square the layout is drawn in: the largest one the panel contains,
+/// centered on it.
+///
+/// Both layouts are a block of lines inside a ring, and the ring is bounded by
+/// the panel's smaller side. Laying the lines out in the square of that side is
+/// what keeps the two together: scaling the type with the height while the ring
+/// follows the width puts a reading through its own gauge the first time a
+/// panel is taller than it is wide.
+///
+/// On a square panel the origin is zero and every expression below reduces to
+/// the side times a fraction, which is the arithmetic that was already being
+/// done. That is deliberate rather than incidental: the panel this product
+/// drives is square, and a rework of the scaling that moved a pixel on it would
+/// be a rework nobody could check.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    /// The top left of that square, in panel coordinates.
+    origin: (f32, f32),
+    /// The panel's smaller side, which every fraction in [`layout`] scales by.
+    side: f32,
+}
+
+impl Frame {
+    fn of(width: f32, height: f32) -> Self {
+        let side = width.min(height);
+        Self {
+            origin: ((width - side) / 2.0, (height - side) / 2.0),
+            side,
+        }
+    }
+
+    /// A length stated as a fraction of the smaller side.
+    fn length(self, fraction: f32) -> f32 {
+        self.side * fraction
+    }
+
+    /// The top of a line, stated as a fraction down the square.
+    fn top(self, fraction: f32) -> f32 {
+        self.origin.1 + self.length(fraction)
+    }
+
+    /// A column `fraction` of the side to the right of the square's middle.
+    fn column(self, fraction: f32) -> f32 {
+        self.origin.0 + self.length(0.5 + fraction)
+    }
+
+    /// The center of the dial, which is the center of the panel itself.
+    fn center(self) -> (f32, f32) {
+        (self.column(0.0), self.top(0.5))
+    }
+
+    fn radius(self) -> f32 {
+        self.side / 2.0
+    }
+}
+
 /// Draw both gauges, both readings and both captions.
 pub(crate) fn infographic(
     canvas: &mut Canvas,
     preset: &DisplayPreset,
     samples: &[MetricSample; 2],
 ) {
-    let width = canvas.width() as f32;
-    let height = canvas.height() as f32;
+    let frame = Frame::of(canvas.width() as f32, canvas.height() as f32);
 
     for (index, sample) in samples.iter().enumerate() {
         let mirrored = index == 1;
         let slot = &preset.readings[index];
         gauge(canvas, preset, slot, sample, Band::side(mirrored));
 
-        let offset = if mirrored {
+        let column = frame.column(if mirrored {
             layout::PAIR_OFFSET
         } else {
             -layout::PAIR_OFFSET
-        };
-        let column = width * (0.5 + offset);
+        });
         reading(
             canvas,
             sample,
             slot.text,
             column,
-            height * layout::VALUE_TOP,
-            height * layout::VALUE_HEIGHT,
+            frame.top(layout::VALUE_TOP),
+            frame.length(layout::VALUE_HEIGHT),
         );
         // The caption takes the band's color rather than the value's: it is the
         // band's label, and the color is what ties a reading to the arc that
@@ -121,8 +179,8 @@ pub(crate) fn infographic(
             canvas,
             sample.metric.caption(),
             column,
-            height * layout::CAPTION_TOP,
-            height * layout::CAPTION_HEIGHT,
+            frame.top(layout::CAPTION_TOP),
+            frame.length(layout::CAPTION_HEIGHT),
             slot.reading,
         );
     }
@@ -133,9 +191,8 @@ pub(crate) fn infographic(
 /// Two centered lines inside a full ring: the value at the largest size the
 /// ring's opening allows, and the metric under it.
 pub(crate) fn single(canvas: &mut Canvas, preset: &DisplayPreset, sample: &MetricSample) {
-    let width = canvas.width() as f32;
-    let height = canvas.height() as f32;
-    let center_x = width / 2.0;
+    let frame = Frame::of(canvas.width() as f32, canvas.height() as f32);
+    let center_x = frame.column(0.0);
     let slot = &preset.readings[0];
 
     gauge(canvas, preset, slot, sample, Band::WHOLE);
@@ -144,15 +201,15 @@ pub(crate) fn single(canvas: &mut Canvas, preset: &DisplayPreset, sample: &Metri
         sample,
         slot.text,
         center_x,
-        height * layout::SINGLE_VALUE_TOP,
-        single_value_height(sample.metric, width, height),
+        frame.top(layout::SINGLE_VALUE_TOP),
+        single_value_height(sample.metric, frame),
     );
     text::draw_centered(
         canvas,
         sample.metric.caption(),
         center_x,
-        height * layout::SINGLE_CAPTION_TOP,
-        height * layout::SINGLE_CAPTION_HEIGHT,
+        frame.top(layout::SINGLE_CAPTION_TOP),
+        frame.length(layout::SINGLE_CAPTION_HEIGHT),
         slot.text,
     );
 }
@@ -165,13 +222,15 @@ pub(crate) fn single(canvas: &mut Canvas, preset: &DisplayPreset, sample: &Metri
 /// fitting the metric picks a size once and keeps it, at the cost of a value in
 /// percent being set slightly smaller than one in degrees, because the percent
 /// sign is the wider mark.
-fn single_value_height(metric: LcdMetric, width: f32, height: f32) -> f32 {
+fn single_value_height(metric: LcdMetric, frame: Frame) -> f32 {
     // Half the room, because the reading is centered and it is the right half
     // that has to hold both the digits and the unit. Width is linear in the cap
     // height, so one measurement gives the ratio.
-    let half_room = width * layout::SINGLE_VALUE_WIDTH / 2.0;
+    let half_room = frame.length(layout::SINGLE_VALUE_WIDTH) / 2.0;
     let reach = reading_reach(metric).max(f32::EPSILON);
-    (height * layout::SINGLE_VALUE_HEIGHT).min(half_room / reach)
+    frame
+        .length(layout::SINGLE_VALUE_HEIGHT)
+        .min(half_room / reach)
 }
 
 /// How far right of the value's center its unit reaches, per unit of cap
@@ -240,10 +299,9 @@ fn gauge(
     sample: &MetricSample,
     band: Band,
 ) {
-    let width = canvas.width() as f32;
-    let height = canvas.height() as f32;
-    let center = (width / 2.0, height / 2.0);
-    let radius = width.min(height) / 2.0;
+    let frame = Frame::of(canvas.width() as f32, canvas.height() as f32);
+    let center = frame.center();
+    let radius = frame.radius();
     // Whether a band is long enough for a shade to read as a shade is a
     // property of the layout, so the mode is asked here rather than carried in
     // by each caller. A slot with no second color draws solid either way.
@@ -436,6 +494,42 @@ mod tests {
                 !in_ring(&frame).any(|(_, pixel)| pixel == paired.readings[index].band_end()),
                 "gauge {index} shaded in a layout that draws its bands solid"
             );
+        }
+    }
+
+    #[test]
+    fn an_oblong_panel_keeps_its_readings_inside_its_own_ring() {
+        // Every fraction is taken against the smaller side, which is the side
+        // the ring is bounded by. Scaling the type with the height while the
+        // ring followed the width put a reading through its own gauge as soon
+        // as a panel was taller than it was wide.
+        for (width, height) in [(240, 240), (320, 240), (240, 320)] {
+            let mut oblong = panel();
+            oblong.width = width;
+            oblong.height = height;
+            oblong.frame_bytes = u32::from(width) * u32::from(height) * 2;
+
+            for mode in [DisplayMode::DualInfographic, DisplayMode::SingleReading] {
+                let mut preset = DisplayPreset::default_infographic();
+                preset.mode = mode;
+                preset.background = Rgb::BLACK;
+                preset.readings[0].text = Rgb::new(0x00, 0xff, 0x00);
+                preset.readings[1].text = Rgb::new(0x00, 0xff, 0x00);
+                let frame = render(&preset, &samples(Some(100.0), Some(100.0)), &oblong).unwrap();
+
+                let ink: Vec<f32> = scan(&frame)
+                    .filter(|(_, _, _, pixel)| *pixel == preset.readings[0].text)
+                    .map(|(_, _, distance, _)| distance)
+                    .collect();
+                assert!(!ink.is_empty(), "{width}x{height} {mode:?} drew no text");
+                let inner = f32::from(width.min(height)) / 2.0 * layout::TRACK_INNER;
+                let furthest = ink.iter().copied().fold(0.0_f32, f32::max);
+                assert!(
+                    furthest < inner,
+                    "{width}x{height} {mode:?} put text {furthest} from the center, \
+                     into a ring that starts at {inner}"
+                );
+            }
         }
     }
 
@@ -676,9 +770,10 @@ mod tests {
         );
         // And a percent sign is wider than a degree sign, so a load is set
         // slightly smaller than a temperature at the same geometry.
+        let square = Frame::of(SIDE as f32, SIDE as f32);
         assert!(
-            single_value_height(LcdMetric::CpuLoad, SIDE as f32, SIDE as f32)
-                < single_value_height(LcdMetric::CpuTemperature, SIDE as f32, SIDE as f32),
+            single_value_height(LcdMetric::CpuLoad, square)
+                < single_value_height(LcdMetric::CpuTemperature, square),
             "the wider unit must be the one that shrinks its value"
         );
     }
