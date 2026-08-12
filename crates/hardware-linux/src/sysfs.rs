@@ -62,27 +62,24 @@ impl SysfsRoot {
     }
 }
 
-/// Read a sysfs attribute and trim the trailing newline.
+/// Read a sysfs attribute, trimmed, or `None` when there is nothing to read.
 ///
-/// Returns `None` when the attribute is absent or unreadable, which the caller
-/// turns into an explicit unknown rather than a default.
+/// The same read as [`read_attribute_detailed`] with the cause dropped, and
+/// deliberately not a second implementation of it: the two used to trim
+/// differently, one taking the trailing newline off and the other every
+/// surrounding space, so the value a caller saw depended on which door it came
+/// through. Callers that only record what exists take this one; callers that
+/// have to tell an operator *why* a value is missing take the other.
 pub fn read_attribute(path: &Path) -> Option<String> {
-    let raw = std::fs::read(path).ok()?;
-    let text = String::from_utf8(raw).ok()?;
-    let trimmed = text.trim_end_matches(['\n', '\r']).to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
+    read_attribute_detailed(path).ok()
 }
 
 /// Read an attribute, distinguishing an absent file from an unreadable one.
 ///
-/// [`read_attribute`] collapses both into `None`, which is enough for a probe
-/// that only records what exists. A telemetry sample has to say *why* a value
-/// is missing, because "the driver does not expose this" and "permission was
-/// revoked" call for different operator actions.
+/// [`read_attribute`] collapses every failure into `None`, which is enough for
+/// a probe that only records what exists. A telemetry sample has to say *why* a
+/// value is missing, because "the driver does not expose this" and "permission
+/// was revoked" call for different operator actions.
 pub fn read_attribute_detailed(path: &Path) -> Result<String, Unavailable> {
     let raw = std::fs::read(path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => {
@@ -125,12 +122,12 @@ pub fn reading<T: std::str::FromStr>(path: &Path) -> Reading<T> {
 
 /// Read a hexadecimal attribute such as `idVendor`.
 pub fn read_hex_u16(path: &Path) -> Option<u16> {
-    u16::from_str_radix(read_attribute(path)?.trim(), 16).ok()
+    u16::from_str_radix(&read_attribute(path)?, 16).ok()
 }
 
 /// Read a hexadecimal byte attribute such as `bInterfaceClass`.
 pub fn read_hex_u8(path: &Path) -> Option<u8> {
-    u8::from_str_radix(read_attribute(path)?.trim(), 16).ok()
+    u8::from_str_radix(&read_attribute(path)?, 16).ok()
 }
 
 /// Whether the current user can read the file, without opening it.
@@ -189,6 +186,32 @@ mod tests {
         assert_eq!(read_attribute(&dir.join("blank")), None);
         assert_eq!(read_attribute(&dir.join("missing")), None);
         assert_eq!(read_hex_u16(&dir.join("missing")), None);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn both_doors_onto_an_attribute_return_the_same_value() {
+        // They used to trim differently, so the same file read one way and the
+        // other could disagree by a space. Nothing chooses between the two for
+        // the value it wants: the choice is only whether the caller needs the
+        // cause of a failure.
+        let dir = temp_dir("one-value");
+        fs::write(dir.join("padded"), "  27900 \n").unwrap();
+        fs::write(dir.join("plain"), "kraken2023\n").unwrap();
+
+        for name in ["padded", "plain", "missing"] {
+            let path = dir.join(name);
+            assert_eq!(
+                read_attribute(&path),
+                read_attribute_detailed(&path).ok(),
+                "{name} reads differently through the two doors"
+            );
+        }
+        assert_eq!(
+            read_attribute(&dir.join("padded")).as_deref(),
+            Some("27900")
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }
