@@ -23,7 +23,7 @@
 //! The report identifiers, the transfer sequence, the bulk header and the pixel
 //! format are adapted from liquidctl's `KrakenZ3` driver
 //! ([`liquidctl/driver/kraken3.py`](https://github.com/liquidctl/liquidctl/blob/main/liquidctl/driver/kraken3.py)),
-//! `SPDX-License-Identifier: GPL-3.0-or-later` and therefore compatible with
+//! licensed `GPL-3.0-or-later` and therefore compatible with
 //! this project. The identifiers were cross-checked against the HID report
 //! descriptor this machine's Kraken publishes: `0x30`, `0x32`, `0x36` and
 //! `0x38` all appear there as output reports with a 63-byte payload, and the
