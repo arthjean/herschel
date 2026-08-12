@@ -358,7 +358,7 @@ mod tests {
     fn topology(firmware: &str) -> LcdTopology {
         LcdTopology {
             hid_node: Evidenced::known("/dev/hidraw10".into(), "sysfs"),
-            bulk_node: Evidenced::known("/dev/bus/usb/001/004".into(), "sysfs"),
+            bulk_node: Evidenced::known("/dev/bus/usb/001/004".into(), "usbfs"),
             firmware: Evidenced::known(firmware.into(), "report 0x11 0x01"),
             panel: Evidenced::known(lcd::candidate_panel(), "candidate"),
             display: Evidenced::known(

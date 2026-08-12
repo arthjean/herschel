@@ -41,7 +41,7 @@ use kori_core::capability::{Evidenced, LcdDisplaySettings, LcdPanel, LcdPanelSha
 use kori_core::display::Orientation;
 use kori_core::lighting::Brightness;
 
-use crate::hid::{self, ANSWER_TIMEOUT, HidError, HidTransport, Hidraw, REPORT_BYTES, silence};
+use crate::hid::{self, ANSWER_TIMEOUT, HidError, HidTransport, Hidraw, REPORT_BYTES};
 use crate::usbfs::{BulkTransport, Usbfs, UsbfsError};
 
 /// Geometry this product carries for `1e71:300e`.
@@ -339,30 +339,15 @@ impl LcdLink {
         format!("{} and {}", self.hid.source(), self.bulk.source())
     }
 
-    /// Where the display commands go.
-    pub fn hid_source(&self) -> String {
-        self.hid.source()
-    }
-
-    /// Where the framebuffer goes.
-    pub fn bulk_source(&self) -> String {
-        self.bulk.source()
-    }
-
     /// Ask the panel what it is, and record it with each half named.
     ///
     /// Only this type knows which source belongs in which field, so it is the
-    /// one that builds the record. A caller reaching for [`LcdLink::source`] to
-    /// fill both would put the fused string in each, and the capability record
-    /// would then name two nodes that neither exist nor were opened.
+    /// one that pairs them. A caller reaching for [`LcdLink::source`] to fill
+    /// both would put the fused string in each, and the capability record would
+    /// then name two nodes that neither exist nor were opened.
     pub fn topology(&mut self) -> LcdTopology {
-        let (hid, bulk) = (self.hid.source(), self.bulk.source());
-        match query(self.hid.as_mut()) {
-            Ok(inventory) => topology_from(&inventory, &hid, Some(&bulk)),
-            Err(error) => {
-                LcdTopology::silent(hid, Evidenced::known(bulk, "usbfs"), error.to_string())
-            }
-        }
+        let bulk_node = Evidenced::known(self.bulk.source(), "usbfs");
+        inspect(self.hid.as_mut(), bulk_node)
     }
 
     /// Set brightness and orientation on the panel itself.
@@ -481,50 +466,34 @@ pub struct FrameReport {
     pub end: [u8; REPORT_BYTES],
 }
 
-/// What the record says about the bulk half, present or not.
-///
-/// One function rather than a match at each site, because "no node was
-/// published" and "a node was published" are the only two answers and they must
-/// read identically wherever the record is assembled.
-fn bulk_evidence(bulk: Option<&str>) -> Evidenced<String> {
-    match bulk {
-        Some(node) => Evidenced::known(node.to_string(), "sysfs"),
-        None => Evidenced::unknown(
-            "the device publishes no usbfs node for its bulk interface",
-            "sysfs",
-        ),
-    }
-}
-
 /// Build the capability record's LCD section from a Kraken that answered.
-pub fn inspect<T: HidTransport + ?Sized>(transport: &mut T, bulk: Option<&str>) -> LcdTopology {
+///
+/// The bulk half is passed in already evidenced rather than as a node that may
+/// or may not exist. It is established by whoever claimed the interface, and
+/// only they know why it is missing when it is: this used to take an
+/// `Option<&str>`, write a generic refusal into the record from it, and have
+/// the one caller overwrite that refusal with the real reason on the next line.
+pub fn inspect<T: HidTransport + ?Sized>(
+    transport: &mut T,
+    bulk_node: Evidenced<String>,
+) -> LcdTopology {
     let source = transport.source();
     let inventory = match query(transport) {
         Ok(inventory) => inventory,
         // The node was reached even though the transport failed, and the bulk
         // half keeps whatever was established about it rather than inheriting
         // the display half's failure.
-        Err(error) => {
-            return LcdTopology::silent(source, bulk_evidence(bulk), error.to_string());
-        }
+        Err(error) => return LcdTopology::silent(source, bulk_node, error.to_string()),
     };
-    topology_from(&inventory, &source, bulk)
-}
 
-/// Turn one answered inventory into the record's LCD section.
-///
-/// Split from [`inspect`] so [`LcdLink::topology`] can record the same evidence
-/// from a link that is already open. Private: the two public ways to obtain a
-/// record both go through it, and neither hands a caller the chance to pair an
-/// inventory with the wrong node.
-fn topology_from(inventory: &LcdInventory, source: &str, bulk: Option<&str>) -> LcdTopology {
     LcdTopology {
-        hid_node: Evidenced::known(source.to_string(), "sysfs"),
-        bulk_node: bulk_evidence(bulk),
-        firmware: match inventory.firmware.clone() {
-            Some(firmware) => Evidenced::known(firmware, format!("{source} report 0x11 0x01")),
-            None => Evidenced::unknown(silence("firmware"), format!("{source} report 0x11 0x01")),
-        },
+        hid_node: Evidenced::known(source.clone(), "sysfs"),
+        bulk_node,
+        firmware: hid::answered(
+            inventory.firmware,
+            "firmware",
+            format!("{source} report 0x11 0x01"),
+        ),
         // The geometry is only recorded once the device has proven it carries a
         // panel at all, by answering the report only a panel answers. A Kraken
         // that stays silent gets no resolution written next to it.
@@ -539,13 +508,11 @@ fn topology_from(inventory: &LcdInventory, source: &str, bulk: Option<&str>) -> 
                 format!("{source} report 0x31 0x01"),
             ),
         },
-        display: match inventory.display {
-            Some(display) => Evidenced::known(display, format!("{source} report 0x31 0x01")),
-            None => Evidenced::unknown(
-                silence("display settings"),
-                format!("{source} report 0x31 0x01"),
-            ),
-        },
+        display: hid::answered(
+            inventory.display,
+            "display settings",
+            format!("{source} report 0x31 0x01"),
+        ),
     }
 }
 
@@ -591,12 +558,15 @@ pub fn connect(device: Option<&Path>, hid_node: Option<PathBuf>) -> (LcdTopology
         Some(device) => Usbfs::claim(device, BULK_INTERFACE).map_err(|error| error.to_string()),
         None => Err("the device publishes no usbfs node for its bulk interface".to_string()),
     };
-    let bulk_source = bulk.as_ref().ok().map(|usbfs| usbfs.source());
+    // Evidenced once, from the only value that knows the answer, and handed to
+    // the record whole. The reason a claim failed is the reason the record
+    // carries; there is no second, vaguer wording for it to be overwritten by.
+    let bulk_node = match &bulk {
+        Ok(usbfs) => Evidenced::known(usbfs.source(), "usbfs"),
+        Err(reason) => Evidenced::unknown(reason.clone(), "usbfs"),
+    };
 
-    let mut topology = inspect(&mut hid, bulk_source.as_deref());
-    if let Err(reason) = &bulk {
-        topology.bulk_node = Evidenced::unknown(reason.clone(), "usbfs");
-    }
+    let topology = inspect(&mut hid, bulk_node);
 
     let link = match bulk {
         Ok(usbfs) if topology.answered() => Some(LcdLink::new(Box::new(hid), Box::new(usbfs))),
@@ -609,6 +579,19 @@ pub fn connect(device: Option<&Path>, hid_node: Option<PathBuf>) -> (LcdTopology
 mod tests {
     use super::*;
     use crate::testing::FakeKraken;
+
+    /// The bulk half as `connect` evidences it once the interface is claimed.
+    fn claimed(node: &str) -> Evidenced<String> {
+        Evidenced::known(node.to_string(), "usbfs")
+    }
+
+    /// The bulk half as `connect` evidences it when the claim did not happen.
+    fn unclaimed() -> Evidenced<String> {
+        Evidenced::unknown(
+            "the device publishes no usbfs node for its bulk interface",
+            "usbfs",
+        )
+    }
 
     #[test]
     fn no_answer_this_device_sends_can_be_mistaken_for_another() {
@@ -792,7 +775,7 @@ mod tests {
     #[test]
     fn a_kraken_that_answers_is_recorded_with_its_panel_and_its_settings() {
         let mut kraken = FakeKraken::new("2.0.4");
-        let topology = inspect(&mut kraken, Some("/dev/bus/usb/001/004 interface 0"));
+        let topology = inspect(&mut kraken, claimed("/dev/bus/usb/001/004 interface 0"));
 
         assert_eq!(topology.firmware.value().map(String::as_str), Some("2.0.4"));
         assert!(topology.answered());
@@ -809,7 +792,7 @@ mod tests {
     #[test]
     fn a_device_that_answers_no_display_report_gets_no_resolution_written_beside_it() {
         let mut silent = FakeKraken::without_panel("2.0.4");
-        let topology = inspect(&mut silent, None);
+        let topology = inspect(&mut silent, unclaimed());
 
         assert_eq!(topology.firmware.value().map(String::as_str), Some("2.0.4"));
         assert!(
@@ -852,7 +835,7 @@ mod tests {
         // whose answer cannot be decoded has not proven it carries a panel, so
         // the geometry stays unknown and the frame path stays shut.
         let mut kraken = FakeKraken::new("2.0.4").with_display(200, 0);
-        let topology = inspect(&mut kraken, None);
+        let topology = inspect(&mut kraken, unclaimed());
 
         assert!(!topology.answered());
         assert!(!topology.panel.is_known());
@@ -907,6 +890,31 @@ mod tests {
             !bulk.contains("hidraw"),
             "the bulk half must not report a failure on the display half's path: {bulk}"
         );
+    }
+
+    #[test]
+    fn the_bulk_half_carries_the_reason_the_claim_actually_gave() {
+        // The record used to be written twice: `inspect` put a generic refusal
+        // in this field and the caller overwrote it with the real one. Anything
+        // that made the second write conditional, or reordered it, would have
+        // shipped the vague wording to an operator with nothing failing. There
+        // is one write now, from the value that knows why.
+        let mut kraken = FakeKraken::new("2.0.0");
+        let refusal = Evidenced::unknown(
+            UsbfsError::PermissionDenied {
+                path: "/dev/bus/usb/001/004".to_string(),
+            }
+            .to_string(),
+            "usbfs",
+        );
+        let topology = inspect(&mut kraken, refusal);
+
+        let reason = topology.bulk_node.reason().expect("the claim was refused");
+        assert!(reason.contains("/dev/bus/usb/001/004"), "{reason}");
+        assert!(reason.contains("udev"), "{reason}");
+        // The display half answered and is untouched by the bulk half's failure.
+        assert!(topology.answered());
+        assert!(topology.hid_node.is_known());
     }
 
     #[test]
