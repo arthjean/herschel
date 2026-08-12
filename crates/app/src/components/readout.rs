@@ -10,7 +10,6 @@ use gpui::{Div, Hsla, SharedString, div, prelude::*, px};
 
 use kori_core::telemetry::MetricView;
 
-use crate::assets::Icon;
 use crate::theme::{DEVICE_LINE_HEIGHT, META_SEPARATOR, color, numeric_font, space};
 
 /// How a device presents in a [`DeviceRow`].
@@ -35,20 +34,17 @@ impl DeviceHealth {
     }
 
     /// Text label, so status is never carried by color alone.
+    ///
+    /// The word is the whole cue. A glyph used to sit beside it and nothing has
+    /// drawn one since the device line became a caption: [`DeviceRow::render`]
+    /// carries no leading status mark, and the diagnostics screen writes the
+    /// label into a text row. A second vocabulary nothing paints is three
+    /// assets in a binary whose point is to be self-contained.
     pub fn label(self) -> &'static str {
         match self {
             Self::Ready => "Ready",
             Self::ReadOnly => "Read-only",
             Self::Unavailable => "Unavailable",
-        }
-    }
-
-    /// A shape cue, for the same reason.
-    pub fn icon(self) -> Icon {
-        match self {
-            Self::Ready => Icon::CircleCheck,
-            Self::ReadOnly => Icon::Lock,
-            Self::Unavailable => Icon::AlertCircle,
         }
     }
 }
@@ -178,7 +174,11 @@ pub struct Metric {
 
 impl Metric {
     /// Build from a formatted value, or `None` when there is nothing to show.
-    pub fn new(label: impl Into<SharedString>, value: Option<String>) -> Self {
+    ///
+    /// Private, with [`Metric::from_view`] the only way in from a screen: a
+    /// value and a freshness assembled separately is a pair a caller can get
+    /// wrong, and every readout in this interface comes from a view.
+    fn new(label: impl Into<SharedString>, value: Option<String>) -> Self {
         Self {
             label: label.into(),
             value,
@@ -211,12 +211,12 @@ impl Metric {
         self
     }
 
-    pub fn qualifier(mut self, qualifier: Option<&'static str>) -> Self {
+    fn qualifier(mut self, qualifier: Option<&'static str>) -> Self {
         self.qualifier = qualifier;
         self
     }
 
-    pub fn detail(mut self, detail: Option<String>) -> Self {
+    fn detail(mut self, detail: Option<String>) -> Self {
         self.detail = detail;
         self
     }
@@ -318,30 +318,36 @@ mod tests {
     use crate::theme::DEGREE_C;
 
     #[test]
-    fn device_health_is_never_conveyed_by_color_alone() {
-        for health in [
+    fn device_health_is_named_in_words_and_never_by_color_alone() {
+        let labels: Vec<&str> = [
             DeviceHealth::Ready,
             DeviceHealth::ReadOnly,
             DeviceHealth::Unavailable,
-        ] {
-            assert!(!health.label().is_empty());
-        }
-        // Three distinct icons, so the state is legible without reading the
-        // color and without reading the label either.
-        assert_ne!(DeviceHealth::Ready.icon(), DeviceHealth::ReadOnly.icon());
-        assert_ne!(
-            DeviceHealth::ReadOnly.icon(),
-            DeviceHealth::Unavailable.icon()
+        ]
+        .map(DeviceHealth::label)
+        .to_vec();
+
+        assert!(labels.iter().all(|label| !label.is_empty()));
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            labels.len(),
+            "two states share a word: {labels:?}"
         );
-        assert_ne!(DeviceHealth::Ready.icon(), DeviceHealth::Unavailable.icon());
     }
 
     #[test]
     fn a_metric_without_a_value_reads_as_unavailable_not_as_zero() {
-        let unavailable = Metric::new("GPU", None).unit(DEGREE_C);
+        let missing: MetricView<f32> = MetricView::Unavailable { cause: None };
+        let unavailable =
+            Metric::from_view("GPU", &missing, |value| format!("{value:.1}")).unit(DEGREE_C);
         assert_eq!(unavailable.readout(), "--");
 
-        let present = Metric::new("GPU", Some("51.0".to_string())).unit(DEGREE_C);
+        let reading = MetricView::Fresh { value: 51.0 };
+        let present =
+            Metric::from_view("GPU", &reading, |value| format!("{value:.1}")).unit(DEGREE_C);
         assert_eq!(present.readout(), "51.0 \u{00b0}C");
     }
 

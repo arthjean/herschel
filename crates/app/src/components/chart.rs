@@ -40,7 +40,7 @@ const SPARKLINE_HEIGHT: Pixels = px(56.0);
 /// more vertices than the chart has columns, once per second, for every
 /// section. The cost of that is measurable in the idle CPU budget and none of
 /// it is visible.
-pub const MAX_PLOTTED_POINTS: usize = 180;
+const MAX_PLOTTED_POINTS: usize = 180;
 
 impl Sparkline {
     pub fn new(history: &History, min: f32, max: f32) -> Self {
@@ -52,7 +52,7 @@ impl Sparkline {
     }
 
     /// Vertical position of a value inside the plot, from 0.0 at the bottom.
-    pub fn fraction(&self, value: f32) -> f32 {
+    fn fraction(&self, value: f32) -> f32 {
         if self.max <= self.min {
             return 0.0;
         }
@@ -62,7 +62,7 @@ impl Sparkline {
     /// Runs of consecutive present samples, as index ranges.
     ///
     /// Each run becomes one path, which is what leaves the holes visible.
-    pub fn segments(&self) -> Vec<(usize, usize)> {
+    fn segments(&self) -> Vec<(usize, usize)> {
         let mut runs = Vec::new();
         let mut start: Option<usize> = None;
         for (index, value) in self.history.iter().enumerate() {
@@ -169,7 +169,7 @@ const BAYER_LEVELS: f32 = 16.0;
 /// The dither is what carries the tone: a cell is either the full color or
 /// nothing, and the eye integrates the coverage. Nothing here is translucent,
 /// which is what keeps the texture crisp at any window scale.
-pub fn dither_cell(column: usize, row: usize, density: f32) -> bool {
+fn dither_cell(column: usize, row: usize, density: f32) -> bool {
     let rank = f32::from(BAYER_RANKS[row % 4][column % 4]);
     density.clamp(0.0, 1.0) * BAYER_LEVELS > rank
 }
@@ -180,7 +180,7 @@ pub fn dither_cell(column: usize, row: usize, density: f32) -> bool {
 /// A hole on either side of the position is a hole at the position. The line
 /// leaves gaps visible for the same reason, and an area that closed over one
 /// would invent the volume the line refuses to invent.
-pub fn column_fraction(values: &[Option<f32>], position: f32) -> Option<f32> {
+fn column_fraction(values: &[Option<f32>], position: f32) -> Option<f32> {
     if values.len() < 2 {
         return None;
     }
@@ -197,7 +197,7 @@ pub fn column_fraction(values: &[Option<f32>], position: f32) -> Option<f32> {
 ///
 /// Dense at the baseline and thinning out toward the line, which is what makes
 /// the fill read as volume under a value rather than as a second series.
-pub fn area_density(depth: f32, span: f32) -> f32 {
+fn area_density(depth: f32, span: f32) -> f32 {
     if span <= 0.0 || depth <= 0.0 {
         return 0.0;
     }

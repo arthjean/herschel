@@ -47,12 +47,6 @@ pub enum Icon {
     SunLow,
     /// The bright end of one.
     SunHigh,
-    /// A device that is present and writable.
-    CircleCheck,
-    /// A device that is present and read-only.
-    Lock,
-    /// A device that is absent, or whose ownership was refused.
-    AlertCircle,
     /// Minimize, in the title bar.
     WindowMinimize,
     /// Maximize, in the title bar.
@@ -64,7 +58,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 18] = [
+    pub const ALL: [Icon; 15] = [
         Self::ChevronDown,
         Self::ChevronRight,
         Self::ChartLine,
@@ -76,9 +70,6 @@ impl Icon {
         Self::Photo,
         Self::SunLow,
         Self::SunHigh,
-        Self::CircleCheck,
-        Self::Lock,
-        Self::AlertCircle,
         Self::WindowMinimize,
         Self::WindowMaximize,
         Self::WindowRestore,
@@ -99,9 +90,6 @@ impl Icon {
             Self::Photo => "icons/photo.svg",
             Self::SunLow => "icons/sun-low.svg",
             Self::SunHigh => "icons/sun-high.svg",
-            Self::CircleCheck => "icons/circle-check.svg",
-            Self::Lock => "icons/lock.svg",
-            Self::AlertCircle => "icons/alert-circle.svg",
             Self::WindowMinimize => "icons/window/minimize.svg",
             Self::WindowMaximize => "icons/window/maximize.svg",
             Self::WindowRestore => "icons/window/restore.svg",
@@ -158,15 +146,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "icons/sun-high.svg",
         include_bytes!("../assets/icons/sun-high.svg"),
-    ),
-    (
-        "icons/circle-check.svg",
-        include_bytes!("../assets/icons/circle-check.svg"),
-    ),
-    ("icons/lock.svg", include_bytes!("../assets/icons/lock.svg")),
-    (
-        "icons/alert-circle.svg",
-        include_bytes!("../assets/icons/alert-circle.svg"),
     ),
     (
         "icons/window/minimize.svg",

@@ -271,7 +271,7 @@ fn temperature_axis() -> Div {
 ///
 /// Temperature runs left to right over the kernel's 20-59 C range, duty runs
 /// bottom to top over the full 0-255 PWM scale.
-pub fn plot_node(index: usize, duty: u8, bounds: Bounds<Pixels>) -> Point<Pixels> {
+fn plot_node(index: usize, duty: u8, bounds: Bounds<Pixels>) -> Point<Pixels> {
     let across = index.min(CURVE_NODE_COUNT - 1) as f32 / (CURVE_NODE_COUNT - 1) as f32;
     let up = duty as f32 / 255.0;
     Point {

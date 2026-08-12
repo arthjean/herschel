@@ -29,9 +29,9 @@ mod control;
 mod curve;
 mod readout;
 
-pub use chart::{MAX_PLOTTED_POINTS, Sparkline, area_density, column_fraction, dither_cell};
+pub use chart::Sparkline;
 pub use control::{Button, ColorField, Select, SelectOption, Slider, parse_hex_color};
-pub use curve::{CurveEditor, node_at, plot_node};
+pub use curve::{CurveEditor, node_at};
 pub use readout::{DeviceHealth, DeviceRow, Metric};
 
 /// What a control is allowed to do right now.
