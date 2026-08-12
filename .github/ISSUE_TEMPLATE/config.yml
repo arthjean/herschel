@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Blank issues are disabled because every useful report about this project
+# carries evidence, and which evidence depends on which of the three routes the
+# report takes.
+
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/arthjean/kori/security/policy
+    about: Do not open a public issue. Read the security policy and email instead.
+  - name: Latest release
+    url: https://github.com/arthjean/kori/releases/latest
+    about: Check the newest release before filing a bug.
