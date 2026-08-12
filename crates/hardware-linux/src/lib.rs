@@ -9,8 +9,13 @@
 //! It reads sysfs, resolves `hwmon` instances to their USB device and tests
 //! permissions without opening a writable descriptor. Writing is the daemon's
 //! job, and it may only write what a capability record marks writable.
+//!
+//! [`probe`] assembles that record from what the machine publishes. [`gates`]
+//! is the separate question of what a control is then permitted to do with it,
+//! and it is where every write gate lives.
 
 pub mod control;
+pub mod gates;
 pub mod gpu;
 pub mod hid;
 pub mod hwmon;

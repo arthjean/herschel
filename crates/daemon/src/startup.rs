@@ -193,7 +193,7 @@ pub fn ask_rgb(
     let node = kori_hardware_linux::probe::hidraw_node(capabilities, RGB_CONTROLLER);
     let (topology, link) = kori_hardware_linux::rgb::connect(node);
     let channels = topology.channels.value().cloned().unwrap_or_default();
-    kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
+    kori_hardware_linux::gates::attach_rgb_topology(capabilities, topology);
     (
         channels,
         link.map(|link| Box::new(link) as Box<dyn HidTransport>),
@@ -221,7 +221,7 @@ pub(crate) fn connect_lighting(
             let topology = rgb::inspect(transport.as_mut());
             let channels = topology.channels.value().cloned().unwrap_or_default();
             let answered = topology.channels.is_known();
-            kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
+            kori_hardware_linux::gates::attach_rgb_topology(capabilities, topology);
             (channels, answered.then_some(transport))
         }
     };
@@ -255,7 +255,7 @@ pub fn ask_lcd(
         .and_then(kori_hardware_linux::usb::hidraw_node);
     let (topology, link) = kori_hardware_linux::lcd::connect(device.as_deref(), node);
     let panel = topology.panel.value().cloned();
-    kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
+    kori_hardware_linux::gates::attach_lcd_topology(capabilities, topology);
     (panel, link)
 }
 
@@ -279,7 +279,7 @@ pub(crate) fn connect_display(
             let topology: LcdTopology = link.topology();
             let panel = topology.panel.value().cloned();
             let answered = topology.answered();
-            kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
+            kori_hardware_linux::gates::attach_lcd_topology(capabilities, topology);
             (panel, answered.then_some(*link))
         }
     };
