@@ -281,43 +281,31 @@ impl Daemon {
 
     /// Read-only unless ownership is complete and something is writable.
     pub fn access_mode(&self) -> AccessMode {
-        match self.write_conflicts() {
+        match self.read_only() {
             None => AccessMode::ReadWrite,
-            Some(conflicts) => AccessMode::ReadOnly { conflicts },
+            Some(cause) => AccessMode::ReadOnly {
+                conflicts: cause.into_conflicts(),
+            },
         }
     }
 
-    /// Everything standing between this daemon and a write, or `None` when
-    /// nothing does.
+    /// What stands between this daemon and a write, or `None` when nothing does.
     ///
-    /// The one place that decides the question. `access_mode` dresses it for the
-    /// status response and `require_write_access` turns it into a refusal, so
-    /// the two can never answer differently.
-    fn write_conflicts(&self) -> Option<Vec<OwnershipConflict>> {
-        if self.conflicts.is_empty() && self.has_writable_capability() {
+    /// The one place that decides the question. [`Self::access_mode`] dresses it
+    /// for the status response and [`Self::require_write_access`] turns it into a
+    /// refusal, so the two can never answer differently.
+    fn read_only(&self) -> Option<ReadOnly> {
+        if !self.conflicts.is_empty() {
+            return Some(ReadOnly::Held(self.conflicts.clone()));
+        }
+        if self.has_writable_capability() {
             return None;
         }
-        let mut conflicts = self.conflicts.clone();
-        if conflicts.is_empty() {
-            conflicts.push(OwnershipConflict {
-                device: None,
-                resource: "hwmon".to_string(),
-                detail: "No writable control attribute is available to this user. \
-                         Check the installed udev rule."
-                    .to_string(),
-            });
-        }
-        Some(conflicts)
+        Some(ReadOnly::NothingWritable)
     }
 
     fn read_only_reason(&self) -> Option<String> {
-        self.write_conflicts().map(|conflicts| {
-            conflicts
-                .iter()
-                .map(|conflict| conflict.detail.clone())
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+        self.read_only().map(ReadOnly::reason)
     }
 
     /// The refusal every write path returns when this daemon is read-only.
@@ -851,6 +839,53 @@ impl Daemon {
             crate::now_unix_ms(),
             EventKind::ClientDisconnected { detail },
         );
+    }
+}
+
+/// Why this daemon cannot write, when it cannot.
+///
+/// Two facts, kept apart: someone else holds the device, or ownership is
+/// complete and nothing this user can write was found. They read the same on the
+/// wire, because [`AccessMode::ReadOnly`] carries a list of conflicts and there
+/// is no second shape for "the permission was never granted". That compromise is
+/// made here, at the boundary, rather than everywhere the question is asked: the
+/// daemon's own code never has to treat a missing udev rule as a process holding
+/// a node.
+enum ReadOnly {
+    /// Another process holds a node, or a lock could not be taken.
+    Held(Vec<OwnershipConflict>),
+    /// Nothing is in the way and nothing is writable either, which is what an
+    /// uninstalled udev rule looks like from in here.
+    NothingWritable,
+}
+
+impl ReadOnly {
+    /// The sentence every refusal carries.
+    ///
+    /// Built from the wire form so the reason a client is refused with and the
+    /// detail its status shows cannot drift apart.
+    fn reason(self) -> String {
+        self.into_conflicts()
+            .iter()
+            .map(|conflict| conflict.detail.clone())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The wire form, where a missing permission has to borrow the conflict
+    /// vocabulary. Its `device` is `None` because nobody holds it, and the
+    /// resource it names is the interface an operator can actually act on.
+    fn into_conflicts(self) -> Vec<OwnershipConflict> {
+        match self {
+            Self::Held(conflicts) => conflicts,
+            Self::NothingWritable => vec![OwnershipConflict {
+                device: None,
+                resource: "hwmon".to_string(),
+                detail: "No writable control attribute is available to this user. \
+                         Check the installed udev rule."
+                    .to_string(),
+            }],
+        }
     }
 }
 
