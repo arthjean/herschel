@@ -381,22 +381,29 @@ impl DisplayPreset {
     /// image path, and the length of that path. The daemon runs this on every
     /// received preset: the client is not a trusted input.
     pub fn validate(&self) -> Result<(), DisplayError> {
-        match (self.mode, &self.image) {
-            (DisplayMode::Image, None) => Err(DisplayError::ImagePathMissing),
-            (DisplayMode::Image, Some(path)) => {
-                if path.as_os_str().is_empty() {
-                    return Err(DisplayError::ImagePathMissing);
-                }
-                if path.as_os_str().len() > MAX_IMAGE_PATH_BYTES {
-                    return Err(DisplayError::ImagePathTooLong {
-                        bytes: path.as_os_str().len(),
-                        max_bytes: MAX_IMAGE_PATH_BYTES,
-                    });
-                }
-                Ok(())
-            }
-            _ => Ok(()),
+        // Asked of the mode rather than matched on `DisplayMode::Image` again.
+        // Which modes need a file is one fact, and it already lives in
+        // `uses_image`; restating it here is how a mode added later ends up
+        // needing a path in the editor and not being checked for one.
+        if !self.mode.uses_image() {
+            return Ok(());
         }
+
+        let path = self
+            .image
+            .as_ref()
+            .filter(|path| !path.as_os_str().is_empty());
+        let Some(path) = path else {
+            return Err(DisplayError::ImagePathMissing);
+        };
+        let bytes = path.as_os_str().len();
+        if bytes > MAX_IMAGE_PATH_BYTES {
+            return Err(DisplayError::ImagePathTooLong {
+                bytes,
+                max_bytes: MAX_IMAGE_PATH_BYTES,
+            });
+        }
+        Ok(())
     }
 
     /// Both reading slots resolved against one telemetry pass.
