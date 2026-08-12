@@ -8,10 +8,12 @@
   <launchable> is what ties it back to kori.desktop, which is named after the
   binary rather than the id.
 
-  No <screenshots> block: a screenshot URL has to resolve for every indexer that
-  reads this file, and nothing is published yet. An entry pointing at a capture
-  that is not there is worse than a missing block, because the store renders the
-  broken slot. Add it in the release that first publishes a capture.
+  The screenshot URLs name the default branch rather than a tag, so a store
+  shows the interface as it is rather than as it was when some release was cut.
+  They only resolve once the images are on that branch: an entry pointing at a
+  capture that is not there is worse than no block at all, because the store
+  renders the broken slot. The files themselves live in docs/screenshots/ and
+  are deleted with the interface they show.
 -->
 <component type="desktop-application">
   <id>io.github.arthjean.kori</id>
@@ -51,6 +53,21 @@
   </description>
 
   <launchable type="desktop-id">kori.desktop</launchable>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>System and cooling state at a glance</caption>
+      <image type="source" width="1359" height="969">https://raw.githubusercontent.com/arthjean/kori/main/docs/screenshots/monitoring.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Pump, fan and the onboard liquid-temperature curve</caption>
+      <image type="source" width="1359" height="969">https://raw.githubusercontent.com/arthjean/kori/main/docs/screenshots/cooling.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The controller's channels, and the panel on the Kraken</caption>
+      <image type="source" width="1359" height="969">https://raw.githubusercontent.com/arthjean/kori/main/docs/screenshots/lighting.png</image>
+    </screenshot>
+  </screenshots>
 
   <url type="homepage">https://github.com/arthjean/kori</url>
   <url type="bugtracker">https://github.com/arthjean/kori/issues</url>

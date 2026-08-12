@@ -109,8 +109,13 @@ jobs:
       # What GNOME Software and KDE Discover read. An invalid component is not a
       # broken build: it is an application that installs and never appears in the
       # store that installed it.
+      #
+      # --no-net checks the structure and not the screenshot URLs. Those name the
+      # default branch, so on a branch that has not merged yet they resolve to a
+      # 404 that says nothing about the change. Their reachability is checked in
+      # release.yml instead, at the moment it starts to matter.
       - run: desktop-file-validate packaging/desktop/kori.desktop
-      - run: appstreamcli validate --explain packaging/desktop/io.github.arthjean.kori.metainfo.xml
+      - run: appstreamcli validate --no-net --explain packaging/desktop/io.github.arthjean.kori.metainfo.xml
 
       # Every file carries a copyright and a licence, which is what a
       # distribution's own licensing review checks first.

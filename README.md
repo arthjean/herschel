@@ -4,6 +4,8 @@ Native open source Linux application to monitor and control NZXT hardware.
 
 > Status: the daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. Cooling, lighting and panel writes are implemented, each gated on a firmware this project validated on the owned hardware. This project is neither affiliated with nor endorsed by NZXT.
 
+![The monitoring screen, showing CPU, GPU, memory and Kraken readings, each with its own history](./docs/screenshots/monitoring.png)
+
 ## Measured footprint
 
 | Measurement | Observed | Budget |
@@ -70,6 +72,18 @@ The `lcd-renderer` crate turns one `DisplayPreset` into the exact framebuffer, a
 The thermal path goes entirely through the `kraken2023` driver: no kernel driver is detached and no USB endpoint is opened for the thermal side. Telemetry only reads, and three independent collectors (Kraken, CPU/memory, GPU) sample in parallel so that one failing sensor does not stop the others. GPU metrics go through NVML, loaded dynamically: without an NVIDIA driver, the GPU is simply unavailable.
 
 The daemon stays independent from the window in order to serialize commands, detect concurrent writers and restore a compatible profile after reconnection or resume from sleep.
+
+## Screens
+
+Three destinations, one per thing the hardware does. The monitoring screen is at the top of this file.
+
+![The cooling screen, showing pump and fan cards over a liquid-temperature curve with its nodes](./docs/screenshots/cooling.png)
+
+Cooling. The curve is the one the device runs: each node is a point the driver holds, and the reading marks where the coolant currently sits on it. `Revert to hardware` restores the onboard curve.
+
+![The lighting screen, showing three controller channels and the Kraken panel playing an animation](./docs/screenshots/lighting.png)
+
+Lighting. One card per device: the controller's channels, and the panel on the Kraken with the picture it is playing. A control the firmware has not been validated for is disabled with its reason rather than hidden.
 
 ## Install
 

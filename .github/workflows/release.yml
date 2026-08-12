@@ -89,6 +89,17 @@ jobs:
             build-essential pkg-config \
             libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
 
+      # With the network this time, unlike ci.yml. The component ships inside
+      # both packages and a store reads its screenshot URLs from there, so this
+      # is the moment those have to resolve: three broken image slots in GNOME
+      # Software is not something a later commit can repair for a release
+      # already installed.
+      - name: Check the store listing resolves
+        run: |
+          sudo apt-get install --no-install-recommends --yes appstream
+          appstreamcli validate --explain \
+            packaging/desktop/io.github.arthjean.kori.metainfo.xml
+
       - name: Install the pinned toolchain
         run: rustup toolchain install
 
