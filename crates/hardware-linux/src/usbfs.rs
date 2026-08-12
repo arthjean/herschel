@@ -26,7 +26,8 @@ use std::time::Duration;
 
 use rustix::ioctl::{self, Ioctl, IoctlOutput, Opcode};
 
-use crate::sysfs::{bound_driver, read_attribute, read_hex_u8, sorted_entries};
+use crate::sysfs::read_attribute;
+use crate::usb::interface_driver;
 
 /// Environment variable that relocates the `usbfs` device tree.
 ///
@@ -185,10 +186,6 @@ impl Usbfs {
             interface,
         })
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for Usbfs {
@@ -233,7 +230,7 @@ impl BulkTransport for Usbfs {
 ///
 /// The pair changes on every reconnect, which is why it is read rather than
 /// remembered.
-pub fn node_for(device: &Path) -> Option<PathBuf> {
+fn node_for(device: &Path) -> Option<PathBuf> {
     node_in(&root(), device)
 }
 
@@ -241,7 +238,7 @@ pub fn node_for(device: &Path) -> Option<PathBuf> {
 ///
 /// Split out so the path arithmetic is provable without a test mutating a
 /// process-global variable that every other test in the binary can observe.
-pub fn node_in(root: &Path, device: &Path) -> Option<PathBuf> {
+fn node_in(root: &Path, device: &Path) -> Option<PathBuf> {
     let bus: u16 = read_attribute(&device.join("busnum"))?.parse().ok()?;
     let address: u16 = read_attribute(&device.join("devnum"))?.parse().ok()?;
     Some(root.join(format!("{bus:03}")).join(format!("{address:03}")))
@@ -253,35 +250,6 @@ fn root() -> PathBuf {
         Some(path) if !path.is_empty() => PathBuf::from(path),
         _ => PathBuf::from("/dev/bus/usb"),
     }
-}
-
-/// The kernel driver bound to one interface of a device, when there is one.
-///
-/// Interface directories are named `<device>:<config>.<interface>`. The
-/// configuration is whichever one the kernel selected, so the directory is
-/// found by listing rather than by guessing: `bConfigurationValue` is a byte,
-/// and a scan over an invented range that missed the real configuration would
-/// report no driver for an interface that has one. [`Usbfs::claim`] would then
-/// go on to claim it, which is the single mistake this whole module exists to
-/// make impossible.
-///
-/// The interface number is read from `bInterfaceNumber`, the same evidence
-/// [`crate::usb::interfaces`] records, rather than parsed back out of the
-/// directory name.
-fn interface_driver(device: &Path, interface: u8) -> Option<String> {
-    let device_name = device.file_name()?.to_str()?;
-    let prefix = format!("{device_name}:");
-
-    sorted_entries(device)
-        .into_iter()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&prefix))
-        })
-        .find(|entry| read_hex_u8(&entry.join("bInterfaceNumber")) == Some(interface))
-        .and_then(|entry| bound_driver(&entry))
 }
 
 /// `USBDEVFS_CLAIMINTERFACE` and `USBDEVFS_RELEASEINTERFACE`.
@@ -480,23 +448,6 @@ mod tests {
             recorder.bytes() > 0,
             "a frame within the ceiling still goes out"
         );
-    }
-
-    #[test]
-    fn an_interface_is_found_whatever_configuration_the_kernel_selected() {
-        // The configuration number is part of the directory name and is the
-        // kernel's choice. Resolving it by scanning an invented range would
-        // report no driver for an interface that has one, and `claim` would
-        // then take an interface a driver owns: the single mistake this module
-        // exists to make impossible.
-        let fake = FakeSysfs::new("usbfs-configuration");
-        let device = fake.add_bare_directory("bus/usb/devices/3-2");
-        fake.add_interface_in_configuration(&device, 9, 0, 0xff, None);
-        fake.add_interface_in_configuration(&device, 9, 1, 0x03, Some("usbhid"));
-
-        assert_eq!(interface_driver(&device, 1).as_deref(), Some("usbhid"));
-        assert_eq!(interface_driver(&device, 0), None);
-        assert_eq!(interface_driver(&device, 2), None);
     }
 
     #[test]

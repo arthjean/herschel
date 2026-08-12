@@ -63,23 +63,54 @@ pub fn identity(id: DeviceId, path: &Path) -> UsbIdentity {
     }
 }
 
-/// Interfaces of a device, with the kernel driver bound to each.
+/// Interface directories of a device, in name order.
 ///
-/// Interface directories are named `<device>:<config>.<interface>`.
-pub fn interfaces(path: &Path) -> Vec<UsbInterface> {
-    let Some(device_name) = path.file_name().and_then(|n| n.to_str()) else {
+/// They are named `<device>:<config>.<interface>`, where the configuration is
+/// whichever one the kernel selected. Found by listing rather than by guessing:
+/// `bConfigurationValue` is a byte, and a scan over an invented range that
+/// missed the real configuration would report no interfaces at all.
+///
+/// One walk for every caller, and that is the point rather than a convenience.
+/// [`interface_driver`] is what [`crate::usbfs::Usbfs::claim`] refuses on, so a
+/// second copy of this filter drifting out of step with this one is precisely
+/// how an interface a kernel driver owns would start looking free.
+pub fn interface_dirs(device: &Path) -> Vec<PathBuf> {
+    let Some(device_name) = device.file_name().and_then(|name| name.to_str()) else {
         return Vec::new();
     };
     let prefix = format!("{device_name}:");
 
-    let mut found: Vec<UsbInterface> = sorted_entries(path)
+    sorted_entries(device)
         .into_iter()
         .filter(|entry| {
             entry
                 .file_name()
-                .and_then(|n| n.to_str())
+                .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with(&prefix))
         })
+        .collect()
+}
+
+/// The kernel driver bound to one interface of a device, when there is one.
+///
+/// The interface number is read from `bInterfaceNumber`, the same evidence
+/// [`interfaces`] records, rather than parsed back out of the directory name.
+///
+/// This lives here, beside the other sysfs walks, rather than in the module
+/// that acts on the answer: `usbfs` claims interfaces, it does not enumerate
+/// them, and the one refusal that protects the thermal path must not rest on a
+/// private second reading of the same directories.
+pub fn interface_driver(device: &Path, interface: u8) -> Option<String> {
+    interface_dirs(device)
+        .into_iter()
+        .find(|entry| read_hex_u8(&entry.join("bInterfaceNumber")) == Some(interface))
+        .and_then(|entry| bound_driver(&entry))
+}
+
+/// Interfaces of a device, with the kernel driver bound to each.
+pub fn interfaces(path: &Path) -> Vec<UsbInterface> {
+    let mut found: Vec<UsbInterface> = interface_dirs(path)
+        .into_iter()
         .filter_map(|entry| {
             let number = read_hex_u8(&entry.join("bInterfaceNumber"))?;
             let source = entry.display().to_string();
@@ -140,17 +171,8 @@ pub fn endpoints(interface: &Path) -> Vec<UsbEndpoint> {
 /// it is what links an allowlisted VID/PID to the node the transport opens, so
 /// no code has to hard-code a device number that changes on every reconnect.
 pub fn hidraw_node(device: &Path) -> Option<PathBuf> {
-    let device_name = device.file_name()?.to_str()?;
-    let prefix = format!("{device_name}:");
-
-    sorted_entries(device)
+    interface_dirs(device)
         .into_iter()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&prefix))
-        })
         .flat_map(|interface| sorted_entries(&interface))
         .flat_map(|entry| sorted_entries(&entry.join("hidraw")))
         .find_map(|node| {
@@ -281,6 +303,51 @@ mod tests {
                 .iter()
                 .all(|endpoint| endpoint.max_packet_size == 64 && endpoint.interval == 1)
         );
+    }
+
+    #[test]
+    fn an_interface_is_found_whatever_configuration_the_kernel_selected() {
+        // The configuration number is part of the directory name and is the
+        // kernel's choice. Resolving it by scanning an invented range would
+        // report no driver for an interface that has one, and `Usbfs::claim`
+        // would then take an interface a driver owns: the single mistake the
+        // claim path exists to make impossible.
+        let fake = FakeSysfs::new("usb-configuration");
+        let device = fake.add_bare_directory("bus/usb/devices/3-2");
+        fake.add_interface_in_configuration(&device, 9, 0, 0xff, None);
+        fake.add_interface_in_configuration(&device, 9, 1, 0x03, Some("usbhid"));
+
+        assert_eq!(interface_driver(&device, 1).as_deref(), Some("usbhid"));
+        assert_eq!(interface_driver(&device, 0), None);
+        assert_eq!(interface_driver(&device, 2), None);
+    }
+
+    #[test]
+    fn every_walk_over_a_device_sees_the_same_interfaces() {
+        // The driver check, the interface record and the node lookup used to
+        // carry a copy of this filter each. They agree here because they now
+        // ask the same function, and that is what keeps a claim from being
+        // offered an interface the record knows a driver owns.
+        let fake = FakeSysfs::new("usb-one-walk");
+        let device = fake.add_kraken();
+
+        let dirs = interface_dirs(&device);
+        assert_eq!(dirs.len(), 2, "the Kraken publishes two interfaces");
+        let recorded = interfaces(&device);
+        assert_eq!(recorded.len(), dirs.len());
+        for interface in &recorded {
+            assert_eq!(
+                interface.driver.value().map(String::as_str),
+                interface_driver(&device, interface.number).as_deref(),
+                "interface {} disagrees between the record and the claim check",
+                interface.number
+            );
+        }
+
+        // A directory that is not an interface of this device is never walked,
+        // whichever door asks.
+        fake.add_bare_directory("bus/usb/devices/1-9/power");
+        assert_eq!(interface_dirs(&device).len(), 2);
     }
 
     #[test]
