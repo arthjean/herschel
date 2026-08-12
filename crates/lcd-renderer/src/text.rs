@@ -113,17 +113,14 @@ pub fn draw(canvas: &mut Canvas, text: &str, x: f32, top: f32, cap_height: f32, 
         }
         let glyph = id.with_scale_and_position(scale, point(pen, baseline));
         if let Some(outlined) = face.outline_glyph(glyph) {
+            // Where this glyph's own ink starts, which is not the line's top:
+            // the rasterizer reports coverage relative to the outline's bounds.
             let bounds = outlined.px_bounds();
-            let (left, top) = (bounds.min.x, bounds.min.y);
+            let (ink_left, ink_top) = (bounds.min.x as i32, bounds.min.y as i32);
             // The coverage lands straight on the canvas: no per-glyph bitmap is
             // allocated, and the edges blend exactly as the arcs do.
             outlined.draw(|dx, dy, coverage| {
-                canvas.blend(
-                    left as i32 + dx as i32,
-                    top as i32 + dy as i32,
-                    color,
-                    coverage,
-                );
+                canvas.blend(ink_left + dx as i32, ink_top + dy as i32, color, coverage);
             });
         }
         pen += scaled.h_advance(id);
