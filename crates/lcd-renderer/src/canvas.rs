@@ -95,14 +95,24 @@ impl Canvas {
         let reach = arc.outer.ceil() as i32 + 1;
         let center_x = arc.center.0;
         let center_y = arc.center.1;
+        // Compared before the square root rather than after it. The band is an
+        // annulus inside a square box, so four fifths of the pixels this walks
+        // are rejected, and taking their root first is the one part of a
+        // repaint that buys nothing.
+        let outer_reach = arc.outer + 1.0;
+        let inner_reach = (arc.inner - 1.0).max(0.0);
+        let (outer_reach_squared, inner_reach_squared) =
+            (outer_reach * outer_reach, inner_reach * inner_reach);
+
         for row in (center_y as i32 - reach)..=(center_y as i32 + reach) {
             for column in (center_x as i32 - reach)..=(center_x as i32 + reach) {
                 let dx = column as f32 + 0.5 - center_x;
                 let dy = row as f32 + 0.5 - center_y;
-                let distance = (dx * dx + dy * dy).sqrt();
-                if distance > arc.outer + 1.0 || distance < arc.inner - 1.0 {
+                let squared = dx * dx + dy * dy;
+                if squared > outer_reach_squared || squared < inner_reach_squared {
                     continue;
                 }
+                let distance = squared.sqrt();
 
                 // Radial coverage: one pixel of softness on each edge of the band.
                 let radial = ((arc.outer + 0.5 - distance).clamp(0.0, 1.0))
@@ -177,11 +187,19 @@ impl Canvas {
             return;
         }
         let reach = radius.ceil() as i32 + 1;
+        // The corners of the box cover nothing, and rejecting them on the
+        // square saves the root the way the arc above does.
+        let edge = radius + 0.5;
+        let edge_squared = edge * edge;
         for row in (center.1 as i32 - reach)..=(center.1 as i32 + reach) {
             for column in (center.0 as i32 - reach)..=(center.0 as i32 + reach) {
                 let dx = column as f32 + 0.5 - center.0;
                 let dy = row as f32 + 0.5 - center.1;
-                let coverage = (radius + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+                let squared = dx * dx + dy * dy;
+                if squared > edge_squared {
+                    continue;
+                }
+                let coverage = (edge - squared.sqrt()).clamp(0.0, 1.0);
                 self.blend(column, row, color, coverage);
             }
         }
