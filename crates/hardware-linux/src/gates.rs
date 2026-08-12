@@ -15,6 +15,13 @@
 //! device that answered nothing, then a firmware this project has never driven.
 //! They part company only where the evidence genuinely differs, and each rung
 //! names the evidence it is missing so a disabled control can say why.
+//!
+//! The last rung of both is [`crate::rgb::is_validated_firmware`] and
+//! [`crate::lcd::is_validated_firmware`], called as functions rather than
+//! reimplemented as a list membership test. That is the whole safety story of
+//! this product in one predicate, and it must have exactly one spelling: a
+//! second one is a place where the gate that decides and the gate that is
+//! tested can quietly stop being the same gate.
 
 use kori_core::capability::{
     Capability, CapabilityId, CapabilityRecord, CapabilityState, DeviceRecord, Evidenced,
@@ -46,9 +53,13 @@ fn replace_capabilities(
 /// a firmware generation on the other), so only the common tail is shared: a
 /// mechanism general enough to cover both heads would hide which evidence
 /// actually opened the path.
+///
+/// `is_validated` is the device module's own predicate, passed in rather than
+/// its list: this function decides nothing about which revisions are proven, it
+/// only asks the module that owns that evidence.
 fn firmware_gate(
     firmware: &Evidenced<String>,
-    validated: &[&str],
+    is_validated: fn(&str) -> bool,
     subject: &str,
 ) -> Option<CapabilityState> {
     let Some(firmware) = firmware.value() else {
@@ -59,7 +70,7 @@ fn firmware_gate(
             ),
         });
     };
-    (!validated.contains(&firmware.as_str())).then(|| CapabilityState::Unvalidated {
+    (!is_validated(firmware)).then(|| CapabilityState::Unvalidated {
         reason: format!("Firmware {firmware} is not validated for this operation."),
     })
 }
@@ -137,9 +148,11 @@ fn lcd_state(topology: Option<&LcdTopology>) -> CapabilityState {
             crate::lcd::SUPPORTED_FIRMWARE_MAJOR
         ));
     }
-    if let Some(refusal) =
-        firmware_gate(&topology.firmware, crate::lcd::VALIDATED_FIRMWARE, "panel")
-    {
+    if let Some(refusal) = firmware_gate(
+        &topology.firmware,
+        crate::lcd::is_validated_firmware,
+        "panel",
+    ) {
         return refusal;
     }
 
@@ -211,7 +224,7 @@ fn rgb_state(topology: Option<&RgbTopology>) -> CapabilityState {
 
     if let Some(refusal) = firmware_gate(
         &topology.firmware,
-        crate::rgb::VALIDATED_FIRMWARE,
+        crate::rgb::is_validated_firmware,
         "controller",
     ) {
         return refusal;
@@ -283,6 +296,41 @@ mod tests {
                 },
                 "report 0x31 0x01",
             ),
+        }
+    }
+
+    #[test]
+    fn the_named_predicate_is_the_gate_that_actually_decides() {
+        // The gate used to re-implement this membership test inline while the
+        // named function was reachable only from tests. Anything that changed
+        // one and not the other, a normalization or a trim, would have left a
+        // build whose tests agreed with a predicate the write path never asked.
+        let fake = FakeSysfs::development_machine("gates-one-predicate");
+
+        for firmware in ["1.5.0", "1.5.1", "0.0.0", "", "9.9.9"] {
+            let mut record = probe(&fake.root());
+            attach_rgb_topology(&mut record, answered_topology(firmware, 3));
+            assert_eq!(
+                record
+                    .device(RGB_CONTROLLER)
+                    .unwrap()
+                    .can_write(CapabilityId::RgbFixedColor),
+                crate::rgb::is_validated_firmware(firmware),
+                "the RGB write path and rgb::is_validated_firmware disagree on {firmware:?}"
+            );
+        }
+
+        for firmware in ["2.0.0", "2.0.1", "2.9.9", ""] {
+            let mut record = probe(&fake.root());
+            attach_lcd_topology(&mut record, answered_lcd(firmware));
+            assert_eq!(
+                record
+                    .device(KRAKEN_BASE)
+                    .unwrap()
+                    .can_write(CapabilityId::LcdFrame),
+                crate::lcd::is_validated_firmware(firmware),
+                "the frame path and lcd::is_validated_firmware disagree on {firmware:?}"
+            );
         }
     }
 

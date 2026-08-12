@@ -35,6 +35,12 @@ cooling, so the hardware rules below outrank convenience.
   on that firmware, not editing the list. A Kraken that never answers
   `0x31 0x01` may carry no display at all, and is reported that way rather than
   assumed to have one.
+- Both gates are resolved in one module, `crates/hardware-linux/src/gates.rs`,
+  and they call `rgb::is_validated_firmware` and `lcd::is_validated_firmware`
+  rather than testing the lists again. The predicate that decides a write and
+  the predicate a test exercises have to be the same function: two spellings of
+  it is how the tests keep passing for a gate the write path stopped asking.
+  `probe.rs` records what the machine exposes and decides nothing.
 - Never make either binary require root. `korid` refuses to start as
   root (`crates/daemon/src/main.rs`). Missing permission degrades to read-only
   with a stated reason; it never escalates.
