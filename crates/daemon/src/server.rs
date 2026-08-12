@@ -239,11 +239,16 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
     // credential check makes that a guarantee rather than a side effect.
     let own_uid = rustix::process::getuid().as_raw();
     if peer.uid != own_uid {
-        let reason = format!("peer uid {} does not own this daemon", peer.uid);
-        if let Ok(mut daemon) = daemon.lock() {
-            daemon.record_client_rejected(reason.clone());
-        }
-        reject(&stream, IpcError::PeerRejected { reason }, &daemon);
+        // `reject` records the refusal, so it is not recorded again here: one
+        // client turned away is one event, and the typed error says everything
+        // the bare reason did.
+        reject(
+            &stream,
+            IpcError::PeerRejected {
+                reason: format!("peer uid {} does not own this daemon", peer.uid),
+            },
+            &daemon,
+        );
         return;
     }
 
