@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The desktop entry for the client. The daemon has no entry of its own: it is a
+# background service with no window, and packaging/systemd/korid.service is how
+# a session starts it.
+#
+# `StartupWMClass` has to stay equal to the `app_id` the window declares in
+# crates/app/src/theme.rs. That string is what a Wayland compositor matches a
+# toplevel against to find this file, and what X11 reads out of WM_CLASS; a
+# window whose id does not match this line runs with no icon and gets its own
+# slot in the dock instead of joining this one. crates/app/tests/desktop_entry.rs
+# asserts the two spellings are the same.
+
+[Desktop Entry]
+Type=Application
+Name=Kori
+GenericName=Cooling Control
+Comment=Control the pump, the fans, the lighting and the LCD panel of supported hardware
+Exec=kori
+Icon=kori
+Terminal=false
+StartupNotify=true
+StartupWMClass=kori
+# One main category only. `System;Settings;` are both main categories, and a
+# menu that reads them literally lists the application twice.
+Categories=Settings;HardwareSettings;
+Keywords=nzxt;kraken;cooling;pump;fan;rgb;lcd;hwmon;temperature;

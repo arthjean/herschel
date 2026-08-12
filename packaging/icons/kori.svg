@@ -1,0 +1,59 @@
+<!--
+  SPDX-FileCopyrightText: 2026 Arthur Jean
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  Kori application icon, scalable form. Installed as
+  hicolor/scalable/apps/kori.svg, which is the name `Icon=kori` in
+  packaging/desktop/kori.desktop resolves to.
+
+  Geometry follows the portable canvas Paneflow's scripts/build-icons.sh
+  establishes: a 1024 master square with the body inset to 83.33% and centered,
+  which is what leaves KDE's 4 px-per-side reservation on a 48 px grid free and
+  still lands inside GNOME's 128 px app canvas. Body = 853.33, margin = 85.33.
+
+  The mark is the kanji the product is named after, drawn as five strokes of one
+  constant width with round caps. Stroke coordinates stay in the 1232 space of
+  the source artwork and the group transform maps that space onto the body, so
+  the glyph keeps the same size relative to its plate as the original.
+
+  No vendor logo, asset or wordmark: the plate is the accent from
+  crates/app/src/theme.rs and the glyph is this project's own drawing.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="kori-glow-a" cx="0.02" cy="0.02" r="0.62">
+      <stop offset="0" stop-color="#7a5af0" stop-opacity="0.85" />
+      <stop offset="0.55" stop-color="#4a2bb5" stop-opacity="0.28" />
+      <stop offset="1" stop-color="#6f4ef2" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="kori-glow-b" cx="0.98" cy="0.98" r="0.72">
+      <stop offset="0" stop-color="#7a5af0" stop-opacity="0.78" />
+      <stop offset="0.5" stop-color="#3a2596" stop-opacity="0.3" />
+      <stop offset="1" stop-color="#6f4ef2" stop-opacity="0" />
+    </radialGradient>
+    <clipPath id="kori-plate">
+      <rect x="85.33" y="85.33" width="853.33" height="853.33" rx="190" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#kori-plate)">
+    <rect x="85.33" y="85.33" width="853.33" height="853.33" fill="#06040b" />
+    <rect x="85.33" y="85.33" width="853.33" height="853.33" fill="url(#kori-glow-a)" />
+    <rect x="85.33" y="85.33" width="853.33" height="853.33" fill="url(#kori-glow-b)" />
+  </g>
+
+  <g
+    transform="translate(512 512) scale(0.6926) translate(-631 -615)"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="50"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M386 357 L495 460" />
+    <path d="M624 300 L630 872 Q630 926 574 930 L524 923" />
+    <path d="M322 553 L500 553 C537 553 542 578 529 615 C500 701 440 797 330 851" />
+    <path d="M876 406 Q772 490 654 602" />
+    <path d="M662 596 Q742 792 940 846" />
+  </g>
+</svg>

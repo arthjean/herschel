@@ -19,7 +19,7 @@ use kori_app::shell::{Shell, key_bindings};
 use kori_app::startup::{
     EXIT_AFTER_FIRST_FRAME_ENV, StartupTrace, detect_backend_from_env, is_enabled,
 };
-use kori_app::theme::{PRODUCT_NAME, WINDOW_HEIGHT, WINDOW_WIDTH};
+use kori_app::theme::{APP_ID, PRODUCT_NAME, WINDOW_HEIGHT, WINDOW_WIDTH};
 use kori_core::ipc::socket_path_from_env;
 
 fn main() -> ExitCode {
@@ -73,6 +73,11 @@ fn main() -> ExitCode {
             let window = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // What a compositor matches against the desktop entry to
+                    // find the icon and to group the window. Without it the
+                    // toplevel carries no id at all, so the shell falls back to
+                    // a generic icon whatever is installed under hicolor.
+                    app_id: Some(APP_ID.to_owned()),
                     // The window draws its own caption bar, its own frame and
                     // its own resize band: see `kori_app::window_chrome`. The
                     // title is still declared, because that is what a task

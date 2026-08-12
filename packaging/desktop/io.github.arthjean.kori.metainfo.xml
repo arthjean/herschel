@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-FileCopyrightText: 2026 Arthur Jean
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  AppStream metadata, read by GNOME Software, KDE Discover and the distribution
+  indexers. The component id is the reverse-DNS form of the repository and the
+  <launchable> is what ties it back to kori.desktop, which is named after the
+  binary rather than the id.
+
+  No <screenshots> block: a screenshot URL has to resolve for every indexer that
+  reads this file, and nothing is published yet. An entry pointing at a capture
+  that is not there is worse than a missing block, because the store renders the
+  broken slot. Add it in the release that first publishes a capture.
+-->
+<component type="desktop-application">
+  <id>io.github.arthjean.kori</id>
+  <name>Kori</name>
+  <summary>Cooling, lighting and LCD control for supported hardware</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <!-- AppStream 1.0 form. The older <developer_name> single tag validates as
+       deprecated, and Flathub requires this one. -->
+  <developer id="io.github.arthjean">
+    <name>Arthur Jean</name>
+  </developer>
+
+  <description>
+    <p>
+      Kori drives an NZXT Kraken cooler from Linux without a vendor agent: pump
+      and fan curves, the RGB controller, and the picture on the LCD panel. It
+      is unofficial, and is neither affiliated with nor endorsed by NZXT.
+    </p>
+    <p>
+      Nothing is written to hardware that the device has not first proven it can
+      do. A capability the machine did not confirm is reported as unknown and
+      the matching control stays disabled with the reason, rather than being
+      offered on a guess.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Pump and fan duty curves, revalidated against safety floors before every write</li>
+      <li>Liquid, CPU, memory and GPU telemetry sampled by independent collectors</li>
+      <li>Lighting control gated on a firmware revision validated on real hardware</li>
+      <li>LCD panel presets, previewed with the same renderer that feeds the glass</li>
+      <li>A background daemon that owns the devices, serializes writes and detects a competing writer</li>
+      <li>Neither binary runs as root, and normal operation opens no network socket</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">kori.desktop</launchable>
+
+  <url type="homepage">https://github.com/arthjean/kori</url>
+  <url type="bugtracker">https://github.com/arthjean/kori/issues</url>
+
+  <categories>
+    <category>Settings</category>
+    <category>HardwareSettings</category>
+  </categories>
+
+  <keywords>
+    <keyword>nzxt</keyword>
+    <keyword>kraken</keyword>
+    <keyword>cooling</keyword>
+    <keyword>pump</keyword>
+    <keyword>fan</keyword>
+    <keyword>rgb</keyword>
+    <keyword>lcd</keyword>
+    <keyword>hwmon</keyword>
+  </keywords>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-08-12">
+      <description>
+        <p>First release.</p>
+        <ul>
+          <li>Pump and fan curves, telemetry, lighting and LCD panel presets over a local daemon</li>
+          <li>Lighting and panel writes gated on firmware revisions validated on owned hardware</li>
+          <li>Wayland and X11, with no elevated privileges and no network access</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

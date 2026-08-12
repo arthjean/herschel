@@ -124,6 +124,31 @@ restarted. If you enabled an earlier version of the unit, run
 `systemctl --user disable korid.service` once before enabling it again, so
 the stale `default.target` link goes away.
 
+To start the client from the desktop rather than from a shell, install its entry,
+its icon and its AppStream component beside the binary. Everything lands in your
+own data directory, so this needs no root either.
+
+```bash
+install -Dm0755 target/release/kori ~/.local/bin/kori
+install -Dm0644 packaging/desktop/kori.desktop ~/.local/share/applications/kori.desktop
+install -Dm0644 packaging/icons/kori.svg ~/.local/share/icons/hicolor/scalable/apps/kori.svg
+install -Dm0644 packaging/desktop/io.github.arthjean.kori.metainfo.xml \
+  ~/.local/share/metainfo/io.github.arthjean.kori.metainfo.xml
+update-desktop-database ~/.local/share/applications
+gtk-update-icon-cache --force --ignore-theme-index ~/.local/share/icons/hicolor
+```
+
+The last two commands refresh caches that some desktops read instead of the
+directory. Neither is required to exist: if the command is missing, the entry
+still appears on the next login.
+
+The icon ships as one SVG under `hicolor/scalable` rather than as a set of
+PNGs, which is what every current desktop reads first and what keeps the mark
+sharp at whatever size the shell asks for. `StartupWMClass=kori` in the entry is
+the same string as the window's own `app_id`; that match is what makes the
+desktop draw this icon for the running window instead of a generic one, and
+`cargo test --workspace` asserts the two never drift apart.
+
 The daemon refuses to start as root. Without the udev rule above, the `hwmon` attributes stay read only and the application says so explicitly instead of failing silently.
 
 Environment variables read:

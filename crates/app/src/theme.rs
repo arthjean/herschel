@@ -19,6 +19,11 @@ use std::sync::Arc;
 
 /// Product name shown in the shell. Deliberately not a vendor trademark.
 pub const PRODUCT_NAME: &str = "Kori";
+/// The identifier the window hands to the compositor, and the one
+/// `packaging/desktop/kori.desktop` declares as `StartupWMClass`. A desktop
+/// finds an icon for a window by matching these two strings, so they are one
+/// constant and a test, not two spellings that happen to agree today.
+pub const APP_ID: &str = "kori";
 /// Shown wherever the product identifies itself.
 pub const UNOFFICIAL_NOTICE: &str = "Unofficial. Not affiliated with or endorsed by NZXT.";
 
