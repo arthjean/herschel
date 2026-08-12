@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The workflows pin third-party actions to a commit, which is the safe form and
+# also the form that silently goes stale. This is what moves those pins.
+#
+# Cargo is deliberately absent. Cargo.lock is what the release builds from, and
+# a bumped dependency here is a change to what ships on hardware: it goes
+# through the same reading as any other change, not through a bot.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

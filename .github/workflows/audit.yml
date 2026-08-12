@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The same `cargo deny check` ci.yml runs, on a clock instead of on a change.
+#
+# The two catch different things against the same `deny.toml`. In CI it gates a
+# new Cargo.lock: a dependency arriving with an advisory or an incompatible
+# licence. Here it gates an unchanged Cargo.lock: the RustSec database grows and
+# a crate that was clean at the last commit is flagged, or a version already
+# shipped gets yanked from the registry. A project that has not been touched for
+# a month would otherwise learn about both from a user.
+#
+# A failure here notifies the repository owner through GitHub's own scheduled-run
+# failure notification. No issue is opened: that needs `issues: write` plus
+# deduplication logic, which is a second mechanism to maintain for a repository
+# with one maintainer who already gets the mail.
+
+name: Daily audit
+
+on:
+  schedule:
+    # 04:17 UTC, off the hour on purpose: the whole ecosystem's crons converge
+    # on :00 and the queue is shorter a few minutes later.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: dependency advisories and licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb # v2.1.1
+        with:
+          command: check

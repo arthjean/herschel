@@ -1,0 +1,427 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds what a release ships, installs it, and only then publishes it.
+#
+#   git tag -a v0.1.0 -m "..." && git push origin v0.1.0
+#
+# Run from the Actions tab instead, and every job below runs except the last
+# one: the artifacts are uploaded to the run for inspection and nothing is
+# published. That is how a packaging change is tried before a tag exists.
+#
+# The smoke jobs are the reason this is three stages rather than one. A package
+# that builds is not a package that installs: the .rpm names its dependencies as
+# sonames so one file serves Fedora and openSUSE, the .deb names Debian package
+# names, and the postinstall calls groupadd and udevadm on a machine this
+# workflow does not own. Each of those is an assumption until a clean container
+# has actually run it, and publishing first would mean finding out afterwards.
+#
+# Four artifacts, one architecture. x86_64 only, because that is where the
+# hardware this drives is installed; an arm64 matrix would double the release
+# for a machine nobody has reported owning one of these coolers on.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned by digest, not by tag. The tarball is fetched over the network into a
+  # job that then signs what it produced.
+  NFPM_VERSION: 2.47.0
+  NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+
+jobs:
+  build:
+    # 22.04 rather than latest. A binary carries the glibc of the host it was
+    # linked on, and 2.35 is the oldest GitHub still hosts: building on 24.04
+    # would produce packages that refuse to install on Ubuntu 22.04 LTS and
+    # Debian 12, for no gain on any newer distribution.
+    runs-on: ubuntu-22.04
+
+    permissions:
+      id-token: write # mint the OIDC token Sigstore signs against
+      attestations: write # store the provenance attestation
+      artifact-metadata: write # record the artifacts it covers
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: kori-${{ steps.version.outputs.version }}-x86_64-linux
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the version being released
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if [ "$EVENT" = push ]; then
+            version=${TAG#v}
+          else
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          fi
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "release: '$version' is not a version" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      # See the note in ci.yml: the fontconfig and freetype -dev packages are
+      # left out so this build keeps dlopening the first and compiling the
+      # second, which is what packaging/linked-libraries.txt records.
+      - name: Install the libraries the graph links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential pkg-config \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+
+      # --locked, so a release cannot quietly resolve a dependency to something
+      # Cargo.lock does not name.
+      - run: cargo build --release --workspace --locked
+
+      # Fails if the binaries link against a library the packages do not declare
+      # a dependency on. The smoke jobs then prove the declared name delivers it.
+      - run: packaging/check-linked-libraries.sh target/release
+
+      # Asserts the version in Cargo.toml and in the AppStream component match
+      # the tag, then writes dist/root and the tarball. The timestamp comes from
+      # the commit being released, so both nfpm and the tarball date their
+      # contents from the source rather than from when the runner happened to
+      # start.
+      - name: Stage the release layout
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >>"$GITHUB_ENV"
+          export SOURCE_DATE_EPOCH
+          packaging/stage.sh "$VERSION"
+
+      - name: Fetch nfpm
+        run: |
+          set -eu
+          url=https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz
+          curl --silent --show-error --fail --location --output nfpm.tar.gz "$url"
+          echo "${NFPM_SHA256}  nfpm.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file nfpm.tar.gz nfpm
+
+      - name: Build the deb and the rpm
+        env:
+          KORI_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          ./nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+          ./nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+
+      - name: Record the digests
+        working-directory: dist
+        run: sha256sum ./*.tar.gz ./*.deb ./*.rpm | tee SHA256SUMS
+
+      # One attestation covering every artifact named in SHA256SUMS: a Sigstore
+      # signature over a SLSA provenance statement that binds each digest to this
+      # workflow, this commit and this runner. Verified with
+      # `gh attestation verify <file> --repo arthjean/kori`, which needs no key
+      # distributed by this project and no key held by it.
+      #
+      # Issued here rather than after the smoke jobs: an attestation states what
+      # produced a file, which is true whether or not the file is ever published.
+      - uses: actions/attest@v4
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kori-${{ steps.version.outputs.version }}-x86_64-linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  smoke-deb:
+    name: install the deb on ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported base and the Debian it was built to reach. Both
+        # resolve the Depends line from their own archive, so a package name
+        # that only exists on one of them fails here.
+        image: ["ubuntu:22.04", "debian:12"]
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: assets
+
+      # apt resolves the Depends line itself, so this step failing is a
+      # dependency this project named wrong, and the postinstall failing takes
+      # the whole install down with it.
+      - name: Install the package
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eu
+          apt-get update
+          apt-get install --yes ./assets/kori_*.deb
+
+      - name: Assert what the package left behind
+        run: |
+          set -eu
+          test -x /usr/bin/kori
+          test -x /usr/bin/korid
+          test -f /usr/lib/udev/rules.d/70-kori.rules
+          test -f /usr/share/applications/kori.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/kori.svg
+          test -f /usr/share/metainfo/io.github.arthjean.kori.metainfo.xml
+          test -f /usr/share/doc/kori/copyright
+          grep -q '^ExecStart=/usr/bin/korid$' /usr/lib/systemd/user/korid.service
+          # The postinstall ran and created the group the udev rule hands the
+          # hwmon attributes to.
+          getent group kori
+
+      - name: Assert the binaries resolve their libraries
+        run: |
+          set -eu
+          # Every soname in the ELF headers, satisfied by what the Depends line
+          # pulled in and nothing else.
+          for binary in /usr/bin/kori /usr/bin/korid; do
+            if ldd "$binary" | grep 'not found'; then
+              echo "$binary is missing a library the package should have pulled in" >&2
+              exit 1
+            fi
+          done
+          # The two the renderer opens with dlopen, which no ELF header names
+          # and which therefore only a declared dependency can deliver.
+          ldconfig -p | grep -q 'libvulkan\.so\.1'
+          ldconfig -p | grep -q 'libfontconfig\.so\.1'
+          # Reads sysfs, opens no socket and no device node. In a container it
+          # finds no Kraken, which is a record saying so rather than a failure.
+          korid --version
+          korid --capabilities >/dev/null
+
+      - name: Assert removal leaves nothing behind
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eu
+          apt-get remove --yes kori
+          test ! -e /usr/bin/kori
+          test ! -e /usr/lib/udev/rules.d/70-kori.rules
+          # Deliberately kept: removing a group that still owns hwmon attributes
+          # is worse than leaving an empty system group.
+          getent group kori
+
+  smoke-rpm:
+    name: install the rpm on ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Two distributions that name the same libraries differently and both
+          # auto-provide their sonames. This pair is what the soname Requires in
+          # packaging/nfpm.yaml exists for, and the only thing that proves it.
+          - name: Fedora
+            image: fedora:41
+            install: dnf install --assumeyes --nogpgcheck ./assets/kori-*.rpm
+          - name: openSUSE Tumbleweed
+            image: opensuse/tumbleweed
+            install: zypper --non-interactive install --allow-unsigned-rpm ./assets/kori-*.rpm
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: assets
+
+      # Unsigned on purpose: this project signs through Sigstore rather than
+      # with a GPG key, so the package manager is told not to look for one.
+      - name: Install the package
+        run: |
+          set -eu
+          ${{ matrix.install }}
+
+      - name: Assert what the package left behind
+        run: |
+          set -eu
+          test -x /usr/bin/kori
+          test -x /usr/bin/korid
+          test -f /usr/lib/udev/rules.d/70-kori.rules
+          test -f /usr/share/applications/kori.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/kori.svg
+          test -f /usr/share/metainfo/io.github.arthjean.kori.metainfo.xml
+          test -f /usr/share/licenses/kori/LICENSE
+          grep -q '^ExecStart=/usr/bin/korid$' /usr/lib/systemd/user/korid.service
+          getent group kori
+
+      - name: Assert the binaries resolve their libraries
+        run: |
+          set -eu
+          for binary in /usr/bin/kori /usr/bin/korid; do
+            if ldd "$binary" | grep 'not found'; then
+              echo "$binary is missing a library the package should have pulled in" >&2
+              exit 1
+            fi
+          done
+          ldconfig -p | grep -q 'libvulkan\.so\.1'
+          ldconfig -p | grep -q 'libfontconfig\.so\.1'
+          korid --version
+          korid --capabilities >/dev/null
+
+  smoke-tarball:
+    name: install the tarball on Arch
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: assets
+
+      # The same list packaging/aur/PKGBUILD declares. Installing it by hand is
+      # what checks those names exist and cover the binaries, without building
+      # the PKGBUILD itself: that one downloads a release tarball which, at this
+      # point in the workflow, is not published yet.
+      - name: Install what the PKGBUILD declares
+        run: |
+          set -eu
+          pacman --sync --refresh --noconfirm \
+            fontconfig libxcb libxkbcommon libxkbcommon-x11 vulkan-icd-loader
+
+      - name: Unpack and install
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          tar --extract --file "assets/kori-${VERSION}-x86_64-linux.tar.gz"
+          cd "kori-${VERSION}-x86_64-linux"
+          ./install.sh
+
+      - name: Assert the installer wrote a working install
+        run: |
+          set -eu
+          test -x "$HOME/.local/bin/kori"
+          test -x "$HOME/.local/bin/korid"
+          test -f "$HOME/.local/share/applications/kori.desktop"
+          test -f "$HOME/.local/share/icons/hicolor/scalable/apps/kori.svg"
+          # The unit is written against the prefix the run installed into, not
+          # against one guessed when the tarball was built.
+          grep -q "^ExecStart=$HOME/.local/bin/korid$" \
+            "$HOME/.config/systemd/user/korid.service"
+          if ldd "$HOME/.local/bin/kori" | grep 'not found'; then
+            echo "the interface is missing a library the PKGBUILD does not declare" >&2
+            exit 1
+          fi
+          "$HOME/.local/bin/korid" --version
+          "$HOME/.local/bin/korid" --capabilities >/dev/null
+
+  publish:
+    needs: [build, smoke-deb, smoke-rpm, smoke-tarball]
+    # The only job a manual run skips. Everything above it has already run, so a
+    # dispatch is a full rehearsal of the release minus the publication.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # create the release and upload its assets
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist
+
+      - name: Check the digests survived the round trip
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          cat >notes.md <<EOF
+          Unofficial, and neither affiliated with nor endorsed by NZXT.
+
+          ## Install
+
+          Debian, Ubuntu and derivatives:
+
+              sudo apt install ./kori_${VERSION}-1_amd64.deb
+
+          Fedora, RHEL, openSUSE and derivatives:
+
+              sudo dnf install ./kori-${VERSION}-1.x86_64.rpm
+
+          Arch: \`kori-bin\` on the AUR.
+
+          Anything else, including a machine where you would rather not install a
+          package at all:
+
+              tar xf kori-${VERSION}-x86_64-linux.tar.gz
+              cd kori-${VERSION}-x86_64-linux && ./install.sh
+
+          The tarball installs under \`~/.local\` and needs no root. Every route
+          then needs one step with root, printed by the installer: the udev rule
+          that grants access to the two devices this software is allowed to
+          touch, and nothing else.
+
+          Built against glibc 2.35, so Ubuntu 22.04, Debian 12, Fedora 37 and
+          anything newer. Each package in this release was installed on a clean
+          Ubuntu 22.04, Debian 12, Fedora 41, openSUSE Tumbleweed and Arch
+          container before the release was published.
+
+          ## Verify
+
+          Every artifact is signed through Sigstore, with a build provenance
+          statement naming this workflow and this commit:
+
+              gh attestation verify kori_${VERSION}-1_amd64.deb --repo ${GITHUB_REPOSITORY}
+
+          \`SHA256SUMS\` covers the same files for a check without GitHub's CLI.
+          EOF
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          gh release create "$TAG" \
+            --title "Kori $VERSION" \
+            --notes-file notes.md \
+            --verify-tag \
+            "dist/kori-${VERSION}-x86_64-linux.tar.gz" \
+            "dist/kori_${VERSION}-1_amd64.deb" \
+            "dist/kori-${VERSION}-1.x86_64.rpm" \
+            dist/SHA256SUMS

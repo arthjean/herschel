@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The four validation commands from AGENTS.md, plus the three checks a
+# distribution rejects a package for: a licence in the dependency graph that a
+# GPL-3.0-or-later work cannot absorb, a desktop entry or AppStream component a
+# software centre will not index, and a source file with no copyright.
+#
+# Third-party actions are pinned to a commit rather than a tag, because a tag is
+# rewritable by whoever owns it and this workflow reads the whole repository.
+# .github/dependabot.yml is what moves those pins.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: fmt, check, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Exactly what the binaries link against, and nothing more. Fontconfig and
+      # freetype are absent on purpose: font-kit reaches fontconfig through
+      # dlopen, and freetype-sys compiles its own copy unless pkg-config finds a
+      # recent enough system one. Installing their -dev packages would flip
+      # freetype to a dynamic link and add a runtime dependency the packages do
+      # not declare.
+      - name: Install the libraries the graph links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential pkg-config \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      # Reads rust-toolchain.toml, so the pinned toolchain and its components are
+      # what runs here, not whatever the runner image happens to carry.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  msrv:
+    name: minimum supported toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the libraries the graph links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential pkg-config \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      # `rust-version` in Cargo.toml claims 1.90 compiles this workspace. The
+      # claim is checked here rather than asserted: `+1.90` overrides the channel
+      # rust-toolchain.toml pins, which is the only way the older compiler ever
+      # sees this code.
+      - name: Install the declared minimum
+        run: rustup toolchain install 1.90 --profile minimal --no-self-update
+
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          key: msrv
+
+      - run: cargo +1.90 check --workspace --all-targets
+
+  licences:
+    name: dependency licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb # v2.1.1
+        with:
+          command: check
+
+  metadata:
+    name: desktop metadata and copyright
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes appstream desktop-file-utils
+
+      # What GNOME Software and KDE Discover read. An invalid component is not a
+      # broken build: it is an application that installs and never appears in the
+      # store that installed it.
+      - run: desktop-file-validate packaging/desktop/kori.desktop
+      - run: appstreamcli validate --explain packaging/desktop/io.github.arthjean.kori.metainfo.xml
+
+      # Every file carries a copyright and a licence, which is what a
+      # distribution's own licensing review checks first.
+      - run: pipx run reuse lint
+
+      # The packaging scripts run as root from a package manager hook. A syntax
+      # error there is a failed install on a stranger's machine.
+      - name: Parse the packaging scripts
+        run: |
+          for script in packaging/*.sh packaging/scripts/*.sh; do
+            sh -n "$script"
+          done

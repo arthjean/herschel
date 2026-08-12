@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 Arthur Jean
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The dependency licence audit this project owes before it distributes packages,
+# expressed as something a machine re-runs on every change rather than a list
+# somebody wrote once. It answers one question: does every crate that ends up in
+# a shipped binary allow being combined into a GPL-3.0-or-later work.
+#
+#   cargo deny check
+
+[graph]
+# One target, because one target is shipped. Auditing the Windows and macOS
+# branches of the graph would fail on crates that never reach a user: gpui
+# carries them, and nothing here compiles them.
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+# A vulnerability in a crate that drives cooling hardware is not a warning.
+yanked = "deny"
+
+# Limited to the crates this workspace names itself. gpui's graph carries seven
+# crates their authors have marked unmaintained (`async-std`, `instant`,
+# `paste`, `proc-macro-error2`, `rustls-pemfile`, `rustybuzz`, `ttf-parser`),
+# none of them a vulnerability and none of them replaceable from here. Listing
+# them as ignored exceptions would be seven lines that decide nothing and go
+# stale the moment gpui moves. What this project can act on is its own direct
+# dependencies going unmaintained, which is what this setting reports.
+unmaintained = "workspace"
+
+[licenses]
+# Every entry is a licence a GPL-3.0-or-later work may absorb: permissive
+# licences (MIT, BSD, ISC, Zlib, Apache-2.0 and their relatives), public domain
+# dedications, and MPL-2.0, which the FSF lists as one-way compatible with GPLv3
+# through its secondary licence clause. Apache-2.0 is compatible with GPLv3 and
+# not with GPLv2, which is why this project is "or later" rather than
+# "GPL-3.0-only".
+#
+# The list holds what the shipped graph actually contains and nothing held in
+# reserve, so a licence arriving through a new dependency stops the build and
+# gets read, rather than passing because somebody allowed its family in advance.
+# Nothing copyleft-incompatible is here, and a crate under one fails the check
+# instead of being noticed at packaging time.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+# gpui pulls several crates at two versions at once. Refusing that would refuse
+# the interface framework, and a duplicate version is a size question rather
+# than a licensing or safety one.
+multiple-versions = "allow"
+
+# No `wildcards` rule. cargo-deny reads this workspace's own path dependencies
+# as wildcards and only exempts them for crates marked `publish = false`, which
+# is a decision about crates.io rather than about packaging. Every third-party
+# requirement is a caret range pinned by Cargo.lock, so the rule would fail on
+# this project's internal edges and catch nothing else.
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
