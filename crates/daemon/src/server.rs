@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kori_core::display::FRAME_INTERVAL_MS;
-use kori_core::ipc::{IpcError, PROTOCOL_VERSION, Request, Response, read_frame, write_frame};
+use kori_core::ipc::{IpcError, Request, Response, read_frame, write_frame};
 
 use crate::state::Daemon;
 
@@ -281,27 +281,14 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
             }
         };
 
-        // Nothing but the handshake is served before the handshake.
-        if !handshake_done {
-            match &request {
-                Request::Hello { protocol_version } if *protocol_version == PROTOCOL_VERSION => {
-                    handshake_done = true;
-                }
-                Request::Hello { protocol_version } => {
-                    let _ = write_frame(
-                        &mut writer,
-                        &Response::Error(IpcError::UnsupportedProtocol {
-                            requested: *protocol_version,
-                            supported: PROTOCOL_VERSION,
-                        }),
-                    );
-                    return;
-                }
-                _ => {
-                    let _ = write_frame(&mut writer, &Response::Error(IpcError::HandshakeRequired));
-                    return;
-                }
-            }
+        // Nothing but the handshake is served before the handshake. Whether the
+        // versions match is not asked here: the daemon has to answer that for
+        // the typed request anyway, and asking it in both layers was one gate
+        // implemented twice, where a divergence would have let this one win in
+        // silence.
+        if !handshake_done && !matches!(request, Request::Hello { .. }) {
+            let _ = write_frame(&mut writer, &Response::Error(IpcError::HandshakeRequired));
+            return;
         }
 
         let response = match daemon.lock() {
@@ -311,9 +298,15 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
             }),
         };
 
-        if write_frame(&mut writer, &response).is_err() {
+        // The daemon's answer is what settles the handshake: a `Hello` response
+        // means it accepted the version, and anything else is a refusal this
+        // connection cannot recover from, so it closes once the typed reason has
+        // been written.
+        let refused_handshake = !handshake_done && !matches!(response, Response::Hello { .. });
+        if write_frame(&mut writer, &response).is_err() || refused_handshake {
             return;
         }
+        handshake_done = true;
     }
 }
 
