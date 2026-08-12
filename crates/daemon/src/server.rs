@@ -129,9 +129,9 @@ impl Server {
             let mut next = Instant::now() + interval;
             // Nothing is playing until a preset says so, so the loop starts on
             // the idle cadence and only shortens once an animation asks it to.
-            // Clamped by the same expression the loop uses below, so the first
-            // sleep cannot follow a different rule from every later one.
-            let mut nap = interval.clamp(TICK_FLOOR, TICK_POLL);
+            // Through the same function every later sleep goes through, so the
+            // first one cannot follow a different rule.
+            let mut nap = nap_until(next);
             while !shutdown.load(Ordering::SeqCst) {
                 std::thread::sleep(nap);
                 let now = Instant::now();
@@ -158,15 +158,11 @@ impl Server {
                     }
                 }
 
-                // Sleep to whichever comes first, but never past TICK_POLL, so
-                // shutdown stays prompt even when nothing is due for a second.
-                let wake = match animation_due {
+                // Sleep to whichever comes first.
+                nap = nap_until(match animation_due {
                     Some(due) => due.min(next),
                     None => next,
-                };
-                nap = wake
-                    .saturating_duration_since(Instant::now())
-                    .clamp(TICK_FLOOR, TICK_POLL);
+                });
             }
         })
     }
@@ -223,6 +219,19 @@ impl ShutdownHandle {
             let _ = UnixStream::connect(path);
         }
     }
+}
+
+/// How long to sleep before looking at the clock again.
+///
+/// Never longer than [`TICK_POLL`], so shutdown stays prompt even when nothing
+/// is due for a second, and never shorter than [`TICK_FLOOR`], because a
+/// deadline already in the past would compute a zero sleep and a loop that takes
+/// the state mutex without ever yielding is a spin against every request
+/// handler.
+fn nap_until(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .clamp(TICK_FLOOR, TICK_POLL)
 }
 
 /// Write one event to the daemon's log, or drop it when the state is gone.
