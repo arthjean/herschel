@@ -16,6 +16,7 @@ use gpui::{Bounds, Pixels, Point, px};
 
 use kori_core::profile::{Channel, CurveNodes};
 
+use super::keyed::Keyed;
 use super::row::LightingRow;
 use crate::components::{Slider, node_at};
 use crate::shell::Shell;
@@ -81,20 +82,20 @@ impl Drag {
 /// arrangement is what the fixed-duty sliders on Cooling need, and two copies of
 /// this bookkeeping would be two places for a stale rectangle to survive.
 #[derive(Debug)]
-pub struct TrackMap<K>(RefCell<Vec<(K, Bounds<Pixels>)>>);
+pub struct TrackMap<K>(RefCell<Keyed<K, Bounds<Pixels>>>);
+
+/// Written out rather than derived: the derive would demand a `Default` key,
+/// and neither a channel nor a lighting row has a meaningful one.
 impl<K> Default for TrackMap<K> {
     fn default() -> Self {
-        Self(RefCell::new(Vec::new()))
+        Self(RefCell::new(Keyed::default()))
     }
 }
+
 impl<K: Copy + PartialEq> TrackMap<K> {
     /// Publish where one key's track was painted, replacing its last position.
     pub fn record(&self, key: K, track: Bounds<Pixels>) {
-        let mut tracks = self.0.borrow_mut();
-        match tracks.iter_mut().find(|(known, _)| *known == key) {
-            Some(entry) => entry.1 = track,
-            None => tracks.push((key, track)),
-        }
+        self.0.borrow_mut().set(key, track);
     }
 
     /// Forget every track, so a row that went away takes its rectangle with it.
@@ -110,9 +111,9 @@ impl<K: Copy + PartialEq> TrackMap<K> {
     pub fn at(&self, position: Point<Pixels>) -> Option<(K, Bounds<Pixels>)> {
         self.0
             .borrow()
-            .iter()
+            .entries()
             .find(|(_, track)| track.dilate(TRACK_GRAB_MARGIN).contains(&position))
-            .copied()
+            .map(|(key, track)| (key, *track))
     }
 }
 /// How far outside a track a press still counts as landing on it.

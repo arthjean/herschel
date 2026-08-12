@@ -17,6 +17,7 @@
 use std::time::{Duration, Instant};
 
 use super::drag::Drag;
+use super::keyed::Keyed;
 use super::row::LightingRow;
 
 /// How still the Cooling screen has to be before an edit is written.
@@ -90,29 +91,22 @@ pub fn write_is_held_back(target: WriteTarget, drag: Option<Drag>, in_flight: bo
 /// into a moved deadline does nothing and no task has to be cancelled.
 #[derive(Debug, Default)]
 pub struct WriteSchedule {
-    due: Vec<(WriteTarget, Instant)>,
+    due: Keyed<WriteTarget, Instant>,
 }
 impl WriteSchedule {
     /// Arrange for `target` to be written once it has been still until `at`.
     pub fn touch(&mut self, target: WriteTarget, at: Instant) {
-        match self.due.iter_mut().find(|(queued, _)| *queued == target) {
-            Some((_, deadline)) => *deadline = at,
-            None => self.due.push((target, at)),
-        }
+        self.due.set(target, at);
     }
 
     /// Every target whose deadline has passed, removed from the schedule.
     pub fn take_due(&mut self, now: Instant) -> Vec<WriteTarget> {
-        let (ready, waiting) = std::mem::take(&mut self.due)
-            .into_iter()
-            .partition::<Vec<_>, _>(|(_, deadline)| *deadline <= now);
-        self.due = waiting;
-        ready.into_iter().map(|(target, _)| target).collect()
+        self.due.take(|deadline| *deadline <= now)
     }
 
     /// Whether anything is waiting to be written for `target`.
     pub fn is_pending(&self, target: WriteTarget) -> bool {
-        self.due.iter().any(|(queued, _)| *queued == target)
+        self.due.contains(target)
     }
 }
 

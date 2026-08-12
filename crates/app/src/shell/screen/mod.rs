@@ -30,6 +30,7 @@ use swatch::ColorPicker;
 pub mod channel;
 pub mod cooling;
 pub mod drag;
+pub mod keyed;
 pub mod lighting;
 pub mod monitoring;
 pub mod panel;
