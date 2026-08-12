@@ -45,6 +45,13 @@ use canvas::Canvas;
 /// The samples are only consulted by the modes that draw readings; a solid
 /// field or a static image ignores them, so a panel showing a picture keeps
 /// showing it when a collector drops out.
+///
+/// One call is one picture, and in [`DisplayMode::Image`] that includes reading
+/// the file and decoding it again. Cheap for the modes that draw readings,
+/// which is what a per-tick loop should call; for a picture, what belongs in a
+/// loop is [`render_image_frames`] once and its result held. Both callers do
+/// that already, and this arm exists so that the two agree: it is what proves
+/// the compiled first frame and the drawn one are the same bytes.
 pub fn render(
     preset: &DisplayPreset,
     samples: &[MetricSample; 2],
