@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 use crate::capability::{CapabilityId, DeviceRecord};
-use crate::display::DisplayPreset;
-use crate::lighting::LightingCommand;
+use crate::display::{DisplayError, DisplayPreset};
+use crate::lighting::{LightingCommand, LightingError};
 
 mod curve;
 
@@ -243,10 +243,28 @@ pub enum ValidationError {
         min: u8,
         max: u8,
     },
-    #[error("Lighting on channel {channel} is invalid: {detail}")]
-    Lighting { channel: u8, detail: String },
-    #[error("The panel preset is invalid: {detail}")]
-    Display { detail: String },
+    /// A lighting command the profile carries, refused for its own reason.
+    ///
+    /// The reason is kept as the typed error rather than flattened into a
+    /// sentence. `LightingError` carries the channel a rejection points at and
+    /// the bounds the control has to name, and a caller that receives a string
+    /// has to parse them back out or do without.
+    #[error("Lighting on channel {channel} is invalid: {source}")]
+    Lighting {
+        channel: u8,
+        #[source]
+        source: LightingError,
+    },
+    /// The panel preset the profile carries, refused for its own reason.
+    ///
+    /// Typed for the same reason: [`DisplayError::field`] is what lets the
+    /// editor put the message on the field the operator was typing in, and it
+    /// is the first thing a `to_string` loses.
+    #[error("The panel preset is invalid: {source}")]
+    Display {
+        #[source]
+        source: DisplayError,
+    },
     #[error(
         "{channel} curve duty must never decrease as temperature rises: {previous} at {previous_temperature_c} C then {value} at {temperature_c} C."
     )]
@@ -377,16 +395,14 @@ pub fn validate_profile(profile: &Profile) -> Result<(), ValidationError> {
         crate::lighting::validate_program(&command.program).map_err(|source| {
             ValidationError::Lighting {
                 channel: command.channel,
-                detail: source.to_string(),
+                source,
             }
         })?;
     }
     if let Some(preset) = &profile.display {
         preset
             .validate()
-            .map_err(|source| ValidationError::Display {
-                detail: source.to_string(),
-            })?;
+            .map_err(|source| ValidationError::Display { source })?;
     }
     Ok(())
 }
@@ -661,10 +677,15 @@ mod tests {
             display: Some(preset.clone()),
         };
         let error = validate_profile(&profile).unwrap_err();
-        assert!(
-            matches!(error, ValidationError::Display { .. }),
-            "{error:?}"
-        );
+        // The typed cause survives, so the editor can put the message on the
+        // field the operator was typing in. Asserting on the sentence instead
+        // is what this used to do, and it passed just as well when the field
+        // was no longer reachable.
+        let ValidationError::Display { source } = &error else {
+            panic!("expected a panel refusal, got {error:?}");
+        };
+        assert_eq!(*source, DisplayError::ImagePathMissing);
+        assert_eq!(source.field(), Some("image"));
         assert!(error.to_string().contains("needs a file"), "{error}");
         assert_eq!(error.channel(), None);
 
@@ -674,6 +695,40 @@ mod tests {
             ..profile
         };
         assert!(validate_profile(&renderable).is_ok());
+    }
+
+    /// A refusal crosses the socket with its cause intact. Three internally
+    /// tagged enums nest here, each with its own tag key, and the frame has to
+    /// survive all three: `IpcError` under `error`, `ValidationError` under
+    /// `kind`, and the lighting or panel cause under its own `kind`.
+    #[test]
+    fn a_nested_refusal_round_trips_through_the_wire_with_its_cause() {
+        let lighting = ValidationError::Lighting {
+            channel: 2,
+            source: LightingError::ColorDigits {
+                expected: crate::lighting::HEX_COLOR_DIGITS,
+                actual: 3,
+            },
+        };
+        let display = ValidationError::Display {
+            source: DisplayError::ImagePathTooLong {
+                bytes: 9_001,
+                max_bytes: 4_096,
+            },
+        };
+
+        for error in [lighting, display] {
+            let framed = crate::ipc::IpcError::Validation(error.clone());
+            let json = serde_json::to_string(&framed).unwrap();
+            assert_eq!(
+                serde_json::from_str::<crate::ipc::IpcError>(&json).unwrap(),
+                framed,
+                "{json}"
+            );
+            // The sentence an operator reads carries the inner reason, not a
+            // generic wrapper around it.
+            assert_eq!(framed.to_string(), error.to_string());
+        }
     }
 
     /// The safe profile carries no preset at all, so the new check cannot make

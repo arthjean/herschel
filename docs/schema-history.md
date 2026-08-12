@@ -49,6 +49,16 @@ profile carrying a broken preset would come back as an unparsable frame instead
 of a message naming the field. The same request previously succeeded and failed
 later at activation, which is the behavior change the bump also marks.
 
+**8.** Gave `ValidationError::Lighting` and `ValidationError::Display` their
+typed cause instead of a rendered sentence. Both carried `detail: String`, built
+by calling `to_string` on a `LightingError` or a `DisplayError` that the same
+crate already puts on the wire under `IpcError`. The string was a dead end:
+`DisplayError::field` names the editor field a refusal belongs to and
+`LightingError::channel` names the channel one points at, and neither survives
+being formatted. A version 7 client reads `detail` and finds it missing, so the
+two are separated at the handshake rather than left to exchange a refusal whose
+cause one side cannot reach.
+
 ## Capability schema version
 
 `kori_core::capability::CAPABILITY_SCHEMA_VERSION`. Bumped whenever the shape of
