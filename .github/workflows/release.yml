@@ -184,7 +184,7 @@ jobs:
         image: ["ubuntu:22.04", "debian:12"]
 
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.artifact }}
           path: assets
@@ -267,7 +267,7 @@ jobs:
             install: zypper --non-interactive install --allow-unsigned-rpm ./assets/kori-*.rpm
 
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.artifact }}
           path: assets
@@ -313,7 +313,7 @@ jobs:
     container: archlinux:base
 
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.artifact }}
           path: assets
@@ -366,7 +366,7 @@ jobs:
       contents: write # create the release and upload its assets
 
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.artifact }}
           path: dist
