@@ -22,6 +22,7 @@
 //! discard changes that arrive too numerous at once, and deduplication is no
 //! backpressure against a client alternating between two programs.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use kori_core::ipc::{ApplyOutcome, ChannelReadback, HardwareState};
@@ -93,7 +94,7 @@ pub struct CoolingExecutor {
     sysfs: SysfsRoot,
     control: Option<CoolingControl>,
     /// The last program this process confirmed on each channel.
-    committed: Vec<(Channel, Commit)>,
+    committed: BTreeMap<Channel, Commit>,
     /// When an attribute was last written, whatever channel it belonged to.
     ///
     /// One stamp for the device rather than one per channel: a curve
@@ -116,7 +117,7 @@ impl CoolingExecutor {
         Self {
             control: KrakenHwmon::locate(sysfs).map(CoolingControl::new),
             sysfs: sysfs.clone(),
-            committed: Vec::new(),
+            committed: BTreeMap::new(),
             last_write: None,
         }
     }
@@ -138,19 +139,14 @@ impl CoolingExecutor {
     }
 
     fn committed_curve(&self, channel: Channel) -> Option<TemperatureCurve> {
-        self.committed.iter().find_map(|(entry, commit)| {
-            match (entry == &channel, &commit.target) {
-                (true, Target::Curve(curve)) => Some(*curve),
-                _ => None,
-            }
-        })
+        match &self.committed.get(&channel)?.target {
+            Target::Curve(curve) => Some(*curve),
+            Target::Fixed(_) => None,
+        }
     }
 
     fn committed_target(&self, channel: Channel) -> Option<&Target> {
-        self.committed
-            .iter()
-            .find(|(entry, _)| entry == &channel)
-            .map(|(_, commit)| &commit.target)
+        self.committed.get(&channel).map(|commit| &commit.target)
     }
 
     /// The program both channels are committed to, when they hold the same
@@ -179,17 +175,17 @@ impl CoolingExecutor {
     }
 
     fn commit(&mut self, channel: Channel, target: Target) {
-        self.commit_at(channel, target, crate::now_unix_ms());
-    }
-
-    fn commit_at(&mut self, channel: Channel, target: Target, at_unix_ms: u64) {
-        self.committed.retain(|(entry, _)| entry != &channel);
-        self.committed
-            .push((channel, Commit { target, at_unix_ms }));
+        self.committed.insert(
+            channel,
+            Commit {
+                target,
+                at_unix_ms: crate::now_unix_ms(),
+            },
+        );
     }
 
     fn uncommit(&mut self, channel: Channel) {
-        self.committed.retain(|(entry, _)| entry != &channel);
+        self.committed.remove(&channel);
     }
 
     /// Apply one program, writing only what is not already in place.
