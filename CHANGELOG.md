@@ -13,6 +13,18 @@ disagree, because each file is valid on its own while the set is wrong.
 Protocol and schema versions have their own record, with the condition each
 deprecated field is still waiting on: [`docs/schema-history.md`](./docs/schema-history.md).
 
+## 0.1.1 - 2026-08-13
+
+### Fixed
+
+- The application icon. The scalable artwork carried its SPDX header above the
+  root element, which pushed `<svg` past the first 256 bytes: the window a
+  gdk-pixbuf loader sniffs before it parses. Every lookup of `Icon=kori` failed
+  with "couldn't recognize the image file format", so the window ran with no
+  icon while the desktop entry, the window's `app_id` and the icon theme cache
+  were each correct. The header now sits inside the root element, and
+  `crates/app/tests/desktop_entry.rs` holds the offset.
+
 ## 0.1.0 - 2026-08-13
 
 First release.

@@ -96,6 +96,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.1" date="2026-08-13">
+      <description>
+        <p>Fixes the application icon.</p>
+        <ul>
+          <li>The installed icon is now a file an icon theme can decode, so the window carries the application artwork instead of a placeholder</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-13">
       <description>
         <p>First release.</p>

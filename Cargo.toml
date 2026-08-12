@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # Lowest toolchain that actually compiles the workspace. 1.89 is the floor the
 # dependency graph imposes (`font-types`, via gpui); 1.90 is the lowest version
