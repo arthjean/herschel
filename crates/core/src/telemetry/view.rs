@@ -131,9 +131,25 @@ impl<T: Clone> Tracked<T> {
     }
 
     /// Fold one reading in, stamped with the time it was sampled.
+    ///
+    /// A sample older than the one already held is ignored, for the reason
+    /// [`History::push`] ignores one: the stamps come from a wall clock, and a
+    /// clock that steps backwards must not be read as a fresher measurement. It
+    /// is the more dangerous of the two here, because the stamp is what
+    /// [`Tracked::view`] ages against: one sample landing far enough ahead of
+    /// the clock would hold the metric at [`MetricView::Fresh`] for as long as
+    /// it took real time to catch up, and a frozen readout that never says
+    /// `Stale` is exactly the reading this module refuses to show.
     pub fn observe(&mut self, reading: &Reading<T>, at_unix_ms: u64) {
         match reading {
             Reading::Valid { value } => {
+                if self
+                    .last_valid
+                    .as_ref()
+                    .is_some_and(|(_, at)| at_unix_ms < *at)
+                {
+                    return;
+                }
                 self.last_valid = Some((value.clone(), at_unix_ms));
                 self.cause = None;
             }
@@ -350,6 +366,22 @@ mod tests {
         history.push(2_000, Some(3.0));
         assert_eq!(history.points().filter(|p| p.value.is_none()).count(), 1);
         assert_eq!(history.len(), 3);
+    }
+
+    /// The same rule `History` applies, in the type that ages a readout. A
+    /// sample stamped in the past must not replace a newer one, because the
+    /// stamp is what the staleness thresholds are measured from.
+    #[test]
+    fn a_retained_metric_ignores_a_sample_that_travels_backwards_in_time() {
+        let mut tracked = Tracked::new();
+        tracked.observe(&valid(29.8), 10_000);
+        tracked.observe(&valid(50.0), 9_000);
+
+        assert_eq!(tracked.view(10_100), MetricView::Fresh { value: 29.8 });
+        // And the older sample did not become the stamp everything ages from:
+        // the metric still goes stale on the schedule the newer one set.
+        assert!(tracked.view(10_000 + STALE_AFTER_MS).is_stale());
+        assert!(!tracked.view(9_000 + STALE_AFTER_MS).is_stale());
     }
 
     #[test]
