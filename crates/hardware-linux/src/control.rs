@@ -147,12 +147,8 @@ impl CoolingControl {
     pub fn apply_fixed(&self, channel: Channel, duty: u8) -> Result<Applied, WriteFailure> {
         self.write(&duty_attribute(channel), duty)?;
         self.write(&mode_attribute(channel), PwmMode::Fixed.to_kernel())?;
-        let writes = 2;
 
-        let mut readback = ChannelReadback::new(channel);
-        readback.mode = self.hwmon.mode(channel).copied();
-        readback.duty = self.hwmon.duty(channel).copied();
-
+        let readback = self.read_back(channel);
         let mut mismatches = Vec::new();
         if readback.mode != Some(PwmMode::Fixed) {
             mismatches.push(format!(
@@ -168,10 +164,7 @@ impl CoolingControl {
                 describe_duty(readback.duty)
             ));
         }
-        if !mismatches.is_empty() {
-            readback.mismatch = Some(mismatches.join("; "));
-        }
-        Ok(Applied { readback, writes })
+        Ok(applied(readback, mismatches, 2))
     }
 
     /// Put one channel on an onboard curve.
@@ -189,10 +182,7 @@ impl CoolingControl {
         self.write(&mode_attribute(channel), PwmMode::Curve.to_kernel())?;
         writes += 1;
 
-        let mut readback = ChannelReadback::new(channel);
-        readback.mode = self.hwmon.mode(channel).copied();
-        readback.duty = self.hwmon.duty(channel).copied();
-
+        let mut readback = self.read_back(channel);
         let mut mismatches = Vec::new();
         // The curve attributes are write-only on this driver, so an unreadable
         // curve is the normal case and leaves `curve_points_confirmed` at
@@ -220,10 +210,21 @@ impl CoolingControl {
                 describe_mode(readback.mode)
             ));
         }
-        if !mismatches.is_empty() {
-            readback.mismatch = Some(mismatches.join("; "));
-        }
-        Ok(Applied { readback, writes })
+        Ok(applied(readback, mismatches, writes))
+    }
+
+    /// Read a channel's mode and duty back off the device.
+    ///
+    /// Both apply paths start here. What each of them checks afterwards
+    /// genuinely differs, a duty on one side and forty curve points on the
+    /// other, so only the reading itself is shared: a helper covering the
+    /// checks too would take a nullable mode and a nullable curve, and hide
+    /// which of the two paths a given refusal came from.
+    fn read_back(&self, channel: Channel) -> ChannelReadback {
+        let mut readback = ChannelReadback::new(channel);
+        readback.mode = self.hwmon.mode(channel).copied();
+        readback.duty = self.hwmon.duty(channel).copied();
+        readback
     }
 
     /// Put a channel back to a captured state after a failed transaction.
@@ -346,6 +347,19 @@ impl CoolingControl {
         write_attribute(&path, value)
             .map_err(|error| WriteFailure::new(attribute, describe_io(&path, &error)))
     }
+}
+
+/// Close one transaction: the readback, its mismatches, and what it cost.
+///
+/// An empty mismatch list is not the same as an empty string, and the two apply
+/// paths must not disagree about that: `mismatch` staying `None` is what
+/// [`ChannelReadback::is_confirmed`] reads to say the channel is where it was
+/// asked to be.
+fn applied(mut readback: ChannelReadback, mismatches: Vec<String>, writes: u32) -> Applied {
+    if !mismatches.is_empty() {
+        readback.mismatch = Some(mismatches.join("; "));
+    }
+    Applied { readback, writes }
 }
 
 /// Write a single sysfs attribute.
