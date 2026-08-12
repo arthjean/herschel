@@ -140,12 +140,6 @@ pub struct Shell {
     /// unfinished field keeps the previous picture on screen instead of
     /// blanking it, and so no control can move one without the other.
     lcd: DisplayScreen,
-    /// Which compiled picture the running animation timer belongs to.
-    ///
-    /// Bumped every time the picture is recompiled or the animation is
-    /// restarted, so a timer left over from a file the operator has replaced
-    /// stops instead of driving the new one alongside its own timer.
-    film_generation: u64,
     lighting: LightingEditor,
     /// The one row of the Lighting screen whose controls are revealed.
     ///
@@ -226,7 +220,6 @@ impl Shell {
             destination: Destination::Monitoring,
             popover: None,
             lcd: DisplayScreen::default(),
-            film_generation: 0,
             lighting: LightingEditor::default(),
             // The panel opens first: it is the row with something to look at,
             // and a screen where every row is shut hides the editor the last
@@ -263,9 +256,6 @@ impl Shell {
                 self.lcd_seeded = true;
                 if let Some(preset) = status.display.committed.clone() {
                     self.lcd.adopt(&preset);
-                    // A panel already showing a picture when the window opens
-                    // gets it compiled here, since no edit is going to happen.
-                    self.refresh_film(cx);
                 }
             }
             self.adopt_committed_program();
@@ -278,6 +268,11 @@ impl Shell {
                 .map(|state| state.channel)
                 .collect();
             self.lighting.sync(&channels);
+            // The preview carries readings, so it follows the sample that just
+            // landed. Built here rather than in the repaint that draws it: a
+            // repaint happens on every pointer move, and this is the only
+            // moment anything the picture is made of can have changed.
+            self.refresh_picture(cx);
         }
 
         self.adopt_outcome();
@@ -544,10 +539,10 @@ impl Shell {
     /// out and the earlier timers fire into nothing. No task has to be
     /// cancelled and no edit can be lost by cancelling the wrong one.
     fn schedule_write(&mut self, target: WriteTarget, cx: &mut Context<Self>) {
-        // The picture is compiled at the edit rather than at the repaint, and
-        // this is where every panel edit passes.
+        // The picture is built at the edit rather than at the repaint, and this
+        // is where every panel edit passes.
         if target == WriteTarget::Lighting(LightingRow::Lcd) {
-            self.refresh_film(cx);
+            self.refresh_picture(cx);
         }
         let quiet = target.quiet();
         self.due.touch(target, Instant::now() + quiet);

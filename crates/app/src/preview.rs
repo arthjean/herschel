@@ -3,21 +3,26 @@
 
 //! The panel preview: the exact frame, not an impression of it.
 //!
-//! One [`DisplayPreset`] produces both the preview and the bytes the panel
-//! receives. So the preview is not drawn with the toolkit's shapes. It calls
-//! the same renderer the daemon calls, at the panel's own
+//! One [`kori_core::display::DisplayPreset`] produces both the preview and the
+//! bytes the panel receives. So the preview is not drawn with the toolkit's
+//! shapes. It calls the same renderer the daemon calls, at the panel's own
 //! resolution and in the panel's own color depth, and displays the result. What
 //! is on screen is what is on the glass, pixel for pixel, or the two differ
 //! only because the preset does.
 //!
 //! The frame is handed over as PNG bytes rather than as a pixel buffer, which
 //! keeps this file free of the toolkit's image types and their version.
+//!
+//! Nothing is rendered here. This module used to hold a second entry point that
+//! called the renderer inline, so the element tree paid a panel-sized
+//! rasterization and a PNG encode on every repaint, which is once per pointer
+//! move of any drag on the screen. Both kinds of picture are compiled in
+//! [`crate::display`] now, keyed by what they are made of, and this draws
+//! whichever one is current.
 
 use std::sync::Arc;
 
 use gpui::{Div, Image, ImageFormat, Pixels, div, img, prelude::*, px};
-use kori_core::capability::LcdPanel;
-use kori_core::display::{DisplayPreset, MetricSample};
 
 use crate::theme::{Color, color};
 
@@ -27,36 +32,15 @@ use crate::theme::{Color, color};
 /// laid out against this number.
 pub const PREVIEW_SIDE: Pixels = px(252.0);
 
-/// Build the preview element for `preset`.
+/// The disc, around whatever frame is current.
 ///
-/// `samples` are the readings the frame will carry, so the preview ages with
-/// telemetry exactly as the panel does.
-///
-/// `panel` is `None` until one answers, and then the disc is empty. A geometry
-/// invented to fill that gap would be a full hardware description, frame size
-/// and endpoint included, sitting in the same field a probed one lands in, and
-/// this product does not fabricate a default to fill a gap. Nothing is lost by
-/// refusing: every control on the row is disabled in that state and the line
-/// above the disc already says no panel has answered.
-pub fn panel_preview(
-    preset: &DisplayPreset,
-    samples: &[MetricSample; 2],
-    panel: Option<&LcdPanel>,
-) -> Div {
-    let rendered = panel.and_then(|panel| {
-        kori_lcd_renderer::render(preset, samples, panel)
-            .and_then(|frame| frame.to_png())
-            .ok()
-    });
-    panel_frame(rendered, preset.background)
-}
-
-/// The same disc, around a frame that was rendered somewhere else.
-///
-/// Image mode compiles its frames when the file is chosen rather than on every
-/// repaint, so what it has to show is already a PNG. It goes through this
-/// entry point and lands in the same disc, at the same size, with the same
-/// background behind whatever the picture leaves transparent.
+/// `rendered` is `None` when there is nothing to draw: no panel has answered,
+/// or the preset could not be rendered. A geometry invented to fill the first
+/// gap would be a full hardware description, frame size and endpoint included,
+/// sitting in the same field a probed one lands in, and this product does not
+/// fabricate a default to fill a gap. Nothing is lost by refusing: every control
+/// on the row is disabled in that state and the line above the disc already says
+/// no panel has answered.
 pub fn panel_frame(rendered: Option<Vec<u8>>, background: kori_core::lighting::Rgb) -> Div {
     div().flex().flex_col().items_center().child(
         // Round, always: the screen is square but the window in the cooler
@@ -85,8 +69,8 @@ pub fn panel_frame(rendered: Option<Vec<u8>>, background: kori_core::lighting::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kori_core::capability::LcdPanelShape;
-    use kori_core::display::LcdMetric;
+    use kori_core::capability::{LcdPanel, LcdPanelShape};
+    use kori_core::display::{DisplayPreset, LcdMetric, MetricSample};
     use kori_core::lighting::Rgb;
 
     /// Lowest contrast the small text on the panel accepts.

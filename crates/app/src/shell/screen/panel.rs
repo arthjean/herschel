@@ -14,7 +14,7 @@ use gpui::{Div, PathPromptOptions, div, prelude::*};
 use gpui::{Context, Pixels, px};
 use kori_core::KRAKEN_BASE;
 use kori_core::capability::CapabilityId;
-use kori_core::display::{DisplayMode, LcdMetric, MetricSample};
+use kori_core::display::{DisplayMode, LcdMetric};
 
 use crate::assets::Icon;
 use crate::components::{Button, ButtonVariant, ControlState, Note, NoteLevel, SelectOption};
@@ -109,7 +109,7 @@ impl Shell {
                 tab_index: base,
             },
             self.is_open(LightingRow::Lcd)
-                .then(|| self.lcd_detail(base, &editor, panel.as_ref(), frame, cx)),
+                .then(|| self.lcd_detail(base, &editor, frame, cx)),
             cx,
         )
     }
@@ -120,20 +120,9 @@ impl Shell {
         &self,
         base: isize,
         editor: &DisplayEditor,
-        panel: Option<&kori_core::capability::LcdPanel>,
         frame: ControlState,
         cx: &mut Context<Self>,
     ) -> Div {
-        // The preview ages with telemetry exactly as the panel does, from the
-        // same samples the daemon renders against.
-        let samples = match self.link.telemetry() {
-            Some(snapshot) => self.lcd.preview().samples(snapshot),
-            None => [
-                MetricSample::unavailable(editor.metrics[0]),
-                MetricSample::unavailable(editor.metrics[1]),
-            ],
-        };
-
         // A stopped stream is the one state on this screen an edit cannot
         // clear: the transfer failed without anything about the preset
         // changing, so nothing an automatic write watches has moved. It takes
@@ -145,11 +134,14 @@ impl Shell {
             .and_then(|status| status.display.faulted.clone())
             .filter(|_| frame.is_enabled());
 
-        // Image mode plays its own compiled frames rather than re-rendering the
-        // preset: the file was decoded when it was picked, and an animation has
-        // a frame to show that no repaint could work out on its own.
+        // Whatever the current picture is: one frame of a compiled animation,
+        // or the dial rendered from the preset and the last readings. Both are
+        // built when something they are made of moves rather than here, so this
+        // repaint copies bytes that already exist. The preview ages with
+        // telemetry exactly as the panel does, from the same samples the daemon
+        // renders against.
         let film = self.lcd.film();
-        let picture = film.and_then(|film| film.frame().map(<[u8]>::to_vec));
+        let picture = self.lcd.picture().map(<[u8]>::to_vec);
 
         // One grid, two columns wide: slot 1 on the left, slot 2 on the right,
         // one line per thing being chosen. Built here rather than inside the
@@ -223,7 +215,7 @@ impl Shell {
                             // a color that cannot be parsed is. The preset
                             // error comes first: it is the one that stops the
                             // frame before the picture is even looked for.
-                            .or_else(|| self.lcd.film_error().cloned())
+                            .or_else(|| self.lcd.picture_error().cloned())
                             .map(|error| Note::new(NoteLevel::Warning, error.to_string()).render()),
                     )
                     .children(faulted.map(|reason| {
@@ -270,11 +262,10 @@ impl Shell {
                 div()
                     .flex_none()
                     .w(PREVIEW_COLUMN_WIDTH)
-                    .child(if editor.mode.uses_image() {
-                        crate::preview::panel_frame(picture, self.lcd.preview().background)
-                    } else {
-                        crate::preview::panel_preview(self.lcd.preview(), &samples, panel)
-                    }),
+                    .child(crate::preview::panel_frame(
+                        picture,
+                        self.lcd.preview().background,
+                    )),
             )
     }
 
@@ -429,18 +420,24 @@ impl Shell {
         .detach();
     }
 
-    /// Compile the picture the preview needs, and keep it moving.
+    /// Build the picture the preview needs, and keep it moving.
     ///
-    /// Cheap when nothing about the file changed: the compiled frames carry
-    /// what they depend on, so this is one comparison per edit and a decode
-    /// only when the operator actually picked something else.
-    pub(crate) fn refresh_film(&mut self, cx: &mut Context<Self>) {
+    /// Cheap when nothing it is made of changed: the picture carries its own
+    /// key, so this is one comparison per call and a render or a decode only
+    /// when something the frame depends on actually moved. Called after every
+    /// edit and on every sample, which is exactly when that can happen.
+    pub(crate) fn refresh_picture(&mut self, cx: &mut Context<Self>) {
         let panel = self
             .link
             .status()
             .and_then(|status| status.display.panel.as_ref());
-        self.lcd.sync_film(panel);
-        self.play_film(cx);
+        let telemetry = self.link.telemetry();
+        // Only a picture that was actually replaced needs a timer. Arming one
+        // on every sample would take a fresh generation each second, stopping
+        // the chain already running and costing the animation a frame.
+        if self.lcd.sync_picture(panel, telemetry) {
+            self.play_film(cx);
+        }
     }
 
     /// Arrange for the next frame of the animation, if one is playing.
@@ -452,7 +449,7 @@ impl Shell {
     /// task is cancelled, because cancelling the wrong one is the failure this
     /// avoids.
     pub(crate) fn play_film(&mut self, cx: &mut Context<Self>) {
-        if !self.lighting_open.contains(&LightingRow::Lcd) {
+        if !self.is_open(LightingRow::Lcd) {
             return;
         }
         let Some(delay) = self
@@ -464,12 +461,11 @@ impl Shell {
             return;
         };
 
-        self.film_generation = self.film_generation.wrapping_add(1);
-        let generation = self.film_generation;
+        let generation = self.lcd.next_film_generation();
         cx.spawn(async move |shell, cx| {
             cx.background_executor().timer(delay).await;
             let _ = shell.update(cx, |shell, cx| {
-                if shell.film_generation != generation {
+                if shell.lcd.film_generation() != generation {
                     return;
                 }
                 if shell.lcd.advance_film() {
