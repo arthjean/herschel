@@ -42,6 +42,14 @@ impl Canvas {
         &self.pixels
     }
 
+    /// Hand the buffer over, so a finished picture is moved rather than copied.
+    pub fn into_pixels(self) -> Vec<Rgb> {
+        self.pixels
+    }
+
+    /// Read one pixel back, which is an assertion's need and not a drawing one:
+    /// nothing that puts marks on a canvas ever reads it.
+    #[cfg(test)]
     pub fn pixel(&self, x: u32, y: u32) -> Option<Rgb> {
         (x < self.width && y < self.height)
             .then(|| self.pixels[(y as usize) * (self.width as usize) + (x as usize)])
@@ -219,6 +227,13 @@ mod tests {
         assert!(canvas.pixels().iter().all(|p| *p == Rgb::new(1, 2, 3)));
         assert_eq!(canvas.pixel(7, 3), Some(Rgb::new(1, 2, 3)));
         assert_eq!(canvas.pixel(8, 0), None, "out of bounds reads nothing");
+    }
+
+    #[test]
+    fn the_buffer_leaves_the_canvas_intact_rather_than_copied() {
+        let canvas = Canvas::filled(3, 2, Rgb::new(9, 8, 7));
+        assert_eq!(canvas.clone().into_pixels(), canvas.pixels().to_vec());
+        assert_eq!(canvas.into_pixels().len(), 6);
     }
 
     #[test]
