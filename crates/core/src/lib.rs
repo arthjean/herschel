@@ -9,6 +9,96 @@
 //! processes agree on: what a device can do, what a reading is worth, what a
 //! profile contains and what may travel over the local Unix socket.
 
+/// Count the variants handed to [`wire_enum`], for the length of its `ALL`.
+///
+/// Written out rather than reached for through a const `len()` so the array's
+/// length is produced by the same expansion that produces its elements.
+macro_rules! count_wire_variants {
+    () => { 0usize };
+    ($head:ident $($tail:ident)*) => { 1usize + count_wire_variants!($($tail)*) };
+}
+
+/// Declare an enum that travels under a stable key and shows a label.
+///
+/// Five enums in this crate are read from a select control, written to a socket
+/// frame and stored in a configuration file, and each needs the same three
+/// things: the list of its variants, the key it travels under, and the words a
+/// control puts on screen.
+///
+/// Written by hand, that was three lists per enum plus a fourth held by serde's
+/// `rename_all`, and nothing in the language made the four agree. A test existed
+/// for exactly that: it proved `key()` returned the string serde writes. A test
+/// whose only job is to prove two copies of a list match is a request to stop
+/// keeping two copies, so the key is now declared once and used twice, as the
+/// `#[serde(rename)]` and as what `key()` returns. They cannot drift because
+/// they are the same token.
+///
+/// What the assertion in [`keys`] still covers is what this cannot: that no two
+/// variants claim one key, and that an unknown key resolves to nothing rather
+/// than to a default.
+macro_rules! wire_enum {
+    (
+        $(#[$enum_meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident = $key:literal, $label:literal
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[$enum_meta])*
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            serde::Serialize,
+            serde::Deserialize,
+        )]
+        $vis enum $name {
+            $(
+                $(#[$variant_meta])*
+                #[serde(rename = $key)]
+                $variant,
+            )+
+        }
+
+        impl $name {
+            /// Every variant, in the order they are declared and offered.
+            pub const ALL: [Self; count_wire_variants!($($variant)+)] =
+                [$(Self::$variant),+];
+
+            /// The stable identifier this variant travels and is stored under.
+            ///
+            /// The same string serde writes, because it is the same token.
+            pub fn key(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $key,)+
+                }
+            }
+
+            /// The words a control puts on screen for this variant.
+            pub fn label(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label,)+
+                }
+            }
+
+            /// The variant a stable key names, or nothing at all.
+            pub fn from_key(key: &str) -> Option<Self> {
+                match key {
+                    $($key => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
 pub mod capability;
 pub mod client;
 pub mod diagnostics;
@@ -66,19 +156,20 @@ pub fn is_allowlisted(id: DeviceId) -> bool {
 /// Assertions shared by every enum that publishes a stable key per variant.
 #[cfg(test)]
 pub(crate) mod keys {
-    /// Prove that a variant's stable key is the string serde writes for it,
-    /// that the key round-trips, and that no two variants share one.
+    /// Prove that no two variants claim one key, that every key round-trips,
+    /// and that an unknown key resolves to nothing.
     ///
-    /// `key` and `#[serde(rename_all = "snake_case")]` are two hand-maintained
-    /// mirrors of the same variant list, and nothing in the language makes them
-    /// agree. A select control offering a key the wire format does not use
-    /// would be a control the daemon rejects every time it is touched, so the
-    /// agreement is asserted here rather than assumed at each site.
+    /// The agreement between a key and the string serde writes is no longer
+    /// asserted here, because [`wire_enum`] declares it once and uses it as
+    /// both. What remains are the two things that expansion cannot rule out.
+    /// Two variants given the same key literal would compile: the second arm of
+    /// `from_key` would simply never be reached, and a control offering the
+    /// second variant would silently activate the first. That is what the
+    /// uniqueness check is for.
     ///
-    /// `all` is the same list, a third time. It cannot be checked for
-    /// completeness from here: a variant left out of it is invisible to this
-    /// assertion exactly as it is to `from_key`. What this does catch is the
-    /// larger failure, which is a key list that disagrees with the wire.
+    /// `all` is still a list this cannot check for completeness: a variant left
+    /// out of it is invisible to this assertion exactly as it is to `from_key`.
+    /// Declaring the enum through the macro is what keeps the two in step.
     pub(crate) fn assert_keys_are_the_serde_names<T>(
         all: &[T],
         key: impl Fn(T) -> &'static str,

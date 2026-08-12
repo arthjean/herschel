@@ -174,40 +174,19 @@ impl From<Brightness> for u8 {
     }
 }
 
-/// The animated effects this product exposes.
-///
-/// The list is short on purpose: an effect appears here only once the write
-/// probe has run its exact command on the owned controller. Adding a variant
-/// without that evidence is forbidden.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LightingEffect {
-    Breathing,
-    SpectrumWave,
+wire_enum! {
+    /// The animated effects this product exposes.
+    ///
+    /// The list is short on purpose: an effect appears here only once the write
+    /// probe has run its exact command on the owned controller. Adding a
+    /// variant without that evidence is forbidden.
+    pub enum LightingEffect {
+        Breathing = "breathing", "Breathing",
+        SpectrumWave = "spectrum_wave", "Spectrum wave",
+    }
 }
 
 impl LightingEffect {
-    pub const ALL: [Self; 2] = [Self::Breathing, Self::SpectrumWave];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Breathing => "Breathing",
-            Self::SpectrumWave => "Spectrum wave",
-        }
-    }
-
-    /// Stable identifier used by the client's select control.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Breathing => "breathing",
-            Self::SpectrumWave => "spectrum_wave",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|effect| effect.key() == key)
-    }
-
     /// How many colors the effect accepts, inclusive.
     ///
     /// Spectrum wave cycles the whole spectrum and takes none: offering a color
@@ -228,27 +207,25 @@ impl LightingEffect {
     }
 }
 
-/// The five animation speeds the controller accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectSpeed {
-    Slowest,
-    Slower,
-    Normal,
-    Faster,
-    Fastest,
+wire_enum! {
+    /// The five animation speeds the controller accepts.
+    pub enum EffectSpeed {
+        Slowest = "slowest", "Slowest",
+        Slower = "slower", "Slower",
+        Normal = "normal", "Normal",
+        Faster = "faster", "Faster",
+        Fastest = "fastest", "Fastest",
+    }
 }
 
 impl EffectSpeed {
-    pub const ALL: [Self; 5] = [
-        Self::Slowest,
-        Self::Slower,
-        Self::Normal,
-        Self::Faster,
-        Self::Fastest,
-    ];
-
     /// Index into the firmware's speed table, 0 slowest through 4 fastest.
+    ///
+    /// Written out rather than derived from the position in `ALL`. This is the
+    /// firmware's numbering, not this product's ordering, and the two are only
+    /// equal today; deriving one from the other would make a reordering of the
+    /// select silently renumber what the controller is sent. The agreement is
+    /// asserted instead, by `the_speeds_index_the_firmware_table_in_order`.
     pub fn index(self) -> usize {
         match self {
             Self::Slowest => 0,
@@ -258,61 +235,13 @@ impl EffectSpeed {
             Self::Fastest => 4,
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Slowest => "Slowest",
-            Self::Slower => "Slower",
-            Self::Normal => "Normal",
-            Self::Faster => "Faster",
-            Self::Fastest => "Fastest",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Slowest => "slowest",
-            Self::Slower => "slower",
-            Self::Normal => "normal",
-            Self::Faster => "faster",
-            Self::Fastest => "fastest",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|speed| speed.key() == key)
-    }
 }
 
-/// Which way an animated effect travels along the strip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectDirection {
-    Forward,
-    Backward,
-}
-
-impl EffectDirection {
-    pub const ALL: [Self; 2] = [Self::Forward, Self::Backward];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Forward => "Forward",
-            Self::Backward => "Backward",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Forward => "forward",
-            Self::Backward => "backward",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|direction| direction.key() == key)
+wire_enum! {
+    /// Which way an animated effect travels along the strip.
+    pub enum EffectDirection {
+        Forward = "forward", "Forward",
+        Backward = "backward", "Backward",
     }
 }
 

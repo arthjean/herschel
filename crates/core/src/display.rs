@@ -68,60 +68,32 @@ pub const MIN_FRAME_DELAY_MS: u64 = 80;
 /// unspecified cadence is not also the fastest one the hardware allows.
 pub const DEFAULT_FRAME_DELAY_MS: u64 = 100;
 
-/// What kind of picture the panel shows.
-///
-/// Four entries, each of which something in this product actually produces: the
-/// infographic the daemon streams, the single reading that gives one metric the
-/// whole dial, the solid field the transport probe sends, and a static image
-/// the operator picks. Nothing is listed that the renderer cannot draw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayMode {
-    /// Two metrics, each with an arc, a value and a label.
-    DualInfographic,
-    /// One metric, on one arc, at the largest size the panel can hold.
-    SingleReading,
-    /// The background color across the whole panel, and nothing else.
-    Solid,
-    /// A picture the operator chose, scaled to the panel.
+wire_enum! {
+    /// What kind of picture the panel shows.
     ///
-    /// One mode rather than two. A GIF carrying more than one frame is played,
-    /// a GIF carrying one and a PNG or JPEG are held still, and the difference
-    /// is a property of the file rather than a choice the operator has to
-    /// restate in a select.
-    Image,
+    /// Four entries, each of which something in this product actually produces:
+    /// the infographic the daemon streams, the single reading that gives one
+    /// metric the whole dial, the solid field the transport probe sends, and a
+    /// static image the operator picks. Nothing is listed that the renderer
+    /// cannot draw.
+    pub enum DisplayMode {
+        /// Two metrics, each with an arc, a value and a label.
+        DualInfographic = "dual_infographic", "Dual infographic",
+        /// One metric, on one arc, at the largest size the panel can hold.
+        SingleReading = "single_reading", "Single reading",
+        /// The background color across the whole panel, and nothing else.
+        Solid = "solid", "Solid color",
+        /// A picture the operator chose, scaled to the panel.
+        ///
+        /// One mode rather than two. A GIF carrying more than one frame is
+        /// played, a GIF carrying one and a PNG or JPEG are held still, and the
+        /// difference is a property of the file rather than a choice the
+        /// operator has to restate in a select.
+        Image = "image", "Image or GIF",
+    }
 }
 
 impl DisplayMode {
-    pub const ALL: [Self; 4] = [
-        Self::DualInfographic,
-        Self::SingleReading,
-        Self::Solid,
-        Self::Image,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::DualInfographic => "Dual infographic",
-            Self::SingleReading => "Single reading",
-            Self::Solid => "Solid color",
-            Self::Image => "Image or GIF",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::DualInfographic => "dual_infographic",
-            Self::SingleReading => "single_reading",
-            Self::Solid => "solid",
-            Self::Image => "image",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|mode| mode.key() == key)
-    }
-
     /// How many of the two reading slots this mode actually draws.
     ///
     /// The count rather than a flag: the editor hides the slots a mode never
@@ -157,42 +129,26 @@ impl DisplayMode {
     }
 }
 
-/// A telemetry value a reading slot can be pointed at.
-///
-/// Every entry resolves to a field of [`TelemetrySnapshot`] that an existing
-/// collector fills. A metric the daemon does not sample has no variant here,
-/// because a select entry that can only ever render `--` is a fabricated
-/// capability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LcdMetric {
-    CpuTemperature,
-    GpuTemperature,
-    LiquidTemperature,
-    CpuLoad,
-    GpuLoad,
+wire_enum! {
+    /// A telemetry value a reading slot can be pointed at.
+    ///
+    /// Every entry resolves to a field of [`TelemetrySnapshot`] that an
+    /// existing collector fills. A metric the daemon does not sample has no
+    /// variant here, because a select entry that can only ever render `--` is a
+    /// fabricated capability.
+    ///
+    /// The label is the full name, for the editor's select. The panel draws
+    /// [`LcdMetric::caption`] instead, which is what fits on the glass.
+    pub enum LcdMetric {
+        CpuTemperature = "cpu_temperature", "CPU temperature",
+        GpuTemperature = "gpu_temperature", "GPU temperature",
+        LiquidTemperature = "liquid_temperature", "Liquid temperature",
+        CpuLoad = "cpu_load", "CPU load",
+        GpuLoad = "gpu_load", "GPU load",
+    }
 }
 
 impl LcdMetric {
-    pub const ALL: [Self; 5] = [
-        Self::CpuTemperature,
-        Self::GpuTemperature,
-        Self::LiquidTemperature,
-        Self::CpuLoad,
-        Self::GpuLoad,
-    ];
-
-    /// Full name, for the editor's select.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::CpuTemperature => "CPU temperature",
-            Self::GpuTemperature => "GPU temperature",
-            Self::LiquidTemperature => "Liquid temperature",
-            Self::CpuLoad => "CPU load",
-            Self::GpuLoad => "GPU load",
-        }
-    }
-
     /// The short caption drawn on the panel itself.
     ///
     /// The panel is 240 pixels across and carries two of these, so the caption
@@ -210,20 +166,6 @@ impl LcdMetric {
             Self::CpuTemperature | Self::GpuTemperature | Self::LiquidTemperature => "\u{b0}",
             Self::CpuLoad | Self::GpuLoad => "%",
         }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::CpuTemperature => "cpu_temperature",
-            Self::GpuTemperature => "gpu_temperature",
-            Self::LiquidTemperature => "liquid_temperature",
-            Self::CpuLoad => "cpu_load",
-            Self::GpuLoad => "gpu_load",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|metric| metric.key() == key)
     }
 
     /// Value at which this metric's arc reaches a full sweep.
