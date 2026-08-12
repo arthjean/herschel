@@ -32,8 +32,29 @@ pub const FRAME_INTERVAL_MS: u64 = 1_000;
 ///
 /// The ceiling is applied to the dimensions the file declares, before any pixel
 /// buffer is allocated, so an image claiming an enormous size is refused rather
-/// than resized.
+/// than resized. It bounds the geometry; what bounds the memory is
+/// [`MAX_IMAGE_PIXELS`].
 pub const MAX_IMAGE_DIMENSION: u32 = 8192;
+
+/// Most pixels this product will decode out of one picture.
+///
+/// A ceiling per side bounds nothing in memory: 8192 by 8192 is inside
+/// [`MAX_IMAGE_DIMENSION`] and still decodes to a 256 MiB RGBA buffer, in
+/// whichever process is rendering. The client renders the preview from the same
+/// function the daemon sends from, and its whole resident budget is 110 MiB, so
+/// the ceiling that matters is the area.
+///
+/// Thirty-two mega-pixels is 128 MiB in the buffer a decoder allocates. Set to
+/// refuse the pathological file rather than to sit against the budget: it takes
+/// anything a camera an operator owns produces, up past a full-frame sensor,
+/// and still cuts the worst case this used to accept by four. A ceiling tight
+/// enough to fit the budget exactly would be refusing photographs to save a
+/// transient allocation, which is not the failure that was worth fixing.
+///
+/// It is also the number `picture.rs` hands its decoders as their own
+/// allocation limit, so a file that lies about its header meets the same budget
+/// one layer down rather than the allocator.
+pub const MAX_IMAGE_PIXELS: u64 = 33_554_432;
 
 /// Longest path a preset may carry, so a peer cannot grow a frame without end.
 const MAX_IMAGE_PATH_BYTES: usize = 4096;
@@ -438,6 +459,8 @@ pub enum DisplayError {
     ImageUndecodable { path: String, detail: String },
     #[error("Image is {width}x{height}, above the {max}x{max} limit.")]
     ImageTooLarge { width: u32, height: u32, max: u32 },
+    #[error("Image carries {pixels} pixels, above the {max} this product decodes.")]
+    ImageTooManyPixels { pixels: u64, max: u64 },
     #[error("The animation has more than {max} frames, which is more than this panel holds.")]
     AnimationTooLong { max: usize },
     #[error("The panel geometry is not known, so no frame can be laid out.")]
@@ -453,6 +476,7 @@ impl DisplayError {
             | Self::ImagePathTooLong { .. }
             | Self::ImageUndecodable { .. }
             | Self::ImageTooLarge { .. }
+            | Self::ImageTooManyPixels { .. }
             | Self::AnimationTooLong { .. } => Some("image"),
             Self::PanelUnknown => None,
         }

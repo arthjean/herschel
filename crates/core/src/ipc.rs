@@ -38,7 +38,7 @@ use crate::telemetry::{PwmMode, TelemetrySnapshot};
 /// is a refusal naming both versions rather than a frame one side misreads.
 /// What each version changed, and which quiet disagreement the bump exists to
 /// prevent, is recorded in `docs/schema-history.md`.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// A request from the GPUI client to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

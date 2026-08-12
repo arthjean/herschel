@@ -5,17 +5,19 @@
 //!
 //! One route in and one set of refusals, whether the caller wants the single
 //! picture a tick draws or every picture the file plays. The size a file
-//! declares is checked before anything is decoded, so a header claiming an
-//! enormous canvas is refused rather than allocated for, and every failure is
-//! typed and leaves the canvas as it was: a partial picture must never become a
-//! frame.
+//! declares is checked before anything is decoded, in both its sides and its
+//! area, so a header claiming a canvas no process here has room for is refused
+//! rather than allocated for. Under those checks every decoder built here
+//! carries the same allocation budget, which is what answers a file whose
+//! stream disagrees with its own header. Every failure is typed and leaves the
+//! canvas as it was: a partial picture must never become a frame.
 
 use std::path::Path;
 use std::time::Duration;
 
 use kori_core::display::{
     DEFAULT_FRAME_DELAY_MS, DisplayError, DisplayPreset, MAX_ANIMATION_FRAMES, MAX_IMAGE_DIMENSION,
-    MIN_FRAME_DELAY_MS,
+    MAX_IMAGE_PIXELS, MIN_FRAME_DELAY_MS,
 };
 use kori_core::lighting::Rgb;
 
@@ -64,7 +66,14 @@ pub(crate) fn frames<T>(
         )]);
     }
 
-    let decoder = image::codecs::gif::GifDecoder::new(reader.into_inner())
+    // Built from the reader's own stream rather than through it, so the limits
+    // it was given do not come along: a `GifDecoder` starts with none at all.
+    // They are set here instead, because this is the path that then allocates
+    // one frame buffer after another.
+    let mut decoder = image::codecs::gif::GifDecoder::new(reader.into_inner())
+        .map_err(|error| undecodable(path, error))?;
+    decoder
+        .set_limits(limits())
         .map_err(|error| undecodable(path, error))?;
     refuse_unusable_size(&decoder, path)?;
 
@@ -115,21 +124,47 @@ fn undecodable(path: &Path, detail: impl std::fmt::Display) -> DisplayError {
     }
 }
 
+/// The allocation ceiling every decoder built here is held to.
+///
+/// A backstop under the header checks, not a replacement for them: those refuse
+/// what a file *declares*, this refuses what a decoder actually asks for, which
+/// is the number that matters when a header and a stream disagree. `image`
+/// leaves it at 512 MiB by default, five times the client's whole resident
+/// budget, and a `GifDecoder` built straight from a stream carries none at all.
+///
+/// Only the allocation is set. The dimensions are deliberately left open so the
+/// refusals above are the ones an operator sees, naming the file and the
+/// ceiling, rather than a decoder's own message about a limit.
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::no_limits();
+    // Four bytes a pixel, which is the RGBA buffer the checks above allow.
+    limits.max_alloc = Some(MAX_IMAGE_PIXELS * 4);
+    limits
+}
+
 /// Open the file and let the decoder identify it from its content.
 ///
 /// The format comes from the bytes rather than from the extension, so a PNG
 /// named `.gif` is decoded as what it is.
 fn open(path: &Path) -> Result<Reader, DisplayError> {
-    image::ImageReader::open(path)
+    let mut reader = image::ImageReader::open(path)
         .map_err(|error| undecodable(path, error))?
         .with_guessed_format()
-        .map_err(|error| undecodable(path, error))
+        .map_err(|error| undecodable(path, error))?;
+    reader.limits(limits());
+    Ok(reader)
 }
 
 /// Refuse what the header declares, before a single pixel is decoded.
 ///
 /// The decoder answers from the header it has already read, so a file claiming
 /// an enormous canvas costs a refusal rather than the allocation it asked for.
+///
+/// Two ceilings, because one of them was never about memory. The per-side one
+/// bounds the geometry; the area is what a buffer is billed by, and a picture
+/// inside both dimensions can still be an allocation no process here has room
+/// for. Both are checked before the picture exists, and both name what they
+/// refused.
 fn refuse_unusable_size(decoder: &impl ImageDecoder, path: &Path) -> Result<(), DisplayError> {
     let (width, height) = decoder.dimensions();
     if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
@@ -137,6 +172,13 @@ fn refuse_unusable_size(decoder: &impl ImageDecoder, path: &Path) -> Result<(), 
             width,
             height,
             max: MAX_IMAGE_DIMENSION,
+        });
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_IMAGE_PIXELS {
+        return Err(DisplayError::ImageTooManyPixels {
+            pixels,
+            max: MAX_IMAGE_PIXELS,
         });
     }
     if width == 0 || height == 0 {
@@ -291,20 +333,18 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded() {
-        let directory = testing::scratch("enormous").unwrap();
-        let path = directory.join("enormous.png");
-
-        // A structurally valid PNG declaring 9000 by 9000 with no pixel data
-        // behind it. Under a hundred bytes on disk, so the refusal cannot be
-        // coming from the file being large; it comes from the size it claims. A
-        // build that decoded first would have to allocate 243 MB to reach the
-        // same verdict, which is the mistake this pins.
+    /// A structurally valid PNG declaring `width` by `height` and carrying no
+    /// picture behind it.
+    ///
+    /// Under a hundred bytes on disk, so a refusal cannot be coming from the
+    /// file being large; it comes from the size it claims. A build that decoded
+    /// first would have to allocate what the header asked for to reach the same
+    /// verdict, which is the mistake these fixtures pin.
+    fn png_declaring(width: u32, height: u32) -> Vec<u8> {
         let mut png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
         let mut ihdr: Vec<u8> = b"IHDR".to_vec();
-        ihdr.extend_from_slice(&9000u32.to_be_bytes());
-        ihdr.extend_from_slice(&9000u32.to_be_bytes());
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
         ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
         png.extend_from_slice(&13u32.to_be_bytes());
         png.extend_from_slice(&ihdr);
@@ -323,11 +363,18 @@ mod tests {
         png.extend_from_slice(&0u32.to_be_bytes());
         png.extend_from_slice(b"IEND");
         png.extend_from_slice(&crc32(b"IEND").to_be_bytes());
-        std::fs::write(&path, &png).unwrap();
         assert!(
             png.len() < 128,
             "the fixture is small, the size it claims is not"
         );
+        png
+    }
+
+    #[test]
+    fn an_image_larger_than_the_ceiling_is_refused_before_it_is_decoded() {
+        let directory = testing::scratch("enormous").unwrap();
+        let path = directory.join("enormous.png");
+        std::fs::write(&path, png_declaring(9000, 9000)).unwrap();
 
         let expected = DisplayError::ImageTooLarge {
             width: 9000,
@@ -337,6 +384,68 @@ mod tests {
         // Both entry points share the one guard, so both refuse it.
         assert_eq!(still(&image_preset(&path)).unwrap_err(), expected);
         assert_eq!(delays(&image_preset(&path)).unwrap_err(), expected);
+    }
+
+    #[test]
+    fn a_picture_inside_both_sides_and_past_the_area_is_still_refused() {
+        // 8000 by 8000 is inside the per-side ceiling and is a 256 MB RGBA
+        // buffer, in whichever process is rendering. The client renders the
+        // preview and its whole resident budget is 110 MB, so a ceiling that
+        // only ever bounded a side bounded nothing that matters.
+        let directory = testing::scratch("wide-area").unwrap();
+        let path = directory.join("area.png");
+        let side = 8000;
+        assert!(side <= MAX_IMAGE_DIMENSION, "the sides must be acceptable");
+        std::fs::write(&path, png_declaring(side, side)).unwrap();
+
+        let expected = DisplayError::ImageTooManyPixels {
+            pixels: u64::from(side) * u64::from(side),
+            max: MAX_IMAGE_PIXELS,
+        };
+        assert_eq!(still(&image_preset(&path)).unwrap_err(), expected);
+        assert_eq!(delays(&image_preset(&path)).unwrap_err(), expected);
+        assert_eq!(expected.field(), Some("image"), "the editor field is named");
+    }
+
+    #[test]
+    fn a_gif_declaring_more_area_than_the_ceiling_is_refused_before_a_frame() {
+        // The animated path builds its decoder from the stream rather than
+        // through the reader, so it used to carry neither the reader's limits
+        // nor any of its own. The same two ceilings apply to it.
+        let directory = testing::scratch("wide-area-gif").unwrap();
+        let path = directory.join("area.gif");
+        testing::write_gif(&path, 8, &[(Rgb::new(0xff, 0, 0), 10)]).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        // The logical screen descriptor, little endian: 8000 by 8000, inside
+        // the per-side ceiling and well past the area one.
+        bytes[6..10].copy_from_slice(&[0x40, 0x1f, 0x40, 0x1f]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert_eq!(
+            delays(&image_preset(&path)).unwrap_err(),
+            DisplayError::ImageTooManyPixels {
+                pixels: 8000 * 8000,
+                max: MAX_IMAGE_PIXELS,
+            }
+        );
+    }
+
+    #[test]
+    fn the_decoder_budget_is_the_buffer_the_header_checks_already_allow() {
+        // The value, not its application: that both decoders receive it is
+        // structural, since `limits` is one function and the two call sites are
+        // the only two decoders this module builds. What a test can hold is
+        // what the number means. `image` leaves it at 512 MiB and a
+        // `GifDecoder` built from a stream carries no limit at all, so a budget
+        // that drifted away from the area ceiling would put the backstop above
+        // the refusal it is meant to back.
+        assert_eq!(limits().max_alloc, Some(MAX_IMAGE_PIXELS * 4));
+        assert_eq!(
+            limits().max_image_width,
+            None,
+            "the dimensions stay open so this crate's own refusal is the one \
+             an operator reads"
+        );
     }
 
     /// The checksum a PNG chunk carries, so the fixture above is a real file.

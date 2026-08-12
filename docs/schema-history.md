@@ -59,6 +59,16 @@ being formatted. A version 7 client reads `detail` and finds it missing, so the
 two are separated at the handshake rather than left to exchange a refusal whose
 cause one side cannot reach.
 
+**9.** Added `DisplayError::ImageTooManyPixels`, raised for a picture whose area
+is past `MAX_IMAGE_PIXELS`. The dimension ceiling only ever bounded a side, so a
+file of 8192 by 8192 was accepted and decoded into a 256 MiB buffer inside
+whichever process was rendering, client included. A version 8 client decodes
+`DisplayError` by its `kind` tag and has no arm for this one, so the refusal of
+an image it just picked would arrive as an unparsable frame instead of a message
+naming the file and the ceiling. The same file previously rendered or took the
+process out depending on how much memory was free, which is the behavior change
+the bump also marks.
+
 ## Capability schema version
 
 `kori_core::capability::CAPABILITY_SCHEMA_VERSION`. Bumped whenever the shape of
