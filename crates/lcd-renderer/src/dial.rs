@@ -12,7 +12,7 @@
 use kori_core::display::{DisplayPreset, LcdMetric, MetricSample, ReadingSlot};
 use kori_core::lighting::Rgb;
 
-use crate::canvas::{Arc, Canvas};
+use crate::canvas::{Arc, Canvas, Shade};
 use crate::text;
 
 /// Where each element sits, as a fraction of the panel's smaller side.
@@ -347,11 +347,16 @@ fn gauge(
     // two: a band that shaded into a color nobody picked is a band whose
     // swatches do not describe it. A layout that does not shade, or a slot with
     // no second color, draws it solid.
+    //
+    // The mirror is handed over rather than applied here. A mirrored band fills
+    // from the end of its sweep back toward the start, so its foot is the far
+    // end; swapping the two colors would put the right shade on the band and
+    // still leave the wrong one on the cap that survives at a low reading.
     let filled = band.sweep * fraction;
-    let (fill_start, from, to) = if band.mirrored {
-        (band.start + band.sweep - filled, head, slot.reading)
+    let fill_start = if band.mirrored {
+        band.start + band.sweep - filled
     } else {
-        (band.start, slot.reading, head)
+        band.start
     };
     canvas.fill_arc_gradient(
         Arc {
@@ -362,8 +367,11 @@ fn gauge(
             sweep_turns: filled,
             round_caps: true,
         },
-        from,
-        to,
+        Shade {
+            foot: slot.reading,
+            head,
+            foot_at_end: band.mirrored,
+        },
     );
 }
 
@@ -495,6 +503,53 @@ mod tests {
                 "gauge {index} shaded in a layout that draws its bands solid"
             );
         }
+    }
+
+    #[test]
+    fn a_gauge_at_the_foot_of_its_scale_shows_the_color_its_foot_names() {
+        // The band's two colors are what the editor's swatches promise. A
+        // reading of zero showed the second one, because both round caps land
+        // on the same point when the sweep is empty and the head was painted
+        // last. An idle load then wore the color that means full scale.
+        let mut preset = DisplayPreset::default_infographic();
+        preset.mode = DisplayMode::SingleReading;
+        preset.readings[0].metric = LcdMetric::CpuLoad;
+        preset.readings[0].reading = Rgb::new(0x00, 0x00, 0xff);
+        preset.readings[0].reading_end = Some(Rgb::new(0xff, 0x00, 0x00));
+
+        // The middle of the band at twelve o'clock, where a full ring starts
+        // and where the dot of an empty gauge sits.
+        let row = (RADIUS - RADIUS * (layout::TRACK_INNER + layout::TRACK_OUTER) / 2.0) as u32;
+        let dot = |value: f32| {
+            let frame = render(
+                &preset,
+                &[
+                    MetricSample {
+                        metric: LcdMetric::CpuLoad,
+                        value: Some(value),
+                    },
+                    MetricSample::unavailable(LcdMetric::GpuTemperature),
+                ],
+                &panel(),
+            )
+            .unwrap();
+            crate::fixtures::at(&frame, SIDE / 2, row)
+        };
+
+        // Zero, and every reading too small to hold the two caps apart.
+        for value in [0.0, 0.5, 1.0, 2.0] {
+            let pixel = dot(value);
+            assert!(
+                pixel.b > pixel.r,
+                "a reading of {value} wore its head color at the foot: {pixel:?}"
+            );
+        }
+        // And the head is still reached where the band actually ends.
+        let full = render(&preset, &samples(Some(100.0), None), &panel()).unwrap();
+        assert!(
+            in_ring(&full).any(|(_, pixel)| pixel == preset.readings[0].band_end()),
+            "a full gauge never reaches the color its head names"
+        );
     }
 
     #[test]

@@ -74,16 +74,16 @@ impl Canvas {
     /// panel, and nine point tests per pixel over that area is the one thing
     /// that would put the preview past its repaint budget.
     pub fn fill_arc(&mut self, arc: Arc, color: Rgb) {
-        self.fill_arc_gradient(arc, color, color);
+        self.fill_arc_gradient(arc, Shade::solid(color));
     }
 
-    /// The same band, shading from `from` at its start to `to` at its end.
+    /// The same band, shading from its foot to its head.
     ///
     /// One gauge reads as a single quantity rising rather than as a bar that
     /// happens to be colored, which is the whole reason the panel is a dial. The
     /// shade runs along the sweep and not across the band, so a thin track and a
     /// thick one carry the same progression.
-    pub fn fill_arc_gradient(&mut self, arc: Arc, from: Rgb, to: Rgb) {
+    pub fn fill_arc_gradient(&mut self, arc: Arc, shade: Shade) {
         if arc.sweep_turns < 0.0 || arc.outer <= arc.inner {
             return;
         }
@@ -91,10 +91,10 @@ impl Canvas {
         if sweep <= 0.0 && !arc.round_caps {
             return;
         }
+        let (at_start, at_end) = shade.along_the_sweep();
         let reach = arc.outer.ceil() as i32 + 1;
         let center_x = arc.center.0;
         let center_y = arc.center.1;
-
         for row in (center_y as i32 - reach)..=(center_y as i32 + reach) {
             for column in (center_x as i32 - reach)..=(center_x as i32 + reach) {
                 let dx = column as f32 + 0.5 - center_x;
@@ -130,24 +130,40 @@ impl Canvas {
                     let to_end = ((sweep - offset) / softness + 0.5).clamp(0.0, 1.0);
                     radial * from_start.min(to_end)
                 };
-                let color = if from == to {
-                    from
+                // A band of no length has no progression to sit on, and
+                // dividing by its sweep would hand `mixed` a NaN it renders as
+                // black. Everything a zero sweep paints belongs to the foot.
+                let color = if sweep <= 0.0 {
+                    shade.foot
+                } else if at_start == at_end {
+                    at_start
                 } else {
-                    from.mixed(to, (offset / sweep).clamp(0.0, 1.0))
+                    at_start.mixed(at_end, (offset / sweep).clamp(0.0, 1.0))
                 };
                 self.blend(column, row, color, coverage);
             }
         }
 
         // The ends last, so each covers the square edge the sweep left behind
-        // rather than being cut by it. A full ring has no end to round off, and
-        // a sweep of nothing is left as the single dot both ends make together,
-        // which is what a gauge sitting at zero should look like.
+        // rather than being cut by it. A full ring has no end to round off.
+        //
+        // The head first and the foot second, because the two overlap for any
+        // sweep shorter than the band is thick and whichever is drawn last is
+        // the one seen. A gauge near zero has to read as the color its foot
+        // names: painting it in the head's is a reading of nothing wearing the
+        // color that means full scale. At exactly zero the two land on the same
+        // point and the foot is all that remains, which is the dot a gauge
+        // sitting at zero should show.
         if arc.round_caps && sweep < 1.0 {
             let middle = (arc.inner + arc.outer) / 2.0;
             let cap = (arc.outer - arc.inner) / 2.0;
-            self.fill_disc(polar(arc.center, middle, arc.start_turns), cap, from);
-            self.fill_disc(polar(arc.center, middle, arc.start_turns + sweep), cap, to);
+            let (foot_turn, head_turn) = if shade.foot_at_end {
+                (arc.start_turns + sweep, arc.start_turns)
+            } else {
+                (arc.start_turns, arc.start_turns + sweep)
+            };
+            self.fill_disc(polar(arc.center, middle, head_turn), cap, shade.head);
+            self.fill_disc(polar(arc.center, middle, foot_turn), cap, shade.foot);
         }
     }
 
@@ -180,6 +196,46 @@ fn polar(center: (f32, f32), radius: f32, turns: f32) -> (f32, f32) {
         // Screen y grows downward, so twelve o'clock is the negative direction.
         center.1 - radius * angle.cos(),
     )
+}
+
+/// A band's two colors, and which of its ends the reading grows from.
+///
+/// Which end is the foot is the caller's fact rather than the geometry's: a
+/// pair of mirrored gauges fills one band from its start and the other from its
+/// end so that both climb toward twelve o'clock. It has to reach this far down
+/// because the foot is the cap drawn last, and at a reading near zero the two
+/// caps land on top of each other.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shade {
+    /// The color at the end a reading grows from, which a gauge at zero shows.
+    pub foot: Rgb,
+    /// The color a reading at full scale reaches.
+    pub head: Rgb,
+    /// The foot is the end of the sweep rather than its start.
+    pub foot_at_end: bool,
+}
+
+impl Shade {
+    /// One color across the whole band.
+    pub const fn solid(color: Rgb) -> Self {
+        Self {
+            foot: color,
+            head: color,
+            foot_at_end: false,
+        }
+    }
+
+    /// The colors at the start and at the end of the sweep, in that order.
+    ///
+    /// The one place the mirror is turned back into geometry, so the shade and
+    /// the caps cannot disagree about which end is which.
+    fn along_the_sweep(self) -> (Rgb, Rgb) {
+        if self.foot_at_end {
+            (self.head, self.foot)
+        } else {
+            (self.foot, self.head)
+        }
+    }
 }
 
 /// One annular arc: where it is, how thick, and how far around it goes.
@@ -467,8 +523,11 @@ mod tests {
                 sweep_turns: 0.5,
                 round_caps: false,
             },
-            from,
-            to,
+            Shade {
+                foot: from,
+                head: to,
+                foot_at_end: false,
+            },
         );
         // Twelve o'clock is the start of the sweep, six o'clock its end, and
         // three o'clock is halfway between them. Sampled one pixel inside each
@@ -482,5 +541,95 @@ mod tests {
             "the shade must run along the sweep: {start:?} {middle:?} {end:?}"
         );
         assert!(end.r > 0xd0, "the sweep must reach its own color: {end:?}");
+    }
+
+    #[test]
+    fn a_short_gauge_wears_the_color_of_its_foot_and_not_of_its_head() {
+        // The two caps overlap for any sweep shorter than the band is thick,
+        // and one of them wins. It has to be the foot: a gauge showing almost
+        // nothing must not be painted in the color that means full scale.
+        //
+        // The band here is 6 wide, so the caps are 3 across and separate at a
+        // sweep of about 0.03 turns at this radius. Every sweep below that is
+        // the case under test, and zero is the one where they coincide exactly.
+        let foot = Rgb::new(0x20, 0x20, 0xff);
+        let head = Rgb::new(0xff, 0x20, 0x20);
+        let of = |sweep_turns: f32, foot_at_end: bool| {
+            let mut canvas = Canvas::filled(41, 41, BLACK);
+            canvas.fill_arc_gradient(
+                Arc {
+                    center: (20.5, 20.5),
+                    inner: 12.0,
+                    outer: 18.0,
+                    start_turns: 0.0,
+                    sweep_turns,
+                    round_caps: true,
+                },
+                Shade {
+                    foot,
+                    head,
+                    foot_at_end,
+                },
+            );
+            canvas
+        };
+
+        for sweep in [0.0, 0.005, 0.01] {
+            // Twelve o'clock, the middle of the band, where the foot sits.
+            let dot = of(sweep, false).pixel(20, 5).unwrap();
+            assert!(
+                dot.b > dot.r,
+                "a sweep of {sweep} showed its head color at the foot: {dot:?}"
+            );
+        }
+
+        // Mirrored, the reading grows from the end of the sweep back toward its
+        // start, so the foot is at the other end and the same rule holds there.
+        let mirrored = of(0.01, true);
+        let dot = mirrored.pixel(23, 5).unwrap();
+        assert!(
+            dot.b > dot.r,
+            "a mirrored band put its head where its foot grows from: {dot:?}"
+        );
+
+        // And a sweep long enough to hold the caps apart still ends on its own
+        // head color, so the rule above did not simply repaint the whole band.
+        let long = of(0.5, false);
+        let end = long.pixel(23, 34).unwrap();
+        assert!(
+            end.r > end.b,
+            "a half turn must still reach its head color: {end:?}"
+        );
+    }
+
+    #[test]
+    fn a_band_of_no_length_never_paints_a_color_neither_end_names() {
+        // A zero sweep has no progression to interpolate along. Dividing by it
+        // produced a NaN that `mixed` rendered as black, which is a color no
+        // slot chose and the background of every panel this draws on.
+        let foot = Rgb::new(0x40, 0x80, 0xc0);
+        let head = Rgb::new(0xc0, 0x80, 0x40);
+        // An odd width, so a pixel center falls exactly on the center column
+        // and the angle of the twelve o'clock ray is exactly zero turns.
+        let mut canvas = Canvas::filled(41, 41, WHITE);
+        canvas.fill_arc_gradient(
+            Arc {
+                center: (20.5, 20.5),
+                inner: 12.0,
+                outer: 18.0,
+                start_turns: 0.0,
+                sweep_turns: 0.0,
+                round_caps: true,
+            },
+            Shade {
+                foot,
+                head,
+                foot_at_end: false,
+            },
+        );
+        assert!(
+            canvas.pixels().iter().all(|pixel| *pixel != BLACK),
+            "a zero sweep painted black, which is neither end of the shade"
+        );
     }
 }
