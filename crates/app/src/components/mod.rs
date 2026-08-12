@@ -129,6 +129,42 @@ pub fn set_focus_visible(visible: bool) {
     FOCUS_VISIBLE.with(|flag| flag.set(visible));
 }
 
+/// Reserve the focus ring, and reveal it only while the keyboard is driving.
+///
+/// Two facts that always travel together, so they are stated once. The ring is
+/// reserved rather than added on focus, which is what keeps a control from
+/// growing by two pixels and shifting the line it sits on the moment it takes
+/// focus; and it is drawn only when focus arrived by keyboard, because it is
+/// what tells someone navigating by Tab where they are and noise to someone who
+/// just pointed at the control they were already looking at.
+///
+/// `focusable` is whether this control can hold focus at all. A disabled one
+/// still reserves the ring, so it is exactly the size of the enabled control
+/// beside it, and never reveals one.
+///
+/// Six controls carry this: the pill, the button, a rail entry, a device row,
+/// the curve plot and a swatch. They carried it six times, three of them with
+/// the same comment word for word. A menu row is the deliberate exception, and
+/// adds its ring rather than reserving one: it is drawn over the page rather
+/// than in it, so nothing moves when it grows.
+pub fn focus_ring<E>(element: E, focusable: bool) -> E
+where
+    E: Styled + InteractiveElement,
+{
+    // Which token the invisible border borrows does not matter, because the
+    // alpha is zero. One expression rather than the three different surfaces
+    // this used to be spelled with, so nobody has to wonder whether the
+    // difference was a decision.
+    let element = element
+        .border(FOCUS_RING)
+        .border_color(color::PANEL.alpha(0.0));
+    if focusable && focus_visible() {
+        element.focus(|this| this.border_color(color::FOCUS.hsla()))
+    } else {
+        element
+    }
+}
+
 /// The pill every value control is built on, matched to Paneflow's
 /// `select_trigger`.
 ///
@@ -169,10 +205,6 @@ fn pill(
     filled: bool,
 ) -> Stateful<Div> {
     let enabled = state.is_enabled() || matches!(state, ControlState::Error { .. });
-    let resting = match state {
-        ControlState::Error { .. } => color::DANGER.hsla(),
-        _ => color::CONTROL.alpha(0.0),
-    };
     let base = div()
         .id(id)
         .relative()
@@ -183,8 +215,6 @@ fn pill(
         .min_h(CONTROL_HEIGHT)
         .px(space::SM)
         .py(space::XS)
-        .border(FOCUS_RING)
-        .border_color(resting)
         .rounded(RADIUS)
         .bg(if filled {
             color::CONTROL.hsla()
@@ -193,6 +223,15 @@ fn pill(
         })
         .text_xs()
         .text_color(state.text_color());
+
+    // The reserved ring, plus the one state that keeps an outline at rest: a
+    // control holding a value that cannot be parsed. Nothing else on the pill
+    // says so, and the message under it is not where the eye is. Set after the
+    // ring, because at rest the last color wins while focus keeps its own.
+    let base = focus_ring(base, enabled).when(
+        matches!(state, ControlState::Error { .. }),
+        |this| this.border_color(color::DANGER.hsla()),
+    );
 
     if enabled {
         base.tab_index(tab_index)
@@ -204,9 +243,6 @@ fn pill(
             .when(filled, |this| {
                 this.hover(|this| this.bg(color::CONTROL_HOVER.hsla()))
                     .active(|this| this.bg(color::ACCENT_ACTIVE.alpha(0.35)))
-            })
-            .when(focus_visible(), |this| {
-                this.focus(|this| this.border_color(color::FOCUS.hsla()))
             })
     } else {
         // A disabled control is not a tab stop: keyboard traversal must not

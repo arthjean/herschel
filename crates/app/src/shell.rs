@@ -21,7 +21,9 @@ use kori_core::profile::{Channel, CoolingProgram};
 use kori_core::telemetry::KrakenTelemetry;
 
 use crate::assets::Icon;
-use crate::components::{ICON_SIZE, Note, NoteLevel, focus_visible, icon, set_focus_visible};
+use crate::components::{
+    ICON_SIZE, Note, NoteLevel, focus_ring, focus_visible, icon, set_focus_visible,
+};
 use crate::cooling::CoolingEditor;
 use crate::display::DisplayScreen;
 use crate::feed::{CommandOutcome, CommandSubject, Feed, OutcomeSeverity, now_unix_ms};
@@ -32,9 +34,7 @@ use crate::shell::screen::Popover;
 use crate::shell::screen::drag::{Drag, TrackMap};
 use crate::shell::screen::row::LightingRow;
 use crate::shell::screen::write::{WriteSchedule, WriteTarget, write_is_held_back};
-use crate::theme::{
-    CARD_INSET, CARD_RADIUS, FOCUS_RING, RADIUS, RAIL_WIDTH, TARGET_MIN, color, space,
-};
+use crate::theme::{CARD_INSET, CARD_RADIUS, RADIUS, RAIL_WIDTH, TARGET_MIN, color, space};
 use crate::window_chrome::{self, DragLatch};
 
 pub mod screen;
@@ -493,35 +493,30 @@ impl Shell {
             color::TEXT.alpha(0.05)
         };
 
-        div()
-            .id(SharedString::from(destination.label()))
-            .tab_index(destination.tab_index())
-            .tab_stop(true)
-            .flex()
-            .items_center()
-            .gap(space::SM)
-            .w_full()
-            // The menu row's padding, but not its height: a menu row is 28 tall
-            // because it is one of a list the pointer is already inside, and a
-            // rail entry is a target the pointer travels to, so it keeps the
-            // floor every pointer target in this interface keeps.
-            .min_h(TARGET_MIN)
-            .p(space::SM)
-            .rounded(RADIUS)
-            // The ring is reserved rather than added on focus, as it is on every
-            // other control here. The menus add theirs, which is the one part of
-            // their appearance not worth copying: added, it would grow the entry
-            // by two pixels the moment it took focus.
-            .border(FOCUS_RING)
-            .border_color(color::SURFACE.alpha(0.0))
-            .cursor_pointer()
-            .text_xs()
-            .text_color(ink)
+        focus_ring(
+            div()
+                .id(SharedString::from(destination.label()))
+                .tab_index(destination.tab_index())
+                .tab_stop(true)
+                .flex()
+                .items_center()
+                .gap(space::SM)
+                .w_full()
+                // The menu row's padding, but not its height: a menu row is 28
+                // tall because it is one of a list the pointer is already
+                // inside, and a rail entry is a target the pointer travels to,
+                // so it keeps the floor every pointer target in this interface
+                // keeps.
+                .min_h(TARGET_MIN)
+                .p(space::SM)
+                .rounded(RADIUS)
+                .cursor_pointer()
+                .text_xs()
+                .text_color(ink),
+            true,
+        )
             .bg(resting)
             .hover(|this| this.bg(hovered))
-            .when(focus_visible(), |this| {
-                this.focus(|this| this.border_color(color::FOCUS.hsla()))
-            })
             .child(icon(destination.icon(), ICON_SIZE, ink))
             .child(destination.label())
             .on_click(cx.listener(move |this, _, _, cx| this.go(destination, cx)))

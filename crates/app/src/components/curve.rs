@@ -19,9 +19,9 @@ use kori_core::profile::{
     CURVE_NODE_COUNT, CurveNodes, MAX_DUTY_PERCENT, duty_from_percent, duty_to_percent,
 };
 
-use crate::theme::{DEGREE_C, FOCUS_RING, META_SEPARATOR, RADIUS, color, numeric_font, space};
+use crate::theme::{DEGREE_C, META_SEPARATOR, RADIUS, color, numeric_font, space};
 
-use super::{ControlState, focus_visible, stroke_line};
+use super::{ControlState, focus_ring, stroke_line};
 
 /// The liquid-temperature curve editor.
 ///
@@ -126,7 +126,7 @@ impl CurveEditor {
             .size_full(),
         );
 
-        let mut frame = div()
+        let frame = div()
             .id("curve-plot")
             .flex()
             .flex_col()
@@ -134,10 +134,6 @@ impl CurveEditor {
             .min_w_0()
             .gap(space::XS)
             .rounded(RADIUS)
-            // The ring is reserved rather than added on focus, so focusing the
-            // plot does not move the axes around it.
-            .border(FOCUS_RING)
-            .border_color(color::PANEL.alpha(0.0))
             .child(curve_caption(&nodes, selected, liquid_c))
             .child(
                 div()
@@ -158,14 +154,12 @@ impl CurveEditor {
                     .child(temperature_axis()),
             );
 
+        let mut frame = focus_ring(frame, enabled);
         if enabled {
             frame = frame
                 .tab_index(self.tab_index)
                 .tab_stop(true)
-                .cursor_pointer()
-                .when(focus_visible(), |this| {
-                    this.focus(|this| this.border_color(color::FOCUS.hsla()))
-                });
+                .cursor_pointer();
         }
 
         frame

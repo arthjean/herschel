@@ -17,12 +17,12 @@ use gpui::{
 
 use crate::assets::Icon;
 use crate::theme::{
-    CONTROL_HEIGHT, Color, FOCUS_RING, MENU_GLYPH_SIZE, RADIUS, SWATCH_RADIUS, SWATCH_SIZE, color,
+    CONTROL_HEIGHT, Color, MENU_GLYPH_SIZE, RADIUS, SWATCH_RADIUS, SWATCH_SIZE, color,
     numeric_font, space,
 };
 
 use super::{
-    ButtonVariant, ControlState, control_pill, field, focus_visible, icon, select_chevron,
+    ButtonVariant, ControlState, control_pill, field, focus_ring, icon, select_chevron,
     slider_surface,
 };
 
@@ -123,8 +123,6 @@ impl Button {
             .min_h(CONTROL_HEIGHT)
             .px(space::MD)
             .py(space::XS)
-            .border(FOCUS_RING)
-            .border_color(color::CONTROL.alpha(0.0))
             .rounded(RADIUS)
             .bg(fill)
             .text_xs()
@@ -132,15 +130,13 @@ impl Button {
             .text_color(label_color)
             .child(self.label);
 
+        let base = focus_ring(base, enabled);
         if enabled {
             base.tab_index(self.tab_index)
                 .tab_stop(true)
                 .cursor_pointer()
                 .hover(|this| this.bg(hover_fill))
                 .active(|this| this.bg(pressed))
-                .when(focus_visible(), |this| {
-                    this.focus(|this| this.border_color(color::FOCUS.hsla()))
-                })
         } else {
             // A disabled control is not a tab stop: keyboard traversal must not
             // stop on something that cannot be operated.
@@ -599,7 +595,7 @@ pub fn parse_hex_color(value: &str) -> Result<Color, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::set_focus_visible;
+    use crate::components::{focus_visible, set_focus_visible};
     use gpui::size;
 
     #[test]

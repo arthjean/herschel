@@ -11,10 +11,10 @@
 
 use gpui::{AnyElement, Div, SharedString, Stateful, div, prelude::*};
 
-use crate::components::{ColorField, ControlState, focus_visible};
+use crate::components::{ColorField, ControlState, focus_ring};
 use crate::display::DisplayColorField;
 use crate::shell::Shell;
-use crate::theme::{Color, FOCUS_RING, SWATCH_RADIUS, SWATCH_SIZE, color, space};
+use crate::theme::{Color, SWATCH_RADIUS, SWATCH_SIZE, color, space};
 use gpui::Context;
 
 use super::row::LightingRow;
@@ -80,26 +80,22 @@ pub const SWATCH_COLUMNS: usize = 3;
 /// and one in a channel's are the same object rather than two that happen to
 /// match today.
 fn swatch_cell(id: String, swatch: Color, tab_index: isize) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(id))
-        .tab_index(tab_index)
-        .tab_stop(true)
-        .flex_none()
-        .w(SWATCH_SIZE)
-        .h(SWATCH_SIZE)
-        .rounded(SWATCH_RADIUS)
-        .cursor_pointer()
-        // Nothing outlines the color at rest: the swatch is the color and an
-        // edge around it is one more thing to read. The ring is reserved rather
-        // than added, so pointing at a swatch or focusing it does not move the
-        // row it sits in.
-        .border(FOCUS_RING)
-        .border_color(color::PANEL.alpha(0.0))
-        .bg(swatch.hsla())
-        .hover(|this| this.border_color(color::FOCUS.alpha(0.6)))
-        .when(focus_visible(), |this| {
-            this.focus(|this| this.border_color(color::FOCUS.hsla()))
-        })
+    // Nothing outlines the color at rest: the swatch is the color and an edge
+    // around it is one more thing to read.
+    focus_ring(
+        div()
+            .id(SharedString::from(id))
+            .tab_index(tab_index)
+            .tab_stop(true)
+            .flex_none()
+            .w(SWATCH_SIZE)
+            .h(SWATCH_SIZE)
+            .rounded(SWATCH_RADIUS)
+            .cursor_pointer(),
+        true,
+    )
+    .bg(swatch.hsla())
+    .hover(|this| this.border_color(color::FOCUS.alpha(0.6)))
 }
 /// The offered colors, [`SWATCH_COLUMNS`] to a line.
 ///
