@@ -174,6 +174,32 @@ pub(crate) fn load_configuration(paths: &Paths, diagnostics: &mut DiagnosticsLog
     config
 }
 
+/// Ask the controller over its `hidraw` node what it is, and fold the answer
+/// into the record.
+///
+/// Both requests carry no color and no mode, so asking changes nothing the
+/// operator can see. The handle is handed back because the daemon keeps it;
+/// `--rgb-probe` drops it and keeps only the record. Both go through here so the
+/// evidence a read-only run prints is built by the same steps the daemon takes,
+/// rather than by a second sequence that happens to agree.
+pub fn ask_rgb(
+    capabilities: &mut CapabilityRecord,
+) -> (
+    Vec<kori_core::capability::RgbChannel>,
+    Option<Box<dyn kori_hardware_linux::hid::HidTransport>>,
+) {
+    use kori_hardware_linux::hid::HidTransport;
+
+    let node = kori_hardware_linux::probe::hidraw_node(capabilities, RGB_CONTROLLER);
+    let (topology, link) = kori_hardware_linux::rgb::connect(node);
+    let channels = topology.channels.value().cloned().unwrap_or_default();
+    kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
+    (
+        channels,
+        link.map(|link| Box::new(link) as Box<dyn HidTransport>),
+    )
+}
+
 /// Ask the controller what it is, fold the answer into the record, and keep the
 /// handle only when it answered.
 ///
@@ -188,25 +214,17 @@ pub(crate) fn connect_lighting(
     use kori_hardware_linux::hid::HidTransport;
     use kori_hardware_linux::rgb;
 
-    let (topology, transport): (_, Option<Box<dyn HidTransport>>) = match backend {
+    let (channels, transport): (_, Option<Box<dyn HidTransport>>) = match backend {
         RgbBackend::None => return LightingExecutor::absent(),
-        RgbBackend::Hidraw => {
-            let node = kori_hardware_linux::probe::hidraw_node(capabilities, RGB_CONTROLLER);
-            let (topology, link) = rgb::connect(node);
-            (
-                topology,
-                link.map(|link| Box::new(link) as Box<dyn HidTransport>),
-            )
-        }
+        RgbBackend::Hidraw => ask_rgb(capabilities),
         RgbBackend::Transport(mut transport) => {
             let topology = rgb::inspect(transport.as_mut());
+            let channels = topology.channels.value().cloned().unwrap_or_default();
             let answered = topology.channels.is_known();
-            (topology, answered.then_some(transport))
+            kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
+            (channels, answered.then_some(transport))
         }
     };
-
-    let channels = topology.channels.value().cloned().unwrap_or_default();
-    kori_hardware_linux::probe::attach_rgb_topology(capabilities, topology);
 
     // A controller reporting zero channels is not a controller this daemon can
     // address, so it holds no handle to it.
@@ -218,6 +236,29 @@ pub(crate) fn connect_lighting(
     }
 }
 
+/// Ask the Kraken over its own nodes what its panel is, and fold the answer into
+/// the record.
+///
+/// Two query reports that carry no picture, no brightness and no orientation, so
+/// asking changes nothing the operator can see. The handle comes back for the
+/// same reason [`ask_rgb`] hands one back: the daemon keeps it and `--lcd-probe`
+/// drops it, and neither builds the record its own way.
+pub fn ask_lcd(
+    capabilities: &mut CapabilityRecord,
+) -> (
+    Option<kori_core::capability::LcdPanel>,
+    Option<kori_hardware_linux::lcd::LcdLink>,
+) {
+    let device = kori_hardware_linux::probe::device_path(capabilities, KRAKEN_BASE);
+    let node = device
+        .as_deref()
+        .and_then(kori_hardware_linux::usb::hidraw_node);
+    let (topology, link) = kori_hardware_linux::lcd::connect(device.as_deref(), node);
+    let panel = topology.panel.value().cloned();
+    kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
+    (panel, link)
+}
+
 /// Ask the Kraken what its panel is, fold the answer into the record, and keep
 /// the handle only when a panel answered *and* the bulk interface was claimed.
 ///
@@ -227,30 +268,21 @@ pub(crate) fn connect_display(
     capabilities: &mut CapabilityRecord,
     backend: LcdBackend,
 ) -> DisplayExecutor {
-    use kori_hardware_linux::lcd;
-
-    let (topology, link): (LcdTopology, _) = match backend {
+    let (panel, link) = match backend {
         LcdBackend::None => return DisplayExecutor::absent(),
-        LcdBackend::Nodes => {
-            let device = kori_hardware_linux::probe::device_path(capabilities, KRAKEN_BASE);
-            let node = device
-                .as_deref()
-                .and_then(kori_hardware_linux::usb::hidraw_node);
-            lcd::connect(device.as_deref(), node)
-        }
+        LcdBackend::Nodes => ask_lcd(capabilities),
         LcdBackend::Link(mut link) => {
             // The link builds its own record. It knows which of its two sources
             // is the display node and which is the framebuffer's, and filling
             // both fields from the fused `source()` recorded two nodes that
             // neither existed nor were opened.
-            let topology = link.topology();
+            let topology: LcdTopology = link.topology();
+            let panel = topology.panel.value().cloned();
             let answered = topology.answered();
-            (topology, answered.then_some(*link))
+            kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
+            (panel, answered.then_some(*link))
         }
     };
-
-    let panel = topology.panel.value().cloned();
-    kori_hardware_linux::probe::attach_lcd_topology(capabilities, topology);
 
     match (link, panel) {
         (Some(link), Some(panel)) => DisplayExecutor::connected(link, panel),

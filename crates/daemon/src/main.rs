@@ -127,22 +127,19 @@ impl Ask {
 ///
 /// Serial numbers are redacted so the output can be attached to an issue or
 /// committed without publishing a device identifier.
+/// The handle each ask hands back is dropped here: a read-only run wants the
+/// evidence, not the device. Asking through [`kori_daemon::startup`] rather than
+/// repeating its steps is what makes the record this prints the same record the
+/// daemon starts from.
 fn print_record(ask: Ask) -> Result<(), String> {
     let mut record = kori_hardware_linux::probe(&SysfsRoot::from_env());
 
     if ask.rgb {
-        let node = kori_hardware_linux::probe::hidraw_node(&record, RGB_CONTROLLER);
-        let (topology, _link) = kori_hardware_linux::rgb::connect(node);
-        kori_hardware_linux::probe::attach_rgb_topology(&mut record, topology);
+        let _ = kori_daemon::startup::ask_rgb(&mut record);
     }
 
     if ask.lcd {
-        let device = kori_hardware_linux::probe::device_path(&record, KRAKEN_BASE);
-        let node = device
-            .as_deref()
-            .and_then(kori_hardware_linux::usb::hidraw_node);
-        let (topology, _link) = kori_hardware_linux::lcd::connect(device.as_deref(), node);
-        kori_hardware_linux::probe::attach_lcd_topology(&mut record, topology);
+        let _ = kori_daemon::startup::ask_lcd(&mut record);
     }
 
     record.redact_serials();
