@@ -225,6 +225,19 @@ impl ShutdownHandle {
     }
 }
 
+/// Write one event to the daemon's log, or drop it when the state is gone.
+///
+/// Every diagnostic this file records is one the connection can proceed without,
+/// and a poisoned mutex means a handler panicked while holding it: the daemon
+/// answers `Io` to every request from then on, so an event saying so has nowhere
+/// useful to go anyway. Stating that policy once here rather than at each call
+/// site is what keeps it a decision rather than six coincidences.
+fn note(daemon: &Arc<Mutex<Daemon>>, event: impl FnOnce(&mut Daemon)) {
+    if let Ok(mut daemon) = daemon.lock() {
+        event(&mut daemon);
+    }
+}
+
 /// Serve one connection.
 fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
     let peer = match peer_credentials(&stream) {
@@ -252,9 +265,9 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
         return;
     }
 
-    if let Ok(mut daemon) = daemon.lock() {
-        daemon.record_client_accepted(peer.uid, peer.pid);
-    }
+    note(&daemon, |daemon| {
+        daemon.record_client_accepted(peer.uid, peer.pid)
+    });
 
     let Ok(write_half) = stream.try_clone() else {
         return;
@@ -268,14 +281,18 @@ fn serve(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) {
             Ok(request) => request,
             Err(error) => {
                 // A framing failure leaves the stream unusable: answer once
-                // with the typed reason, then close.
-                if let Some(ipc_error) = error.as_ipc_error() {
-                    if let Ok(mut daemon) = daemon.lock() {
-                        daemon.record_client_disconnected(error.to_string());
-                    }
+                // with the typed reason, then close. A clean end of stream is
+                // not a failure and has nothing to answer, so the two are told
+                // apart by what the error carries rather than by nesting the
+                // lock inside the question.
+                let ipc_error = error.as_ipc_error();
+                let detail = match &ipc_error {
+                    Some(_) => error.to_string(),
+                    None => "client closed the connection".to_string(),
+                };
+                note(&daemon, |daemon| daemon.record_client_disconnected(detail));
+                if let Some(ipc_error) = ipc_error {
                     let _ = write_frame(&mut writer, &Response::Error(ipc_error));
-                } else if let Ok(mut daemon) = daemon.lock() {
-                    daemon.record_client_disconnected("client closed the connection".to_string());
                 }
                 return;
             }
@@ -325,9 +342,9 @@ fn peer_credentials(stream: &UnixStream) -> Result<Peer, String> {
 }
 
 fn reject(stream: &UnixStream, error: IpcError, daemon: &Arc<Mutex<Daemon>>) {
-    if let Ok(mut daemon) = daemon.lock() {
-        daemon.record_client_rejected(error.to_string());
-    }
+    note(daemon, |daemon| {
+        daemon.record_client_rejected(error.to_string())
+    });
     if let Ok(write_half) = stream.try_clone() {
         let mut writer = BufWriter::new(write_half);
         let _ = write_frame(&mut writer, &Response::Error(error));
