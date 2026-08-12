@@ -520,7 +520,7 @@ fn draw_gauge(
                 sweep_turns: band.sweep,
                 round_caps: true,
             },
-            mix(preset.background, slot.text, 0.28),
+            preset.background.mixed(slot.text, 0.28),
         );
         return;
     };
@@ -534,11 +534,9 @@ fn draw_gauge(
             sweep_turns: band.sweep,
             round_caps: true,
         },
-        mix(
-            preset.background,
-            mix(slot.reading, head, 0.5),
-            layout::TRACK_REST,
-        ),
+        preset
+            .background
+            .mixed(slot.reading.mixed(head, 0.5), layout::TRACK_REST),
     );
 
     // From the slot's first color to its second, and only ever between those
@@ -607,16 +605,6 @@ fn reading_reach(sample: &MetricSample) -> f32 {
     text::width(&value.text(), 1.0) / 2.0
         + layout::UNIT_GAP
         + text::width(sample.metric.unit(), layout::UNIT_SCALE)
-}
-
-/// `base` moved `amount` of the way toward `toward`.
-fn mix(base: Rgb, toward: Rgb, amount: f32) -> Rgb {
-    let blend = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
-    Rgb {
-        r: blend(base.r, toward.r),
-        g: blend(base.g, toward.g),
-        b: blend(base.b, toward.b),
-    }
 }
 
 /// Decode the operator's image and cover the panel with it.
@@ -860,11 +848,9 @@ mod tests {
     /// as pixels of one exact color: the fill shades along its sweep, so only
     /// its far end is ever the chosen color exactly.
     fn filled_ring(frame: &Framebuffer, preset: &DisplayPreset, slot: usize) -> usize {
-        let rest = mix(
-            preset.background,
-            preset.readings[slot].reading,
-            layout::TRACK_REST,
-        );
+        let rest = preset
+            .background
+            .mixed(preset.readings[slot].reading, layout::TRACK_REST);
         let level = |color: Rgb| u32::from(color.r) + u32::from(color.g) + u32::from(color.b);
         in_ring(frame)
             .filter(|pixel| level(*pixel) > level(rest) + 8)
@@ -1056,11 +1042,9 @@ mod tests {
         assert!(
             count(
                 &zero,
-                mix(
-                    preset.background,
-                    preset.readings[0].reading,
-                    layout::TRACK_REST
-                )
+                preset
+                    .background
+                    .mixed(preset.readings[0].reading, layout::TRACK_REST)
             ) > 0,
             "a reading of zero still shows its own track, in its own color"
         );

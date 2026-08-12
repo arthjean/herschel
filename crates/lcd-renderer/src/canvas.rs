@@ -52,15 +52,8 @@ impl Canvas {
         if coverage <= 0.0 || x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
         }
-        let coverage = coverage.min(1.0);
         let index = (y as usize) * (self.width as usize) + (x as usize);
-        let under = self.pixels[index];
-        let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * coverage).round() as u8;
-        self.pixels[index] = Rgb {
-            r: mix(under.r, color.r),
-            g: mix(under.g, color.g),
-            b: mix(under.b, color.b),
-        };
+        self.pixels[index] = self.pixels[index].mixed(color, coverage.min(1.0));
     }
 
     /// Fill part of a ring, from `start_turns` clockwise for `sweep_turns`.
@@ -132,7 +125,7 @@ impl Canvas {
                 let color = if from == to {
                     from
                 } else {
-                    lerp(from, to, (offset / sweep).clamp(0.0, 1.0))
+                    from.mixed(to, (offset / sweep).clamp(0.0, 1.0))
                 };
                 self.blend(column, row, color, coverage);
             }
@@ -179,16 +172,6 @@ fn polar(center: (f32, f32), radius: f32, turns: f32) -> (f32, f32) {
         // Screen y grows downward, so twelve o'clock is the negative direction.
         center.1 - radius * angle.cos(),
     )
-}
-
-/// `from` moved `t` of the way toward `to`.
-fn lerp(from: Rgb, to: Rgb, t: f32) -> Rgb {
-    let channel = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
-    Rgb {
-        r: channel(from.r, to.r),
-        g: channel(from.g, to.g),
-        b: channel(from.b, to.b),
-    }
 }
 
 /// One annular arc: where it is, how thick, and how far around it goes.
