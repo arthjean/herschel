@@ -3,9 +3,10 @@
 
 //! A small software rasterizer, sized for one 240 by 240 panel.
 //!
-//! Two primitives cover everything the panel draws: an annular arc for the
-//! gauges and a filled outline for every glyph. Each writes coverage rather
-//! than hard pixels, so an edge lands as a blend instead of a staircase.
+//! One primitive and one operation cover everything the panel draws: an annular
+//! arc for the gauges, and per-pixel coverage for everything else. The glyphs
+//! land through the same coverage path, straight from the font rasterizer, so an
+//! edge of a numeral and an edge of a band are blended by identical arithmetic.
 //!
 //! Nothing here knows what a metric is. It takes coordinates and colors.
 
@@ -60,82 +61,6 @@ impl Canvas {
             g: mix(under.g, color.g),
             b: mix(under.b, color.b),
         };
-    }
-
-    /// Fill a closed outline under the non-zero winding rule.
-    ///
-    /// This is what the numerals are drawn with. It is scanline rather than
-    /// point-sampled: four sample rows per pixel, each turned into spans whose
-    /// ends carry fractional coverage. The cost is proportional to the height of
-    /// the glyph times its edge count rather than to its area times a sample
-    /// grid, which is what keeps a three-digit reading inside the repaint
-    /// budget while still resolving a curve cleanly at 60 pixels tall.
-    ///
-    /// Non-zero rather than even-odd on purpose: a glyph is assembled from
-    /// strokes that overlap at their joins, and every stroke is wound the same
-    /// way, so an overlap stays filled instead of punching a hole.
-    pub fn fill_outline(&mut self, outline: &Outline, color: Rgb) {
-        let edges = outline.edges();
-        if edges.is_empty() {
-            return;
-        }
-
-        let (mut min_x, mut max_x, mut min_y, mut max_y) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-        for (a, b) in &edges {
-            min_x = min_x.min(a.0).min(b.0);
-            max_x = max_x.max(a.0).max(b.0);
-            min_y = min_y.min(a.1).min(b.1);
-            max_y = max_y.max(a.1).max(b.1);
-        }
-        let left = (min_x.floor() as i32).max(0);
-        let right = (max_x.ceil() as i32).min(self.width as i32 - 1);
-        let top = (min_y.floor() as i32).max(0);
-        let bottom = (max_y.ceil() as i32).min(self.height as i32 - 1);
-        if left > right || top > bottom {
-            return;
-        }
-
-        let span = (right - left + 1) as usize;
-        let mut coverage = vec![0.0f32; span];
-        let mut crossings: Vec<(f32, i32)> = Vec::new();
-        let weight = 1.0 / OUTLINE_SAMPLES as f32;
-
-        for row in top..=bottom {
-            coverage.fill(0.0);
-            for sample in 0..OUTLINE_SAMPLES {
-                let y = row as f32 + (sample as f32 + 0.5) / OUTLINE_SAMPLES as f32;
-                crossings.clear();
-                for (a, b) in &edges {
-                    // Half-open in y so a vertex shared by two edges is counted
-                    // once, which is what keeps a join from leaving a pinhole.
-                    let (lower, upper, direction) = if a.1 < b.1 { (a, b, 1) } else { (b, a, -1) };
-                    if y < lower.1 || y >= upper.1 {
-                        continue;
-                    }
-                    let t = (y - lower.1) / (upper.1 - lower.1);
-                    crossings.push((lower.0 + (upper.0 - lower.0) * t, direction));
-                }
-                if crossings.len() < 2 {
-                    continue;
-                }
-                crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-                let mut winding = 0;
-                let mut start = 0.0f32;
-                for (x, direction) in &crossings {
-                    if winding == 0 {
-                        start = *x;
-                    }
-                    winding += direction;
-                    if winding == 0 {
-                        accumulate_span(&mut coverage, left, start, *x, weight);
-                    }
-                }
-            }
-            for (index, amount) in coverage.iter().enumerate() {
-                self.blend(left + index as i32, row, color, *amount);
-            }
-        }
     }
 
     /// Fill part of a ring, from `start_turns` clockwise for `sweep_turns`.
@@ -256,186 +181,6 @@ fn polar(center: (f32, f32), radius: f32, turns: f32) -> (f32, f32) {
     )
 }
 
-/// Vertical samples taken per pixel row when filling an outline.
-///
-/// Four is where the ramp on a near-horizontal edge stops being visible at the
-/// sizes the numerals are drawn at. Eight costs twice as much and changes
-/// nothing a 240 pixel panel in RGB565 can show.
-const OUTLINE_SAMPLES: u32 = 4;
-
-/// How finely a quadratic curve is broken into straight segments.
-///
-/// Segments per curve, fixed rather than derived from the curve's length: the
-/// numerals are built at one size range, and a fixed count keeps the glyph
-/// construction allocation-predictable.
-const CURVE_SEGMENTS: u32 = 12;
-
-/// A closed shape, as one or more subpaths in device pixels.
-///
-/// Curves are flattened on the way in, so the rasterizer only ever sees line
-/// segments. Every subpath is implicitly closed when the outline is filled: a
-/// glyph is an area, and an open contour has no area to fill.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Outline {
-    subpaths: Vec<Vec<(f32, f32)>>,
-}
-
-impl Outline {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Start a new subpath at `point`.
-    pub fn move_to(&mut self, point: (f32, f32)) {
-        self.subpaths.push(vec![point]);
-    }
-
-    /// Extend the current subpath with a straight segment.
-    ///
-    /// A `line_to` with no `move_to` before it starts a subpath rather than
-    /// being dropped, so a builder mistake produces a visible shape instead of
-    /// silent nothing.
-    pub fn line_to(&mut self, point: (f32, f32)) {
-        match self.subpaths.last_mut() {
-            Some(subpath) => subpath.push(point),
-            None => self.move_to(point),
-        }
-    }
-
-    /// Extend the current subpath with a quadratic curve through `control`.
-    pub fn quad_to(&mut self, control: (f32, f32), point: (f32, f32)) {
-        let Some(from) = self
-            .subpaths
-            .last()
-            .and_then(|subpath| subpath.last())
-            .copied()
-        else {
-            self.move_to(point);
-            return;
-        };
-        for step in 1..=CURVE_SEGMENTS {
-            let t = step as f32 / CURVE_SEGMENTS as f32;
-            let inverse = 1.0 - t;
-            self.line_to((
-                inverse * inverse * from.0 + 2.0 * inverse * t * control.0 + t * t * point.0,
-                inverse * inverse * from.1 + 2.0 * inverse * t * control.1 + t * t * point.1,
-            ));
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.subpaths.iter().all(|subpath| subpath.len() < 3)
-    }
-
-    /// Move every point by `(dx, dy)`.
-    pub fn translated(&self, dx: f32, dy: f32) -> Self {
-        Self {
-            subpaths: self
-                .subpaths
-                .iter()
-                .map(|subpath| {
-                    subpath
-                        .iter()
-                        .map(|(x, y)| (x + dx, y + dy))
-                        .collect::<Vec<_>>()
-                })
-                .collect(),
-        }
-    }
-
-    /// Wind every subpath the same way.
-    ///
-    /// A glyph is assembled from strokes built by separate helpers, and two
-    /// overlapping subpaths of opposite winding cancel to nothing under the
-    /// non-zero rule: the overlap would be a hole exactly where two strokes
-    /// join. Reversing the subpaths that enclose a negative area removes the
-    /// possibility rather than leaving each builder to remember it.
-    pub fn normalize_winding(&mut self) {
-        for subpath in &mut self.subpaths {
-            if subpath.len() < 3 {
-                continue;
-            }
-            let mut area = 0.0;
-            for index in 0..subpath.len() {
-                let (ax, ay) = subpath[index];
-                let (bx, by) = subpath[(index + 1) % subpath.len()];
-                area += ax * by - bx * ay;
-            }
-            if area < 0.0 {
-                subpath.reverse();
-            }
-        }
-    }
-
-    /// Take every subpath of `other` into this outline.
-    pub fn absorb(&mut self, other: Outline) {
-        self.subpaths.extend(other.subpaths);
-    }
-
-    /// The horizontal extent of the outline, or `None` when it has no area.
-    pub fn horizontal_extent(&self) -> Option<(f32, f32)> {
-        let mut min = f32::MAX;
-        let mut max = f32::MIN;
-        for subpath in &self.subpaths {
-            if subpath.len() < 3 {
-                continue;
-            }
-            for (x, _) in subpath {
-                min = min.min(*x);
-                max = max.max(*x);
-            }
-        }
-        (min <= max).then_some((min, max))
-    }
-
-    /// Every segment of every subpath, closing each one, horizontals dropped.
-    ///
-    /// A horizontal edge contributes no crossing to any sample row, so leaving
-    /// it out of the list is not an approximation: it is the same result with
-    /// less work per row.
-    fn edges(&self) -> Vec<((f32, f32), (f32, f32))> {
-        let mut edges = Vec::new();
-        for subpath in &self.subpaths {
-            if subpath.len() < 3 {
-                continue;
-            }
-            for index in 0..subpath.len() {
-                let a = subpath[index];
-                let b = subpath[(index + 1) % subpath.len()];
-                if a.1 != b.1 {
-                    edges.push((a, b));
-                }
-            }
-        }
-        edges
-    }
-}
-
-/// Add one horizontal span's coverage into a row accumulator.
-///
-/// The ends carry the fraction of the pixel they actually cover, which is what
-/// makes a near-vertical stem land as one soft column rather than as a staircase
-/// that moves by a whole pixel.
-fn accumulate_span(coverage: &mut [f32], origin: i32, x0: f32, x1: f32, weight: f32) {
-    let left = x0.max(origin as f32);
-    let right = x1.min(origin as f32 + coverage.len() as f32);
-    if right <= left {
-        return;
-    }
-    let first = left.floor() as i32;
-    let last = (right.ceil() as i32) - 1;
-    for column in first..=last {
-        let index = column - origin;
-        if index < 0 || index as usize >= coverage.len() {
-            continue;
-        }
-        let covered = (column as f32 + 1.0).min(right) - (column as f32).max(left);
-        if covered > 0.0 {
-            coverage[index as usize] += covered * weight;
-        }
-    }
-}
-
 /// `from` moved `t` of the way toward `to`.
 fn lerp(from: Rgb, to: Rgb, t: f32) -> Rgb {
     let channel = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
@@ -493,68 +238,14 @@ mod tests {
         assert_eq!(canvas.pixel(8, 0), None, "out of bounds reads nothing");
     }
 
-    /// A rectangle as an outline, which is the only shape primitive left.
-    fn rectangle(x0: f32, y0: f32, x1: f32, y1: f32) -> Outline {
-        let mut outline = Outline::new();
-        outline.move_to((x0, y0));
-        outline.line_to((x1, y0));
-        outline.line_to((x1, y1));
-        outline.line_to((x0, y1));
-        outline
-    }
-
     #[test]
     fn drawing_outside_the_canvas_changes_nothing_and_does_not_panic() {
         let mut canvas = Canvas::filled(4, 4, BLACK);
-        canvas.fill_outline(&rectangle(-10.0, -10.0, -6.0, -6.0), WHITE);
-        canvas.fill_outline(&rectangle(100.0, 100.0, 104.0, 104.0), WHITE);
         canvas.blend(-1, 2, WHITE, 1.0);
         canvas.blend(2, 9999, WHITE, 1.0);
+        canvas.blend(9999, 2, WHITE, 1.0);
+        canvas.blend(2, -1, WHITE, 1.0);
         assert!(canvas.pixels().iter().all(|p| *p == BLACK));
-    }
-
-    #[test]
-    fn an_outline_on_pixel_boundaries_covers_exactly_its_own_pixels() {
-        let mut canvas = Canvas::filled(6, 6, BLACK);
-        canvas.fill_outline(&rectangle(2.0, 1.0, 4.0, 4.0), WHITE);
-        let lit: Vec<(u32, u32)> = (0..6)
-            .flat_map(|y| (0..6).map(move |x| (x, y)))
-            .filter(|(x, y)| canvas.pixel(*x, *y) == Some(WHITE))
-            .collect();
-        assert_eq!(lit, vec![(2, 1), (3, 1), (2, 2), (3, 2), (2, 3), (3, 3)]);
-    }
-
-    #[test]
-    fn an_edge_between_two_pixels_lands_as_coverage_rather_than_a_staircase() {
-        // Half a pixel of the column is covered, so the column is half lit.
-        let mut canvas = Canvas::filled(4, 4, BLACK);
-        canvas.fill_outline(&rectangle(1.5, 0.0, 3.0, 4.0), WHITE);
-        let partial = canvas.pixel(1, 0).unwrap();
-        assert!(
-            (120..=135).contains(&partial.r),
-            "a half-covered column should be mid grey, got {partial:?}"
-        );
-        assert_eq!(canvas.pixel(2, 0), Some(WHITE));
-        assert_eq!(canvas.pixel(0, 0), Some(BLACK));
-    }
-
-    #[test]
-    fn two_overlapping_subpaths_stay_filled_once_they_are_wound_alike() {
-        // The mistake this pins: a glyph is built from strokes that overlap at
-        // their joins, and two subpaths of opposite winding cancel to nothing
-        // under the non-zero rule, punching a hole exactly at the join.
-        let mut crossed = rectangle(1.0, 1.0, 9.0, 5.0);
-        let mut reversed = Outline::new();
-        reversed.move_to((3.0, 4.0));
-        reversed.line_to((3.0, 2.0));
-        reversed.line_to((7.0, 2.0));
-        reversed.line_to((7.0, 4.0));
-        crossed.absorb(reversed);
-        crossed.normalize_winding();
-
-        let mut canvas = Canvas::filled(10, 6, BLACK);
-        canvas.fill_outline(&crossed, WHITE);
-        assert_eq!(canvas.pixel(5, 3), Some(WHITE), "the overlap became a hole");
     }
 
     #[test]
@@ -569,6 +260,8 @@ mod tests {
 
         // Zero and negative coverage leave the pixel alone; above one is capped.
         canvas.blend(0, 0, BLACK, 0.0);
+        assert_eq!(canvas.pixel(0, 0).unwrap().r, blended.r);
+        canvas.blend(0, 0, BLACK, -3.0);
         assert_eq!(canvas.pixel(0, 0).unwrap().r, blended.r);
         canvas.blend(0, 0, WHITE, 4.0);
         assert_eq!(canvas.pixel(0, 0), Some(WHITE));
@@ -744,39 +437,22 @@ mod tests {
                 sweep_turns: 1.0,
                 round_caps: false,
             },
+            Arc {
+                center: (10.5, 10.5),
+                inner: 4.0,
+                outer: 9.0,
+                start_turns: 0.0,
+                sweep_turns: -0.5,
+                round_caps: true,
+            },
         ] {
             canvas.fill_arc(arc, WHITE);
         }
         assert!(
             canvas.pixels().iter().all(|p| *p == BLACK),
-            "a zero sweep and an inverted band are both nothing, not a full ring"
+            "a zero sweep, an inverted band and a negative sweep are all \
+             nothing, not a full ring"
         );
-    }
-
-    #[test]
-    fn an_outline_with_no_area_draws_nothing_rather_than_panicking() {
-        let mut canvas = Canvas::filled(20, 20, BLACK);
-        let mut degenerate = Outline::new();
-        degenerate.line_to((1.0, 1.0));
-        degenerate.line_to((2.0, 2.0));
-        canvas.fill_outline(&degenerate, WHITE);
-        canvas.fill_outline(&Outline::new(), WHITE);
-        assert!(degenerate.is_empty());
-        assert!(canvas.pixels().iter().all(|p| *p == BLACK));
-    }
-
-    #[test]
-    fn a_curve_is_flattened_into_the_outline_it_was_asked_for() {
-        // A quadratic bulging to the right must put ink past the straight line
-        // between its ends, and none of it outside the control polygon.
-        let mut bulge = Outline::new();
-        bulge.move_to((4.0, 2.0));
-        bulge.quad_to((16.0, 10.0), (4.0, 18.0));
-        let mut canvas = Canvas::filled(20, 20, BLACK);
-        canvas.fill_outline(&bulge, WHITE);
-        assert_eq!(canvas.pixel(8, 10), Some(WHITE), "inside the bulge");
-        assert_eq!(canvas.pixel(14, 10), Some(BLACK), "past the curve");
-        assert_eq!(canvas.pixel(8, 3), Some(BLACK), "above it");
     }
 
     #[test]
