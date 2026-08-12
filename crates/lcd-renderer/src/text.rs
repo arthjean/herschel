@@ -277,14 +277,28 @@ mod tests {
     }
 
     #[test]
-    fn a_face_that_could_not_be_parsed_draws_nothing_rather_than_panicking() {
-        // The degraded path: `width` answers zero and `draw` leaves the canvas
-        // alone. Exercised here through an empty string, which takes the same
-        // route through the face and must not blow up either.
+    fn a_string_with_nothing_in_it_draws_nothing_and_measures_zero() {
         let mut canvas = Canvas::filled(20, 20, BLACK);
         draw(&mut canvas, "", 0.0, 0.0, 20.0, WHITE);
         assert!(canvas.pixels().iter().all(|pixel| *pixel == BLACK));
         assert_eq!(width("", 20.0), 0.0);
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_font_are_refused_rather_than_accepted() {
+        // What the degraded path rests on. `face` turns a parse failure into
+        // `None`, and every entry point above answers zero or draws nothing
+        // when it sees one, rather than panicking on a thread that owns
+        // hardware. The parse is the part that can be exercised: the shipped
+        // face is embedded and parsed once, so no test can hand this module a
+        // broken one, and a test that claimed to would be measuring an empty
+        // string instead.
+        assert!(FontRef::try_from_slice(b"this is not a font").is_err());
+        assert!(FontRef::try_from_slice(&[]).is_err());
+        assert!(
+            FontRef::try_from_slice(&PANEL_FACE[..PANEL_FACE.len() / 2]).is_err(),
+            "half of a font file must not parse as one"
+        );
     }
 
     #[test]
