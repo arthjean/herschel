@@ -57,8 +57,10 @@ with the package manager reporting success throughout.
    version the binary does not carry.
 2. Run the four validation commands from `AGENTS.md`.
 3. Try the packaging without publishing anything: run the **Release** workflow
-   from the Actions tab. It builds, packages, signs and installs, and skips only
-   the publication, leaving the artifacts on the run.
+   from the Actions tab. It builds, packages, signs, installs, and checks the
+   credential the publication uses, skipping only the one call that creates the
+   release, and leaves the artifacts on the run. What a rehearsal cannot cover
+   is one API call; everything it needs to succeed has already run.
 4. Tag and push:
 
    ```bash

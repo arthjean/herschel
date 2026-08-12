@@ -5,9 +5,10 @@
 #
 #   git tag -a v0.1.0 -m "..." && git push origin v0.1.0
 #
-# Run from the Actions tab instead, and every job below runs except the last
-# one: the artifacts are uploaded to the run for inspection and nothing is
-# published. That is how a packaging change is tried before a tag exists.
+# Run from the Actions tab instead and every job below runs, down to the
+# credential the publication uses. Only the one call that creates the release is
+# skipped, so a rehearsal exercises everything a tag would except the act that
+# cannot be undone. That is how a packaging change is tried before a tag exists.
 #
 # The smoke jobs are the reason this is three stages rather than one. A package
 # that builds is not a package that installs: the .rpm names its dependencies as
@@ -357,9 +358,6 @@ jobs:
 
   publish:
     needs: [build, smoke-deb, smoke-rpm, smoke-tarball]
-    # The only job a manual run skips. Everything above it has already run, so a
-    # dispatch is a full rehearsal of the release minus the publication.
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     permissions:
@@ -374,6 +372,18 @@ jobs:
       - name: Check the digests survived the round trip
         working-directory: dist
         run: sha256sum --check --strict SHA256SUMS
+
+      # Runs on a dispatch too, and that is the point. This job used to be
+      # skipped entirely on a rehearsal, which made the publication the one step
+      # nothing ever exercised: the first tag failed here because gh resolves
+      # the repository by shelling out to git and this job has no clone. A
+      # read-only call proves the credential, the repository resolution and the
+      # network from the same environment the create call will use.
+      - name: Check gh can reach the repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release list --limit 1
 
       - name: Write the release notes
         env:
@@ -421,9 +431,20 @@ jobs:
           \`SHA256SUMS\` covers the same files for a check without GitHub's CLI.
           EOF
 
+      # GH_REPO rather than a checkout: this job has no use for the source, it
+      # publishes an artifact another job built. Without it, gh resolves the
+      # repository by shelling out to git and fails in a directory that is not a
+      # clone.
+      #
+      # No --verify-tag for the same reason, and because it guards against
+      # nothing here. It exists to stop `gh release create` from inventing a tag
+      # that does not exist yet, and this job only ever runs because that exact
+      # tag was pushed.
       - name: Publish the release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           TAG: ${{ github.ref_name }}
         run: |
@@ -431,7 +452,6 @@ jobs:
           gh release create "$TAG" \
             --title "Kori $VERSION" \
             --notes-file notes.md \
-            --verify-tag \
             "dist/kori-${VERSION}-x86_64-linux.tar.gz" \
             "dist/kori_${VERSION}-1_amd64.deb" \
             "dist/kori-${VERSION}-1.x86_64.rpm" \
