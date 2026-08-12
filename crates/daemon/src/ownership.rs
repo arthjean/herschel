@@ -45,17 +45,14 @@ impl DeviceLock {
 }
 
 /// The daemon's single-instance lock, released when dropped.
+///
+/// Holds nothing but the open file description, because the lock *is* that
+/// description (`flock(2)`). The path it was taken at is already carried by the
+/// conflict a second instance is handed, so nothing here has to publish it.
 #[derive(Debug)]
 pub struct InstanceLock {
-    path: PathBuf,
     // Held for its lifetime: closing the descriptor releases the lock.
     _file: File,
-}
-
-impl InstanceLock {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 /// Try to become the single writer for `device`.
@@ -80,9 +77,8 @@ pub fn acquire(paths: &Paths, device: DeviceId) -> Result<DeviceLock, OwnershipC
 /// bind and release them, leaving the surviving daemon read-only for no
 /// reason an operator could act on.
 pub fn acquire_instance(paths: &Paths) -> Result<InstanceLock, OwnershipConflict> {
-    let path = paths.instance_lock();
-    let file = lock_exclusive(&path, None)?;
-    Ok(InstanceLock { path, _file: file })
+    let file = lock_exclusive(&paths.instance_lock(), None)?;
+    Ok(InstanceLock { _file: file })
 }
 
 /// Take the advisory exclusive lock on `path` and record the holder's pid.
@@ -279,7 +275,10 @@ mod tests {
         let (base, paths) = temp_paths("instance");
 
         let first = acquire_instance(&paths).expect("first daemon starts");
-        assert_eq!(first.path(), paths.instance_lock());
+        assert!(
+            paths.instance_lock().exists(),
+            "the lock is taken at the path the application names"
+        );
 
         let conflict = acquire_instance(&paths).expect_err("second daemon is refused");
         assert_eq!(conflict.device, None);
