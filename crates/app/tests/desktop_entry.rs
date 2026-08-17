@@ -56,7 +56,8 @@ fn the_declared_icon_is_a_file_that_ships() {
     assert!(
         installed.is_file(),
         "Icon={icon} resolves to nothing under packaging/icons/, so the install \
-         step in the README would put no artwork where the entry looks for it"
+         step in docs/from-source.md would put no artwork where the entry \
+         looks for it"
     );
 }
 

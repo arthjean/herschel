@@ -24,6 +24,6 @@ SPDX-License-Identifier: GPL-3.0-or-later
 These are out of scope by decision rather than by omission, and a request for
 one of them will be closed with this line: web integrations, cloud, accounts,
 telemetry, firmware updates, a remote API, and control of hardware this project
-has not validated. See the README's *v1 scope*.
+has not validated. See the README's *Out of scope*.
 
 - [ ] What I am asking for is none of those
