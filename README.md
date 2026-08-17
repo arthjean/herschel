@@ -95,8 +95,9 @@ Each release publishes x86_64 packages built against glibc 2.35, which covers Ub
 |---|---|
 | Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./kori_<version>-1_amd64.deb` |
 | Fedora, RHEL, openSUSE, Mageia | `sudo dnf install ./kori-<version>-1.x86_64.rpm` |
-| Arch, Manjaro, EndeavourOS | `kori-bin` on the AUR |
-| Anything else | unpack `kori-<version>-x86_64-linux.tar.gz`, run `./install.sh` |
+| Arch, Manjaro, EndeavourOS, anything else | unpack `kori-<version>-x86_64-linux.tar.gz`, run `./install.sh` |
+
+The AUR recipe is written and lives in [`packaging/aur/`](./packaging/aur/), but the package is not on the AUR yet. Naming one a reader cannot install is worse than offering one route less, so Arch goes through the tarball until `kori-bin` is published.
 
 The tarball route needs no root and installs under `~/.local`; its installer then prints the one step that does need root, which is the udev rule below. The packages install that rule themselves.
 
