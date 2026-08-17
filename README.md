@@ -2,6 +2,8 @@
 
 Native open source Linux application to monitor and control NZXT hardware.
 
+[kori.arthurjean.com](https://kori.arthurjean.com) shows the three screens and lists what the current release ships.
+
 > Status: the daemon detects both devices, exposes a typed Unix socket and the GPUI interface displays real state. Cooling, lighting and panel writes are implemented, each gated on a firmware this project validated on the owned hardware. This project is neither affiliated with nor endorsed by NZXT.
 
 ![The monitoring screen, showing CPU, GPU, memory and Kraken readings, each with its own history](./docs/screenshots/monitoring.png)
